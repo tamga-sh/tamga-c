@@ -1,14 +1,6 @@
 //! `tamga_offline_proof_verify` / `_generate` — Section E of
 //! `docs/plans/tamga-c.plan.md` ("Machine Offline Proof FFI").
 //!
-//! # STUB — scaffolding only
-//!
-//! Both functions below always return
-//! [`TamgaErrorCode::TAMGA_ERR_UNKNOWN`] and are `TODO`-marked to receive
-//! the `catch_unwind` treatment described in [`crate::ffi_guard`]'s docs
-//! (reference implementation:
-//! [`crate::license_file::tamga_license_file_verify`]).
-//!
 //! # Offline proof format (from `docs/sdk.md` §7 / plan §3.3)
 //!
 //! Response shape: `meta.proof = "v1x0.<base64 signature>"`. Always signed
@@ -20,91 +12,169 @@
 //! ```
 //!
 //! serialized **exactly** as the server produces it — ⚠️ field order
-//! matters, not just field set. A verifier that re-serializes with a
-//! different (even semantically equivalent) key order fails every check.
-//! `_verify` and `_generate` MUST share one canonical-serialization helper
-//! so the two paths can never drift from each other's field ordering.
+//! matters (and it's alphabetical, not the source's literal
+//! account/machine/dataset order — see `tamga-rust`'s `src/proof.rs` module
+//! doc comment for the full explanation). `tamga_offline_proof_verify`
+//! delegates entirely to `tamga_rust::proof::verify_offline_proof`, which
+//! already builds this payload correctly via `serde_json::Value` — no
+//! canonical-serialization logic is duplicated here.
+//!
+//! ⚠️ **`tamga_offline_proof_generate` is intentionally still a stub.**
+//! `tamga-rust` exposes no local RSA-signing primitive — its `crypto::rsa`
+//! module only has `verify_pkcs1`/`verify_pss` (this SDK is a client that
+//! verifies server-issued material; it was never built to sign). Real proof
+//! generation happens server-side via `Client::generate_offline_proof`
+//! (HTTP), which is out of scope for this HTTP-free crate. Implementing
+//! `_generate` here would mean re-deriving the byte-exact canonical JSON
+//! payload a **second** time in this crate — exactly the kind of
+//! independent reimplementation `tamga-c`'s whole architecture exists to
+//! avoid (see this repo's `CLAUDE.md`), and exactly the bug class
+//! (field-order drift) `tamga-rust/src/proof.rs`'s module doc comment
+//! warns about. If air-gapped proof generation is truly needed, the right
+//! fix is adding a security-reviewed local-signing primitive to
+//! `tamga-rust` first, then wrapping *that* here — not duplicating the
+//! payload construction independently in this crate.
 //!
 //! [`TamgaOfflineProof`](crate::TamgaOfflineProof) is declared in `lib.rs`
-//! per Section B's checklist but has no producer/consumer here yet — see
-//! that type's doc comment for why neither function below currently
-//! returns/accepts a handle.
+//! per Section B's checklist but has no producer/consumer here — `_verify`
+//! reports its result via `out_valid: *mut bool` and `_generate` (once
+//! implemented) would return an owned `*mut c_char`, neither of which needs
+//! a handle. See that type's doc comment.
 
 use std::ffi::c_char;
+use std::slice;
 
-use crate::TamgaErrorCode;
+use crate::{TamgaErrorCode, ffi_guard};
 
 /// Verifies a `"v1x0.<base64 signature>"` offline proof string against the
 /// exact canonical JSON the server would have signed.
 ///
 /// # Parameters
-/// - `proof_str`: the full `"v1x0.<base64 signature>"` string.
-/// - `rsa_pubkey` / (implicit length via NUL or a future explicit-length
-///   param, TBD pending tamga-rust's frozen API): the account's RSA-2048
-///   public key.
-/// - `account_id`, `machine_id`, `fingerprint`: the values that must appear
-///   in the canonical signed JSON, as NUL-terminated C strings.
+/// - `proof_str`: the full `"v1x0.<base64 signature>"` string, NUL-terminated.
+/// - `rsa_pubkey` / `rsa_pubkey_len`: the account's RSA-2048 public key as a
+///   raw `SubjectPublicKeyInfo` DER blob — same convention as
+///   [`crate::machine_file::tamga_machine_file_verify`]'s RSA pubkey
+///   parameter (a deviation from the plan's original `*const c_char`
+///   wording, which didn't specify an encoding; TBD-pending-freeze per
+///   Section C/D's precedent).
+/// - `account_id`, `machine_id`: UUID strings (NUL-terminated), parsed via
+///   `uuid::Uuid::parse_str`.
+/// - `fingerprint`: NUL-terminated C string.
 /// - `dataset_json`: the client dataset as a NUL-terminated JSON string,
-///   re-serialized internally in the server's exact field order before
-///   verification (see module docs above — field order matters).
+///   parsed and re-embedded into the canonical payload (see module docs —
+///   field order matters, and is handled entirely by `tamga-rust`).
 /// - `out_valid`: on `TAMGA_OK`, receives whether the proof is valid.
 ///   Distinguish "the FFI call itself failed" (non-`TAMGA_OK` return) from
 ///   "the call succeeded but the proof is invalid" (`TAMGA_OK` +
 ///   `*out_valid == false`) — callers must check both.
 ///
 /// # Safety
-/// All pointer parameters must be null or valid NUL-terminated C strings
-/// (`rsa_pubkey`'s exact contract TBD). `out_valid` must be a valid pointer
-/// this function may write to.
+/// `proof_str`/`account_id`/`machine_id`/`fingerprint`/`dataset_json` must
+/// be null or valid NUL-terminated C strings. `rsa_pubkey` must point to
+/// `rsa_pubkey_len` readable bytes (or be null). `out_valid` must be a
+/// valid pointer this function may write to.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tamga_offline_proof_verify(
     proof_str: *const c_char,
-    rsa_pubkey: *const c_char,
+    rsa_pubkey: *const u8,
+    rsa_pubkey_len: usize,
     account_id: *const c_char,
     machine_id: *const c_char,
     fingerprint: *const c_char,
     dataset_json: *const c_char,
     out_valid: *mut bool,
 ) -> TamgaErrorCode {
-    // TODO(Section F): wrap in `ffi_guard`/`catch_unwind`. Not yet done.
-    //
-    // TODO(Section E): implement once tamga-rust's v0.1 API is frozen:
-    //   1. null-check every pointer argument
-    //   2. parse the "v1x0." version prefix; reject unrecognized versions
-    //      with TAMGA_ERR_UNSUPPORTED_SCHEME
-    //   3. base64-decode the signature portion following the prefix
-    //   4. reconstruct the canonical signed JSON via the SAME shared
-    //      serialization helper `_generate` uses (see below) --
-    //      {"account":{"id":...},"machine":{"id":...,"fingerprint":...},
-    //      "dataset":<dataset_json>}, field order exactly as shown
-    //   5. RSA-2048 PKCS#1 v1.5/SHA-256 verify -- always this scheme,
-    //      regardless of the license's own `scheme` field
-    //   6. write the boolean result to *out_valid
-    let _ = (
-        proof_str,
-        rsa_pubkey,
-        account_id,
-        machine_id,
-        fingerprint,
-        dataset_json,
-        out_valid,
-    );
-    crate::set_last_error(
-        "tamga_offline_proof_verify is not implemented yet (see docs/plans/tamga-c.plan.md Section E)",
-    );
-    TamgaErrorCode::TAMGA_ERR_UNKNOWN
+    ffi_guard(|| {
+        if proof_str.is_null()
+            || rsa_pubkey.is_null()
+            || account_id.is_null()
+            || machine_id.is_null()
+            || fingerprint.is_null()
+            || dataset_json.is_null()
+            || out_valid.is_null()
+        {
+            crate::set_last_error("tamga_offline_proof_verify: null argument");
+            return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
+        }
+        if rsa_pubkey_len == 0 || rsa_pubkey_len > crate::MAX_REASONABLE_LEN {
+            crate::set_last_error(
+                "tamga_offline_proof_verify: rsa_pubkey_len out of reasonable range",
+            );
+            return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
+        }
+
+        // SAFETY: all pointers checked non-null above; caller contract
+        // guarantees valid NUL-terminated C strings.
+        let proof_str = unsafe { crate::cstr_to_str(proof_str) }.inspect_err(|_| {
+            crate::set_last_error("tamga_offline_proof_verify: proof_str is not valid UTF-8");
+        })?;
+        let account_id_str = unsafe { crate::cstr_to_str(account_id) }.inspect_err(|_| {
+            crate::set_last_error("tamga_offline_proof_verify: account_id is not valid UTF-8");
+        })?;
+        let machine_id_str = unsafe { crate::cstr_to_str(machine_id) }.inspect_err(|_| {
+            crate::set_last_error("tamga_offline_proof_verify: machine_id is not valid UTF-8");
+        })?;
+        let fingerprint_str = unsafe { crate::cstr_to_str(fingerprint) }.inspect_err(|_| {
+            crate::set_last_error("tamga_offline_proof_verify: fingerprint is not valid UTF-8");
+        })?;
+        let dataset_json_str = unsafe { crate::cstr_to_str(dataset_json) }.inspect_err(|_| {
+            crate::set_last_error("tamga_offline_proof_verify: dataset_json is not valid UTF-8");
+        })?;
+
+        let account_id_uuid: uuid::Uuid = account_id_str.parse().map_err(|_| {
+            crate::set_last_error("tamga_offline_proof_verify: account_id is not a valid UUID");
+            TamgaErrorCode::TAMGA_ERR_INVALID_JSON
+        })?;
+        let machine_id_uuid: uuid::Uuid = machine_id_str.parse().map_err(|_| {
+            crate::set_last_error("tamga_offline_proof_verify: machine_id is not a valid UUID");
+            TamgaErrorCode::TAMGA_ERR_INVALID_JSON
+        })?;
+        let dataset: serde_json::Value = serde_json::from_str(dataset_json_str).map_err(|e| {
+            crate::set_last_error(format!(
+                "tamga_offline_proof_verify: dataset_json is not valid JSON: {e}"
+            ));
+            TamgaErrorCode::TAMGA_ERR_INVALID_JSON
+        })?;
+
+        // SAFETY: caller contract guarantees `rsa_pubkey` points to
+        // `rsa_pubkey_len` readable bytes; checked non-null/non-zero above.
+        let rsa_pubkey_bytes = unsafe { slice::from_raw_parts(rsa_pubkey, rsa_pubkey_len) };
+
+        let result = tamga_rust::proof::verify_offline_proof(
+            proof_str,
+            account_id_uuid,
+            machine_id_uuid,
+            fingerprint_str,
+            &dataset,
+            rsa_pubkey_bytes,
+        );
+
+        // SAFETY: `out_valid` is non-null (checked above) and, per the
+        // caller contract, a valid pointer this function may write to.
+        unsafe {
+            *out_valid = result.is_ok();
+        }
+        if let Err(err) = &result {
+            crate::set_last_error(err.to_string());
+        }
+        Ok(())
+    })
 }
 
 /// Generates a `"v1x0.<base64 signature>"` offline proof, mirroring
-/// server-side generation. Intended for air-gapped/test tooling that needs
-/// to produce proofs without hitting the API — most consumers only need
-/// [`tamga_offline_proof_verify`].
+/// server-side generation. **Not implemented** — see this module's doc
+/// comment for why: `tamga-rust` exposes no local RSA-signing primitive,
+/// and hand-rolling the byte-exact canonical payload a second time in this
+/// crate would reintroduce the exact field-order risk `tamga-rust`'s own
+/// `src/proof.rs` warns against. Most consumers only need
+/// [`tamga_offline_proof_verify`] — proof *generation* is a server-side
+/// concern (`POST .../machines/{id}/actions/generate-offline-proof`),
+/// reachable via `tamga-rust`'s `Client::generate_offline_proof` in the
+/// full (HTTP-capable) SDKs, not this HTTP-free crate.
 ///
 /// # Safety
-/// All pointer parameters must be null or valid NUL-terminated C strings
-/// (`rsa_privkey`'s exact contract TBD). `out_proof_str` must be a valid
-/// pointer this function may write to; on `TAMGA_OK` it receives an owned
-/// string, freed via [`crate::tamga_string_free`].
+/// All pointer parameters must be null or valid NUL-terminated C strings.
+/// `out_proof_str` must be a valid pointer this function may write to.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tamga_offline_proof_generate(
     rsa_privkey: *const c_char,
@@ -114,31 +184,18 @@ pub unsafe extern "C" fn tamga_offline_proof_generate(
     dataset_json: *const c_char,
     out_proof_str: *mut *mut c_char,
 ) -> TamgaErrorCode {
-    // TODO(Section F): wrap in `ffi_guard`/`catch_unwind`. Not yet done.
-    //
-    // TODO(Section E): implement once tamga-rust's v0.1 API is frozen.
-    // MUST reuse the exact same canonical-serialization helper as
-    // `tamga_offline_proof_verify` above -- these two paths can never be
-    // allowed to drift from each other's field ordering, or a proof
-    // generated by this function would fail to verify against itself.
-    let _ = (
-        rsa_privkey,
-        account_id,
-        machine_id,
-        fingerprint,
-        dataset_json,
-        out_proof_str,
-    );
-    crate::set_last_error(
-        "tamga_offline_proof_generate is not implemented yet (see docs/plans/tamga-c.plan.md Section E)",
-    );
-    TamgaErrorCode::TAMGA_ERR_UNKNOWN
+    ffi_guard(|| {
+        let _ = (
+            rsa_privkey,
+            account_id,
+            machine_id,
+            fingerprint,
+            dataset_json,
+            out_proof_str,
+        );
+        crate::set_last_error(
+            "tamga_offline_proof_generate is not implemented: tamga-rust exposes no local RSA-signing primitive (see this module's doc comment in src/offline_proof.rs)",
+        );
+        Err(TamgaErrorCode::TAMGA_ERR_UNKNOWN)
+    })
 }
-
-// TODO(Section E): a single shared canonical-serialization helper, e.g.
-//   fn canonical_proof_json(account_id: &str, machine_id: &str,
-//                            fingerprint: &str, dataset_json: &str) -> String
-// used by both functions above. Not written yet since it depends on
-// tamga-rust's JSON serialization choices (serde_json field order is
-// insertion order for structs, but a raw `dataset_json` re-embed needs
-// care not to silently reformat/reorder the caller-supplied dataset).

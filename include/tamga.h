@@ -333,27 +333,33 @@ void tamga_machine_file_free(struct TamgaMachineFile *handle);
  * exact canonical JSON the server would have signed.
  *
  * # Parameters
- * - `proof_str`: the full `"v1x0.<base64 signature>"` string.
- * - `rsa_pubkey` / (implicit length via NUL or a future explicit-length
- *   param, TBD pending tamga-rust's frozen API): the account's RSA-2048
- *   public key.
- * - `account_id`, `machine_id`, `fingerprint`: the values that must appear
- *   in the canonical signed JSON, as NUL-terminated C strings.
+ * - `proof_str`: the full `"v1x0.<base64 signature>"` string, NUL-terminated.
+ * - `rsa_pubkey` / `rsa_pubkey_len`: the account's RSA-2048 public key as a
+ *   raw `SubjectPublicKeyInfo` DER blob — same convention as
+ *   [`crate::machine_file::tamga_machine_file_verify`]'s RSA pubkey
+ *   parameter (a deviation from the plan's original `*const c_char`
+ *   wording, which didn't specify an encoding; TBD-pending-freeze per
+ *   Section C/D's precedent).
+ * - `account_id`, `machine_id`: UUID strings (NUL-terminated), parsed via
+ *   `uuid::Uuid::parse_str`.
+ * - `fingerprint`: NUL-terminated C string.
  * - `dataset_json`: the client dataset as a NUL-terminated JSON string,
- *   re-serialized internally in the server's exact field order before
- *   verification (see module docs above — field order matters).
+ *   parsed and re-embedded into the canonical payload (see module docs —
+ *   field order matters, and is handled entirely by `tamga-rust`).
  * - `out_valid`: on `TAMGA_OK`, receives whether the proof is valid.
  *   Distinguish "the FFI call itself failed" (non-`TAMGA_OK` return) from
  *   "the call succeeded but the proof is invalid" (`TAMGA_OK` +
  *   `*out_valid == false`) — callers must check both.
  *
  * # Safety
- * All pointer parameters must be null or valid NUL-terminated C strings
- * (`rsa_pubkey`'s exact contract TBD). `out_valid` must be a valid pointer
- * this function may write to.
+ * `proof_str`/`account_id`/`machine_id`/`fingerprint`/`dataset_json` must
+ * be null or valid NUL-terminated C strings. `rsa_pubkey` must point to
+ * `rsa_pubkey_len` readable bytes (or be null). `out_valid` must be a
+ * valid pointer this function may write to.
  */
 enum TamgaErrorCode tamga_offline_proof_verify(const char *proof_str,
-                                               const char *rsa_pubkey,
+                                               const uint8_t *rsa_pubkey,
+                                               uintptr_t rsa_pubkey_len,
                                                const char *account_id,
                                                const char *machine_id,
                                                const char *fingerprint,
@@ -362,15 +368,19 @@ enum TamgaErrorCode tamga_offline_proof_verify(const char *proof_str,
 
 /**
  * Generates a `"v1x0.<base64 signature>"` offline proof, mirroring
- * server-side generation. Intended for air-gapped/test tooling that needs
- * to produce proofs without hitting the API — most consumers only need
- * [`tamga_offline_proof_verify`].
+ * server-side generation. **Not implemented** — see this module's doc
+ * comment for why: `tamga-rust` exposes no local RSA-signing primitive,
+ * and hand-rolling the byte-exact canonical payload a second time in this
+ * crate would reintroduce the exact field-order risk `tamga-rust`'s own
+ * `src/proof.rs` warns against. Most consumers only need
+ * [`tamga_offline_proof_verify`] — proof *generation* is a server-side
+ * concern (`POST .../machines/{id}/actions/generate-offline-proof`),
+ * reachable via `tamga-rust`'s `Client::generate_offline_proof` in the
+ * full (HTTP-capable) SDKs, not this HTTP-free crate.
  *
  * # Safety
- * All pointer parameters must be null or valid NUL-terminated C strings
- * (`rsa_privkey`'s exact contract TBD). `out_proof_str` must be a valid
- * pointer this function may write to; on `TAMGA_OK` it receives an owned
- * string, freed via [`crate::tamga_string_free`].
+ * All pointer parameters must be null or valid NUL-terminated C strings.
+ * `out_proof_str` must be a valid pointer this function may write to.
  */
 enum TamgaErrorCode tamga_offline_proof_generate(const char *rsa_privkey,
                                                  const char *account_id,

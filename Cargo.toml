@@ -44,6 +44,10 @@ tamga_rust = { package = "tamga", path = "../tamga-rust" }
 # models into owned JSON C strings (`tamga_*_get_json`) — no independent
 # JSON handling of our own.
 serde_json = "1"
+# Parses account_id/machine_id C strings into tamga_rust::proof::verify_offline_proof's
+# typed uuid::Uuid parameters. v7-only, matching tamga-rust's own feature set
+# (this SDK/server convention is UUIDv7 everywhere).
+uuid = { version = "1", features = ["v7", "serde"] }
 
 [build-dependencies]
 # NOTE(cbindgen version, RESOLVED): pinned >=0.29, not 0.27 as originally
