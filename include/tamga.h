@@ -99,6 +99,29 @@ typedef enum TamgaErrorCode {
 } TamgaErrorCode;
 
 /**
+ * Signing/key scheme, mirroring the wire `LicenseScheme` strings from
+ * `docs/sdk.md` (License Scheme, Section 10). Present for completeness —
+ * `TAMGA_SCHEME_RSA_2048_JWT_RS256` is never a legal input for machine
+ * files; it must be rejected outright (`422 SCHEME_NOT_SUPPORTED` is what
+ * the server itself does for this scheme at machine-file-checkout time).
+ */
+typedef enum TamgaScheme {
+    /**
+     * Legacy unsigned key string (`LicenseScheme::None` server-side).
+     */
+    TAMGA_SCHEME_NONE = 0,
+    TAMGA_SCHEME_ED25519_SIGN = 1,
+    TAMGA_SCHEME_RSA_2048_PKCS1_SIGN = 2,
+    TAMGA_SCHEME_RSA_2048_PKCS1_PSS_SIGN = 3,
+    TAMGA_SCHEME_ECDSA_P256_SIGN = 4,
+    /**
+     * Explicitly rejected for machine-file verification — see
+     * [`machine_file::tamga_machine_file_verify`].
+     */
+    TAMGA_SCHEME_RSA_2048_JWT_RS256 = 5,
+} TamgaScheme;
+
+/**
  * Opaque handle wrapping a verified/decoded `.lic` license-file payload.
  *
  * Obtained from [`license_file::tamga_license_file_verify`]; must be freed

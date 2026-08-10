@@ -13,15 +13,9 @@ include(cmake/FetchCorrosion.cmake)
 
 # --- Rust crate ------------------------------------------------------------
 # Builds this repo's Cargo.toml ([lib] name = "tamga", crate-type =
-# ["cdylib", "staticlib"]). corrosion registers a CMake target per Cargo lib
-# target, named after `[lib].name` -- i.e. plain `tamga`, NOT this crate's
-# `[package].name` (`tamga-c`).
-#
-# NOTE: this crate's Cargo.toml has a path dependency on ../tamga-rust,
-# which does not exist as a real crate yet (see the plan's BLOCKED banner
-# and Cargo.toml's comments) -- this corrosion_import_crate() call will fail
-# until that's resolved. Scaffolded now so the CMake shape is reviewable
-# ahead of that unblock landing.
+# ["cdylib", "staticlib", "rlib"]). corrosion registers a CMake target per
+# Cargo lib target, named after `[lib].name` -- i.e. plain `tamga`, NOT this
+# crate's `[package].name` (`tamga-c`).
 corrosion_import_crate(MANIFEST_PATH ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml)
 
 # Namespaced ALIAS so downstream consumers always link via

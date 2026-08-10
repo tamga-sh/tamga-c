@@ -1,7 +1,7 @@
 # Builds the example programs against the tamga_c::tamga_c CMake target.
 # Off by default (see the parent CMakeLists.txt's TAMGA_C_BUILD_EXAMPLES
-# option) -- these are illustrative stubs, not yet functional; see each
-# example source file's header comment.
+# option) -- each is a real, working CLI wrapping one FFI entry point; see
+# each example source file's header comment for its usage string.
 
 function(tamga_c_add_example NAME SOURCE)
     add_executable(${NAME} ${SOURCE})

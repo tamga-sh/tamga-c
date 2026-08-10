@@ -43,13 +43,17 @@ tab_width = 4
 line_length = 100
 
 [export]
-# Left empty deliberately: with no include/exclude filters, cbindgen exports
-# every `pub extern "C" fn` and `#[repr(C)]` type it can reach from the
-# crate root, which is exactly what we want while every current export is
-# intentional (Sections B–E of docs/plans/tamga-c.plan.md). Revisit once the
-# crate grows internal-only `#[repr(C)]` helper types that should NOT land
-# in the public header.
-include = []
+# With no include/exclude filters, cbindgen exports every `pub extern "C"
+# fn` and `#[repr(C)]` type it can reach from an exported function's
+# signature. `TamgaScheme` is deliberately NOT accepted as an `extern "C"
+# fn` parameter type anywhere (a C enum has no validity range, so accepting
+# it by value would be undefined behavior on an out-of-range input — see
+# `TamgaScheme::from_raw`'s doc comment in src/lib.rs; every FFI entry point
+# instead takes a raw `u32` and validates it). That means cbindgen can no
+# longer discover `TamgaScheme` on its own — it's force-included below so C
+# callers still get the named `TAMGA_SCHEME_*` constants to pass (as
+# `uint32_t`) instead of only seeing bare integers in the header.
+include = ["TamgaScheme"]
 exclude = []
 
 [parse]

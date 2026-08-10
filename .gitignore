@@ -10,8 +10,10 @@
 
 # CMake build directories (corrosion + the tests/c/ CTest harness +
 # examples/). Multiple possible locations depending on how a consumer
-# configures out-of-tree builds.
+# configures out-of-tree builds. build-asan/ is CLAUDE.md's documented
+# AddressSanitizer build tree (`cmake -S . -B build-asan -DTAMGA_C_ENABLE_ASAN=ON`).
 /build/
+/build-asan/
 tests/c/build/
 examples/build/
 

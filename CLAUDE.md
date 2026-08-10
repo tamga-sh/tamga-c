@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Full task breakdown and status: [`docs/plans/tamga-c.plan.md`](docs/plans/tamga-c.plan.md). Protocol/field-name source of truth for everything this repo touches: [`tamga-api`'s `docs/sdk.md`](/Users/neco/Projects/tamga-api/docs/sdk.md) (Sections 4, 6, 7, 10 specifically — checkout file formats, offline proof, and the `LicenseScheme` enum).
 
-> **UNBLOCKED**: `tamga-rust` Sections A–L are implemented, tested, and security-reviewed (see `../tamga-rust/CLAUDE.md`); `../tamga-rust` resolves as a real crate via the path dependency and everything in this repo builds. Not yet done: an actual `cargo publish` of `tamga-rust` to crates.io (no credentials in this environment — `Cargo.toml` documents the swap-over line for when that happens). Sections C (License Checkout FFI), D (Machine Checkout FFI, all 4 signing schemes + HKDF), E's `tamga_offline_proof_verify`, and F (Memory & Lifecycle) are implemented and have passed a `security-reviewer` pass. `tamga_offline_proof_generate` is a deliberate, documented non-implementation — see the GOTCHAS entry below. Remaining: the C harness (Section G onward — CMake/ASAN/cross-platform matrix are scaffolded but not exercised). See the plan file for the current per-section checklist.
+> **UNBLOCKED**: `tamga-rust` Sections A–L are implemented, tested, and security-reviewed (see `../tamga-rust/CLAUDE.md`); `../tamga-rust` resolves as a real crate via the path dependency and everything in this repo builds. Not yet done: an actual `cargo publish` of `tamga-rust` to crates.io (no credentials in this environment — `Cargo.toml` documents the swap-over line for when that happens). Sections C (License Checkout FFI), D (Machine Checkout FFI, all 4 signing schemes + HKDF), E's `tamga_offline_proof_verify`, F (Memory & Lifecycle, `security-reviewer`-passed), the `tests/c/` CTest harness, and `examples/*.c` are all implemented and verified — including a full CMake+corrosion build and an `-DTAMGA_C_ENABLE_ASAN=ON` run — on macOS x86_64. `tamga_offline_proof_generate` is a deliberate, documented non-implementation — see the GOTCHAS entry below. Remaining: the other 3 platform/arch combinations in Section G's build matrix (this environment only has macOS x86_64 to test against) and a real CI execution (Section I's workflow is scaffolded but has never actually run). See the plan file for the current per-section checklist.
 
 ## Architecture
 
@@ -38,9 +38,9 @@ tamga-c/
 │   ├── memory.rs                 # alloc/free contract tests (Section F)
 │   └── c/
 │       ├── CMakeLists.txt        # CTest registration, ASAN build option
-│       ├── test_license_file.c   # stub CTest file
-│       ├── test_machine_file.c   # stub CTest file
-│       └── test_offline_proof.c  # stub CTest file
+│       ├── test_license_file.c   # real fixture-based CTest, passes under ctest and ASAN
+│       ├── test_machine_file.c   # real fixture-based CTest, passes under ctest and ASAN
+│       └── test_offline_proof.c  # real fixture-based CTest, passes under ctest and ASAN
 ├── examples/
 │   ├── CMakeLists.txt
 │   ├── verify_license.c
