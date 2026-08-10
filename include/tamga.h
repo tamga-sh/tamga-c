@@ -279,14 +279,14 @@ void tamga_license_file_free(struct TamgaLicenseFile *handle);
  * # Parameters
  * - `pem` / `pem_len`: the raw machine-file bytes, PEM markers included.
  * - `scheme`: the license's signing scheme. `TAMGA_SCHEME_RSA_2048_JWT_RS256`
- *   is always rejected with `TAMGA_ERR_UNSUPPORTED_SCHEME`.
+ *   and `TAMGA_SCHEME_NONE` are always rejected with
+ *   `TAMGA_ERR_UNSUPPORTED_SCHEME`.
  * - `pubkey` / `pubkey_len`: the public key matching `scheme` (Ed25519: 32
- *   bytes; RSA-2048: DER-encoded `SubjectPublicKeyInfo` or equivalent,
- *   exact encoding TBD pending tamga-rust's frozen API; ECDSA P-256:
- *   uncompressed point or DER, same caveat).
+ *   bytes; RSA-2048: a `SubjectPublicKeyInfo` DER blob for either RSA
+ *   variant; ECDSA P-256: a 65-byte uncompressed point).
  * - `license_key` / `fingerprint`: required only to decrypt an encrypted
  *   (`aes-256-gcm`) machine file; ignored for plain files. Both are
- *   NUL-terminated C strings.
+ *   NUL-terminated C strings, nullable.
  * - `out_handle`: on `TAMGA_OK`, receives an owned [`TamgaMachineFile`]
  *   handle; free it with [`tamga_machine_file_free`] exactly once.
  *

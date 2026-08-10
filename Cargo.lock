@@ -1567,6 +1567,7 @@ name = "tamga-c"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "aws-lc-rs",
  "base64",
  "cbindgen",
  "ed25519-dalek",

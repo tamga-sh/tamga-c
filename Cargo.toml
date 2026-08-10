@@ -67,3 +67,7 @@ ed25519-dalek = "2"
 aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.22"
+# RSA-2048 (PKCS#1 v1.5 + PSS) and ECDSA P-256 test fixture signing —
+# deliberately NOT the `rsa` crate, same house ban as tamga-rust
+# (RUSTSEC-2023-0071, unpatched Marvin timing attack).
+aws-lc-rs = "1"

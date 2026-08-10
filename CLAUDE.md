@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Full task breakdown and status: [`docs/plans/tamga-c.plan.md`](docs/plans/tamga-c.plan.md). Protocol/field-name source of truth for everything this repo touches: [`tamga-api`'s `docs/sdk.md`](/Users/neco/Projects/tamga-api/docs/sdk.md) (Sections 4, 6, 7, 10 specifically — checkout file formats, offline proof, and the `LicenseScheme` enum).
 
-> **UNBLOCKED**: `tamga-rust` Sections A–L are implemented, tested, and security-reviewed (see `../tamga-rust/CLAUDE.md`); `../tamga-rust` resolves as a real crate via the path dependency and everything in this repo builds. Not yet done: an actual `cargo publish` of `tamga-rust` to crates.io (no credentials in this environment — `Cargo.toml` documents the swap-over line for when that happens). Section C (License Checkout FFI) is implemented; Sections D/E (machine-file, offline-proof FFI) are still `TAMGA_ERR_UNKNOWN` stubs. See the plan file for the current per-section checklist.
+> **UNBLOCKED**: `tamga-rust` Sections A–L are implemented, tested, and security-reviewed (see `../tamga-rust/CLAUDE.md`); `../tamga-rust` resolves as a real crate via the path dependency and everything in this repo builds. Not yet done: an actual `cargo publish` of `tamga-rust` to crates.io (no credentials in this environment — `Cargo.toml` documents the swap-over line for when that happens). Sections C (License Checkout FFI) and D (Machine Checkout FFI, all 4 signing schemes + HKDF) are implemented; Section E (offline-proof FFI) is still a `TAMGA_ERR_UNKNOWN` stub. See the plan file for the current per-section checklist.
 
 ## Architecture
 
@@ -21,9 +21,9 @@ tamga-c/
 ├── src/
 │   ├── lib.rs                    # extern "C" fns, opaque handles, thread-local last-error, catch_unwind pattern
 │   ├── license_file.rs           # tamga_license_file_verify / _get_json / _free — IMPLEMENTED (Section C), catch_unwind wired
-│   ├── machine_file.rs           # tamga_machine_file_verify / _get_json / _free — multi-scheme + HKDF decrypt (Section D, TODO)
+│   ├── machine_file.rs           # tamga_machine_file_verify / _get_json / _free — IMPLEMENTED (Section D), multi-scheme + HKDF decrypt
 │   ├── offline_proof.rs          # tamga_offline_proof_verify / _generate — byte-exact JSON signing (Section E, TODO)
-│   └── kdf.rs                    # tamga_naive_derive_license_file_key IMPLEMENTED; tamga_hkdf_derive_machine_file_key TODO (Section D)
+│   └── kdf.rs                    # both tamga_naive_derive_license_file_key and tamga_hkdf_derive_machine_file_key IMPLEMENTED
 ├── include/
 │   └── tamga.h                   # COMMITTED, cbindgen-generated (cbindgen >=0.29 — see GOTCHAS). CI diffs this for freshness.
 ├── cmake/
