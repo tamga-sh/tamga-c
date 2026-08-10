@@ -1,0 +1,37 @@
+[package]
+name = "tamga-c"
+version = "0.1.0"
+edition = "2024"
+description = "C ABI bindings for the Tamga licensing SDK. Exposes tamga-rust's offline-verification primitives (license-file, machine-file, offline-proof, key derivation) through a stable C ABI."
+license = "MIT"
+repository = "https://github.com/tamga-sh/tamga-c"
+publish = false # GitHub Releases is the v0.1 artifact store, not crates.io — see .github/workflows/release.yml.
+
+# NOTE(rlib-vs-cdylib gotcha, RESOLVED): "rlib" is included alongside
+# cdylib/staticlib specifically so `tests/*.rs` integration tests (Rust's
+# normal `cargo test` mechanism) can link against this crate via
+# `--extern`. This does mean an unused .rlib artifact lands in target/
+# during a release build, but nothing downstream packages or ships it —
+# release.yml's packaging step only picks up the built cdylib/staticlib +
+# include/tamga.h, never scoops up everything under target/. Cargo has no
+# native per-profile crate-type mechanism, so "harmless extra build
+# artifact" is the pragmatic tradeoff versus driving every test through the
+# C ABI instead of native Rust `#[test]`s.
+[lib]
+name = "tamga"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+# Path dependency on the tamga-rust reference implementation (in-repo dev).
+# tamga-rust's Sections A-M are complete and its public API is stable
+# (see ../tamga-rust/docs/plans/tamga-rust.plan.md), but it has not been
+# through an actual `cargo publish` to crates.io in this session — no
+# crates.io credentials/CI run available offline. The path dependency stays
+# the real, resolvable dependency for this repo's own implementation work;
+# swap to the crates.io line below only once a real publish has happened.
+tamga = { path = "../tamga-rust" }
+# Swap to this once tamga-rust 0.1.0 is actually published to crates.io:
+# tamga = "0.1"
+
+[build-dependencies]
+cbindgen = "0.27"

@@ -1,0 +1,14 @@
+# Shared C/C++ style for tests/c/ and examples/.
+# See docs/plans/tamga-c.plan.md Section A / CLAUDE.md — CI runs
+# `clang-format --dry-run --Werror` against these directories.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++17
+IndentWidth: 4
+ColumnLimit: 100
+PointerAlignment: Right
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: false
+BreakBeforeBraces: Attach
+SortIncludes: true
+IncludeBlocks: Preserve

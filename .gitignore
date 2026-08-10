@@ -1,0 +1,19 @@
+# Rust build artifacts.
+#
+# Cargo.lock is intentionally NOT ignored — it should be committed once it
+# can be generated (blocked today: the ../tamga-rust path dependency in
+# Cargo.toml doesn't resolve to a real crate yet, so `cargo generate-lockfile`
+# fails). This is a binary-artifact-producing crate (cdylib/staticlib), not a
+# library meant to be consumed by other Cargo projects, so an intentionally
+# committed lockfile is the right call here, not optional noise.
+/target/
+
+# CMake build directories (corrosion + the tests/c/ CTest harness +
+# examples/). Multiple possible locations depending on how a consumer
+# configures out-of-tree builds.
+/build/
+tests/c/build/
+examples/build/
+
+# macOS
+.DS_Store

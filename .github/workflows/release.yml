@@ -1,0 +1,86 @@
+name: Release
+
+# release-please (release-type: simple) maintains CHANGELOG.md + tags only
+# -- there's no single Cargo.toml version file to bump the way a normal
+# published Rust crate's release-please config would (see
+# docs/plans/tamga-c.plan.md Section 6). On release, cross-compile via
+# build-native.yml (reusable workflow_call), package each target's library
+# + include/tamga.h, and attach everything to the matching GitHub Release.
+#
+# No registry publish for v0.1 -- GitHub Releases IS the artifact store,
+# matching the SDK Index in docs/sdk.md ("GitHub Releases (.so/.dylib/.dll
+# + tamga.h); optional vcpkg/Conan"). The vcpkg/Conan path stays backlog
+# (see vcpkg.json and docs/plans/tamga-c.plan.md Section A) -- no portfile
+# work happens here.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: simple
+
+  build-native:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    uses: ./.github/workflows/build-native.yml
+
+  package-and-attach:
+    needs: [release-please, build-native]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all per-target build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Package per-target archives (.tar.gz Unix / .zip Windows)
+        # TODO: this packaging loop is a scaffold-only sketch -- verify the
+        # actual artifact directory layout `actions/download-artifact@v4`
+        # produces (one dir per `name:` from build-native.yml) once Section
+        # G's cross-compile jobs produce real binaries to test against, and
+        # replace the `case "$name" in *windows*)` OS sniff with something
+        # less brittle if a target naming scheme changes.
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for dir in dist/*/; do
+            name=$(basename "$dir")
+            stage="package/$name"
+            mkdir -p "$stage"
+            cp -r "$dir"/. "$stage/"
+            cp include/tamga.h "$stage/"
+            case "$name" in
+              *windows*)
+                (cd package && zip -r "../out/$name.zip" "$name")
+                ;;
+              *)
+                tar -czf "out/$name.tar.gz" -C package "$name"
+                ;;
+            esac
+          done
+
+      - name: Attach artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: |
+            out/*.tar.gz
+            out/*.zip

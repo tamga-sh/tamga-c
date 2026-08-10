@@ -1,0 +1,84 @@
+name: Build Native
+
+# Reusable workflow_call job: cross-compiles tamga-c's cdylib/staticlib for
+# every release target. Called from release.yml on a `v*` tag push.
+#
+# REUSE POINT: tamga-swift's release workflow will call this workflow once
+# that repo exists, instead of duplicating this cross-compile matrix -- see
+# docs/sdk.md's Architecture section (tamga-swift wraps tamga-c via a
+# Swift/Objective-C bridge) and docs/plans/tamga-c.plan.md Section 6.
+# tamga-swift does not exist yet as of this scaffold (it has its own
+# in-progress repo under tamga-sdk/tamga-swift, but no release workflow
+# depends on this one yet) -- do not delete this comment when it does; wire
+# the actual `uses: tamga-sh/tamga-c/.github/workflows/build-native.yml@...`
+# call from that repo instead.
+
+on:
+  workflow_call: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64-gnu
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            use_cross: true
+          - name: linux-aarch64-gnu
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            use_cross: true
+          - name: macos-x86_64
+            os: macos-14
+            target: x86_64-apple-darwin
+            use_cross: false
+          - name: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+            use_cross: false
+          - name: windows-x86_64-msvc
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            use_cross: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build (cross-rs/cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build (native cargo)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tamga-c-${{ matrix.name }}
+          # Only one of these glob groups matches per target OS; the
+          # others simply find nothing, which is fine with
+          # if-no-files-found: warn below rather than erroring the whole
+          # matrix leg out on an unrelated platform's missing extension.
+          path: |
+            target/${{ matrix.target }}/release/*tamga*.so
+            target/${{ matrix.target }}/release/*tamga*.dylib
+            target/${{ matrix.target }}/release/*tamga*.dll
+            target/${{ matrix.target }}/release/*tamga*.a
+            target/${{ matrix.target }}/release/*tamga*.lib
+          if-no-files-found: warn

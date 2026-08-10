@@ -1,0 +1,13 @@
+# Pinned to the same channel tamga-rust uses, for reproducible builds of the
+# ../tamga-rust path dependency (see Cargo.toml).
+#
+# tamga-rust does not exist as a real crate yet (see the BLOCKED banner in
+# docs/plans/tamga-c.plan.md), so "stable" here is a placeholder assumption
+# consistent with tamga-api's own rust-toolchain.toml (which floats on
+# `stable`, with MSRV 1.94 pinned only advisorily via clippy.toml). Re-check
+# this against tamga-rust's actual rust-toolchain.toml once that repo has
+# one, and pin to the identical channel/version — a mismatch here silently
+# breaks the reproducibility this file exists to guarantee.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
