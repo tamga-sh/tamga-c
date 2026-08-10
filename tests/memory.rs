@@ -1,20 +1,24 @@
-//! Alloc/free contract tests (docs/plans/tamga-c.plan.md Section F). STUB.
+//! Alloc/free contract tests (docs/plans/tamga-c.plan.md Section F).
 //!
-//! See `tests/license_file_verify.rs`'s module docs for the crate-type vs.
-//! `cargo test` linking gotcha that applies equally here.
+//! See `tests/license_file_verify.rs`'s module doc comment for why this
+//! crate's own lib is imported here as `tamga::...`, not `tamga_c::...`.
 //!
-//! Intended test cases once Section F lands:
-//! - calling `tamga_string_free` on a null pointer is a documented no-op,
-//!   not a crash (this one IS already implemented in `src/lib.rs` —
-//!   promote this test out of `#[ignore]` once the crate-type gotcha above
-//!   is resolved and it can actually link)
-//! - double-free is documented as UB, not silently tolerated — kept as an
-//!   ASAN-only negative test, never asserted as "safe" (gate behind the
-//!   same ASAN CTest job tests/c/CMakeLists.txt's `TAMGA_C_ENABLE_ASAN`
-//!   option covers, not a normal `cargo test` run)
+//! Double-free is documented UB, not silently tolerated — deliberately NOT
+//! exercised here as a "safe" negative test. A plain debug `cargo test` run
+//! can appear to "succeed" at a double-free by accident (the allocator
+//! happening not to visibly corrupt anything that run) while still being
+//! undefined behavior; asserting on that outcome would be actively
+//! misleading. Real double-free detection belongs in the ASAN-gated C
+//! harness (`tests/c/CMakeLists.txt`'s `TAMGA_C_ENABLE_ASAN` option,
+//! Section G), which is built specifically to catch it.
+
+use std::ptr;
+
+use tamga::tamga_string_free;
 
 #[test]
-#[ignore = "stub: blocked on the crate-type/rlib gotcha documented in this file's module docs"]
 fn string_free_null_is_noop() {
-    todo!("see docs/plans/tamga-c.plan.md Section F and this file's module docs");
+    // Must not crash; there is no return value or side effect to observe
+    // beyond "the process is still running after this call."
+    unsafe { tamga_string_free(ptr::null_mut()) };
 }

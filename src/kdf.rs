@@ -43,10 +43,14 @@ pub unsafe extern "C" fn tamga_hkdf_derive_machine_file_key(
         // SAFETY: caller contract requires `license_key`/`fingerprint` to
         // be null or valid NUL-terminated C strings.
         let license_key_str = unsafe { crate::cstr_to_str(license_key) }.inspect_err(|_| {
-            crate::set_last_error("tamga_hkdf_derive_machine_file_key: null argument");
+            crate::set_last_error(
+                "tamga_hkdf_derive_machine_file_key: license_key is null or not valid UTF-8",
+            );
         })?;
         let fingerprint_str = unsafe { crate::cstr_to_str(fingerprint) }.inspect_err(|_| {
-            crate::set_last_error("tamga_hkdf_derive_machine_file_key: null argument");
+            crate::set_last_error(
+                "tamga_hkdf_derive_machine_file_key: fingerprint is null or not valid UTF-8",
+            );
         })?;
 
         let key =
@@ -85,7 +89,9 @@ pub unsafe extern "C" fn tamga_naive_derive_license_file_key(
         // SAFETY: caller contract requires `license_key` to be null or a
         // valid NUL-terminated C string.
         let license_key_str = unsafe { crate::cstr_to_str(license_key) }.inspect_err(|_| {
-            crate::set_last_error("tamga_naive_derive_license_file_key: null argument");
+            crate::set_last_error(
+                "tamga_naive_derive_license_file_key: license_key is null or not valid UTF-8",
+            );
         })?;
 
         let key = tamga_rust::crypto::naive_key::derive_license_file_key(license_key_str);

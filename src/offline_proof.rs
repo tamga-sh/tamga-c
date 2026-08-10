@@ -154,9 +154,15 @@ pub unsafe extern "C" fn tamga_offline_proof_verify(
         unsafe {
             *out_valid = result.is_ok();
         }
-        if let Err(err) = &result {
-            crate::set_last_error(err.to_string());
-        }
+        // Deliberately NOT calling set_last_error here even when `result`
+        // is `Err`: an invalid proof is not a call failure — this function
+        // still returns TAMGA_OK, and `tamga_last_error_message`'s
+        // documented contract is "the message behind the last *non-OK*
+        // code." `*out_valid` is the correct, sufficient signal for "the
+        // proof didn't verify"; populating the error message here as well
+        // would make `TAMGA_OK` an exception to its own crate-wide
+        // invariant (see the ffi_guard_tests::success_clears_a_stale_last_error
+        // test in lib.rs, which asserts that invariant generally).
         Ok(())
     })
 }

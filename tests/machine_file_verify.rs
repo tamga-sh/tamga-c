@@ -153,7 +153,7 @@ unsafe fn verify(
         tamga_machine_file_verify(
             pem.as_ptr() as *const i8,
             pem.len(),
-            scheme,
+            scheme as u32,
             pubkey.as_ptr(),
             pubkey.len(),
             license_key_c
@@ -327,6 +327,33 @@ fn scheme_none_is_rejected() {
 }
 
 #[test]
+fn out_of_range_raw_scheme_value_is_rejected() {
+    // `scheme` is a raw u32 at the FFI boundary, not the TamgaScheme enum
+    // type, specifically so a value with no corresponding discriminant
+    // (here: 999, `TamgaScheme::TAMGA_SCHEME_RSA_2048_JWT_RS256` is the
+    // highest at 5) can be validated and rejected instead of producing an
+    // invalid enum value the instant it's loaded into a typed parameter —
+    // see TamgaScheme::from_raw's doc comment in src/lib.rs.
+    let (pubkey, pem) = build_pem(TamgaScheme::TAMGA_SCHEME_ED25519_SIGN, None);
+    let mut handle: *mut tamga::TamgaMachineFile = ptr::null_mut();
+    let pem_c = pem.as_str();
+    let code = unsafe {
+        tamga_machine_file_verify(
+            pem_c.as_ptr() as *const i8,
+            pem_c.len(),
+            999,
+            pubkey.as_ptr(),
+            pubkey.len(),
+            ptr::null(),
+            ptr::null(),
+            &mut handle,
+        )
+    };
+    assert_eq!(code, TamgaErrorCode::TAMGA_ERR_UNSUPPORTED_SCHEME);
+    assert!(handle.is_null());
+}
+
+#[test]
 fn alg_suffix_mismatch_is_rejected() {
     let (pubkey, pem) = build_pem(TamgaScheme::TAMGA_SCHEME_ED25519_SIGN, None);
     let (code, handle) = unsafe {
@@ -366,7 +393,7 @@ fn null_pem_pointer_rejected() {
         tamga_machine_file_verify(
             ptr::null(),
             0,
-            TamgaScheme::TAMGA_SCHEME_ED25519_SIGN,
+            TamgaScheme::TAMGA_SCHEME_ED25519_SIGN as u32,
             pubkey.as_ptr(),
             pubkey.len(),
             ptr::null(),

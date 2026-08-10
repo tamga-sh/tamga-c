@@ -45,6 +45,10 @@ struct MachineFileHandle {
 /// equivalent — it only makes sense for a legacy unsigned *license key*, not
 /// a machine file — so it's rejected here rather than reaching
 /// `verify_machine_file` at all.
+///
+/// Takes an already-validated [`TamgaScheme`] (never a raw `u32`) — see
+/// [`TamgaScheme::from_raw`]'s doc comment for why accepting the enum type
+/// itself directly from a C caller would be undefined behavior.
 fn map_scheme(scheme: TamgaScheme) -> Result<tamga_rust::models::policy::LicenseScheme, ()> {
     use tamga_rust::models::policy::LicenseScheme;
     match scheme {
@@ -99,8 +103,12 @@ fn map_checkout_error(err: tamga_rust::error::CheckoutError) -> TamgaErrorCode {
 ///
 /// # Parameters
 /// - `pem` / `pem_len`: the raw machine-file bytes, PEM markers included.
-/// - `scheme`: the license's signing scheme. `TAMGA_SCHEME_RSA_2048_JWT_RS256`
-///   and `TAMGA_SCHEME_NONE` are always rejected with
+/// - `scheme`: a raw [`TamgaScheme`] discriminant (**not** the enum type
+///   itself — see [`TamgaScheme::from_raw`]'s doc comment for why accepting
+///   `TamgaScheme` by value directly from a C caller would be undefined
+///   behavior; this function validates the value before using it). Any
+///   value outside the declared range, `TAMGA_SCHEME_RSA_2048_JWT_RS256`,
+///   and `TAMGA_SCHEME_NONE` are all rejected with
 ///   `TAMGA_ERR_UNSUPPORTED_SCHEME`.
 /// - `pubkey` / `pubkey_len`: the public key matching `scheme` (Ed25519: 32
 ///   bytes; RSA-2048: a `SubjectPublicKeyInfo` DER blob for either RSA
@@ -120,7 +128,7 @@ fn map_checkout_error(err: tamga_rust::error::CheckoutError) -> TamgaErrorCode {
 pub unsafe extern "C" fn tamga_machine_file_verify(
     pem: *const c_char,
     pem_len: usize,
-    scheme: TamgaScheme,
+    scheme: u32,
     pubkey: *const u8,
     pubkey_len: usize,
     license_key: *const c_char,
@@ -141,6 +149,10 @@ pub unsafe extern "C" fn tamga_machine_file_verify(
             return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
         }
 
+        let scheme = TamgaScheme::from_raw(scheme).ok_or_else(|| {
+            crate::set_last_error("tamga_machine_file_verify: scheme is not a recognized value");
+            TamgaErrorCode::TAMGA_ERR_UNSUPPORTED_SCHEME
+        })?;
         let scheme_rust = map_scheme(scheme).map_err(|()| {
             crate::set_last_error(
                 "tamga_machine_file_verify: TAMGA_SCHEME_NONE has no machine-file equivalent",
@@ -251,11 +263,13 @@ pub unsafe extern "C" fn tamga_machine_file_get_json(
 /// behavior and intentionally unguarded.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tamga_machine_file_free(handle: *mut TamgaMachineFile) {
-    if handle.is_null() {
-        return;
-    }
-    // SAFETY: caller contract (documented above) requires `handle` to be a
-    // live pointer previously returned by `tamga_machine_file_verify` and
-    // not already freed.
-    drop(unsafe { Box::from_raw(handle as *mut MachineFileHandle) });
+    crate::ffi_guard_void(|| {
+        if handle.is_null() {
+            return;
+        }
+        // SAFETY: caller contract (documented above) requires `handle` to
+        // be a live pointer previously returned by
+        // `tamga_machine_file_verify` and not already freed.
+        drop(unsafe { Box::from_raw(handle as *mut MachineFileHandle) });
+    })
 }

@@ -89,35 +89,14 @@ typedef enum TamgaErrorCode {
      */
     TAMGA_ERR_PANIC = 8,
     /**
-     * Unclassified/internal error — a stub-only value while Sections C–F
-     * are unimplemented (see module docs above); should shrink toward zero
-     * call sites as those sections land.
+     * Unclassified/internal error. Returned today by
+     * [`offline_proof::tamga_offline_proof_generate`] (deliberately
+     * unimplemented — see that function's doc comment) and by a small
+     * number of genuinely uncommon error paths (e.g. decoded JSON
+     * containing an interior NUL byte) that don't warrant a dedicated code.
      */
     TAMGA_ERR_UNKNOWN = 9,
 } TamgaErrorCode;
-
-/**
- * Signing/key scheme, mirroring the wire `LicenseScheme` strings from
- * `docs/sdk.md` (License Scheme, Section 10). Present for completeness —
- * `TAMGA_SCHEME_RSA_2048_JWT_RS256` is never a legal input for machine
- * files; it must be rejected outright (`422 SCHEME_NOT_SUPPORTED` is what
- * the server itself does for this scheme at machine-file-checkout time).
- */
-typedef enum TamgaScheme {
-    /**
-     * Legacy unsigned key string (`LicenseScheme::None` server-side).
-     */
-    TAMGA_SCHEME_NONE = 0,
-    TAMGA_SCHEME_ED25519_SIGN = 1,
-    TAMGA_SCHEME_RSA_2048_PKCS1_SIGN = 2,
-    TAMGA_SCHEME_RSA_2048_PKCS1_PSS_SIGN = 3,
-    TAMGA_SCHEME_ECDSA_P256_SIGN = 4,
-    /**
-     * Explicitly rejected for machine-file verification — see
-     * [`machine_file::tamga_machine_file_verify`].
-     */
-    TAMGA_SCHEME_RSA_2048_JWT_RS256 = 5,
-} TamgaScheme;
 
 /**
  * Opaque handle wrapping a verified/decoded `.lic` license-file payload.
@@ -159,7 +138,18 @@ extern "C" {
  * This is the one convention picked for error-string ownership across this
  * crate, per Section F of `docs/plans/tamga-c.plan.md` — every error path
  * must populate [`LAST_ERROR`] via [`set_last_error`] so this accessor
- * stays meaningful.
+ * stays meaningful. `TAMGA_OK` always implies this returns null on the
+ * calling thread, with no exceptions — including
+ * [`offline_proof::tamga_offline_proof_verify`], whose `*out_valid`
+ * out-param (not this accessor) is the correct signal for "the proof
+ * didn't verify," which is not itself a call failure.
+ *
+ * Does not go through [`ffi_guard`] — `ffi_guard` clears the last-error
+ * message on entry, which would make this specific accessor erase the very
+ * value it's about to return. Instead wraps its (currently infallible)
+ * body directly in [`panic::catch_unwind`] so a future change here still
+ * can't unwind across the FFI boundary, without the clear-on-entry
+ * behavior that would defeat this function's entire purpose.
  */
 const char *tamga_last_error_message(void);
 
@@ -278,8 +268,12 @@ void tamga_license_file_free(struct TamgaLicenseFile *handle);
  *
  * # Parameters
  * - `pem` / `pem_len`: the raw machine-file bytes, PEM markers included.
- * - `scheme`: the license's signing scheme. `TAMGA_SCHEME_RSA_2048_JWT_RS256`
- *   and `TAMGA_SCHEME_NONE` are always rejected with
+ * - `scheme`: a raw [`TamgaScheme`] discriminant (**not** the enum type
+ *   itself — see [`TamgaScheme::from_raw`]'s doc comment for why accepting
+ *   `TamgaScheme` by value directly from a C caller would be undefined
+ *   behavior; this function validates the value before using it). Any
+ *   value outside the declared range, `TAMGA_SCHEME_RSA_2048_JWT_RS256`,
+ *   and `TAMGA_SCHEME_NONE` are all rejected with
  *   `TAMGA_ERR_UNSUPPORTED_SCHEME`.
  * - `pubkey` / `pubkey_len`: the public key matching `scheme` (Ed25519: 32
  *   bytes; RSA-2048: a `SubjectPublicKeyInfo` DER blob for either RSA
@@ -298,7 +292,7 @@ void tamga_license_file_free(struct TamgaLicenseFile *handle);
  */
 enum TamgaErrorCode tamga_machine_file_verify(const char *pem,
                                               uintptr_t pem_len,
-                                              enum TamgaScheme scheme,
+                                              uint32_t scheme,
                                               const uint8_t *pubkey,
                                               uintptr_t pubkey_len,
                                               const char *license_key,

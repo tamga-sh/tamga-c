@@ -13,29 +13,33 @@
 //!
 //! 1. Verify (and decode) a `.lic` license file — [`license_file`].
 //! 2. Verify (and decode) a machine file, across 4 signing schemes — [`machine_file`].
-//! 3. Verify — and, for air-gapped tooling, generate — a machine offline proof — [`offline_proof`].
+//! 3. Verify a machine offline proof — [`offline_proof`]. (Local *generation*
+//!    is deliberately unimplemented — `tamga-rust` has no signing primitive
+//!    to delegate to; see that module's doc comment.)
 //! 4. Derive the two AES keys those file formats depend on — [`kdf`].
 //!
-//! # STUB — scaffolding only
+//! # Status
 //!
-//! Every `extern "C" fn` in this crate and its submodules currently returns
-//! [`TamgaErrorCode::TAMGA_ERR_UNKNOWN`] (or is left as a bare signature)
-//! rather than doing real work. This crate is blocked on `tamga-rust`'s
-//! public API being frozen — see the plan's top-of-file banner. Real
-//! implementation is deferred to a future session per
-//! `docs/plans/tamga-c.plan.md` Sections C–F.
+//! Sections C (license-file FFI), D (machine-file FFI), and E's
+//! `tamga_offline_proof_verify` are implemented, delegating all
+//! cryptographic logic to `tamga-rust`'s already security-reviewed
+//! `checkout`/`proof`/`crypto` modules — this crate is a marshalling layer,
+//! not a second implementation. `tamga_offline_proof_generate` remains
+//! unimplemented by design (see [`offline_proof`]'s module doc comment).
+//! Section F (memory/lifecycle) is in progress; see
+//! `docs/plans/tamga-c.plan.md` for the current per-item checklist.
 //!
 //! # The `catch_unwind` rule
 //!
-//! Every `pub extern "C" fn` in this crate MUST wrap its body in
-//! [`std::panic::catch_unwind`] (via the [`ffi_guard`] helper below),
+//! Every `pub extern "C" fn` in this crate wraps its body in
+//! [`std::panic::catch_unwind`] via the [`ffi_guard`] helper below,
 //! converting a caught panic into [`TamgaErrorCode::TAMGA_ERR_PANIC`] plus a
 //! last-error message instead of unwinding across the FFI boundary —
-//! unwinding a Rust panic into C is undefined behavior. [`license_file::tamga_license_file_verify`]
-//! is the canonical reference implementation of this pattern; every other
-//! FFI entry point is `TODO`-marked until it copies the same shape (Section
-//! F of the plan — `security-reviewer` is mandatory on that section before
-//! merge).
+//! unwinding a Rust panic into C is undefined behavior.
+//! [`license_file::tamga_license_file_verify`] is the reference
+//! implementation of this pattern; every other exported function copies the
+//! same shape. See [`ffi_guard`]'s own unit tests for the mechanism proven
+//! against a deliberately panicking closure.
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char};
@@ -84,9 +88,11 @@ pub enum TamgaErrorCode {
     /// A Rust panic was caught at the FFI boundary via [`ffi_guard`] instead
     /// of unwinding into the caller.
     TAMGA_ERR_PANIC = 8,
-    /// Unclassified/internal error — a stub-only value while Sections C–F
-    /// are unimplemented (see module docs above); should shrink toward zero
-    /// call sites as those sections land.
+    /// Unclassified/internal error. Returned today by
+    /// [`offline_proof::tamga_offline_proof_generate`] (deliberately
+    /// unimplemented — see that function's doc comment) and by a small
+    /// number of genuinely uncommon error paths (e.g. decoded JSON
+    /// containing an interior NUL byte) that don't warrant a dedicated code.
     TAMGA_ERR_UNKNOWN = 9,
 }
 
@@ -110,6 +116,72 @@ pub enum TamgaScheme {
     TAMGA_SCHEME_RSA_2048_JWT_RS256 = 5,
 }
 
+impl TamgaScheme {
+    /// Validates a raw C-side scheme value against the known discriminants.
+    ///
+    /// `TamgaScheme` is never accepted as an `extern "C" fn` **parameter
+    /// type** directly — a C `enum` has no validity range (it's just an
+    /// `int` at the ABI level), so a caller passing an out-of-range value
+    /// (a stale header, a buggy binding, corrupted memory) would produce a
+    /// Rust value violating `TamgaScheme`'s enum-validity invariant the
+    /// instant it's loaded into a typed parameter — undefined behavior
+    /// before any of this crate's own defensive code even runs. Every FFI
+    /// entry point that takes a scheme instead takes a plain `u32` and
+    /// converts it through this fallible function first (see
+    /// [`machine_file::tamga_machine_file_verify`]).
+    pub(crate) fn from_raw(raw: u32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::TAMGA_SCHEME_NONE),
+            1 => Some(Self::TAMGA_SCHEME_ED25519_SIGN),
+            2 => Some(Self::TAMGA_SCHEME_RSA_2048_PKCS1_SIGN),
+            3 => Some(Self::TAMGA_SCHEME_RSA_2048_PKCS1_PSS_SIGN),
+            4 => Some(Self::TAMGA_SCHEME_ECDSA_P256_SIGN),
+            5 => Some(Self::TAMGA_SCHEME_RSA_2048_JWT_RS256),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tamga_scheme_tests {
+    use super::*;
+
+    #[test]
+    fn from_raw_accepts_every_declared_discriminant() {
+        assert_eq!(
+            TamgaScheme::from_raw(0),
+            Some(TamgaScheme::TAMGA_SCHEME_NONE)
+        );
+        assert_eq!(
+            TamgaScheme::from_raw(1),
+            Some(TamgaScheme::TAMGA_SCHEME_ED25519_SIGN)
+        );
+        assert_eq!(
+            TamgaScheme::from_raw(2),
+            Some(TamgaScheme::TAMGA_SCHEME_RSA_2048_PKCS1_SIGN)
+        );
+        assert_eq!(
+            TamgaScheme::from_raw(3),
+            Some(TamgaScheme::TAMGA_SCHEME_RSA_2048_PKCS1_PSS_SIGN)
+        );
+        assert_eq!(
+            TamgaScheme::from_raw(4),
+            Some(TamgaScheme::TAMGA_SCHEME_ECDSA_P256_SIGN)
+        );
+        assert_eq!(
+            TamgaScheme::from_raw(5),
+            Some(TamgaScheme::TAMGA_SCHEME_RSA_2048_JWT_RS256)
+        );
+    }
+
+    #[test]
+    fn from_raw_rejects_values_outside_the_declared_range() {
+        assert_eq!(TamgaScheme::from_raw(6), None);
+        assert_eq!(TamgaScheme::from_raw(999), None);
+        assert_eq!(TamgaScheme::from_raw(u32::MAX), None);
+    }
+}
+
 /// Opaque handle wrapping a verified/decoded `.lic` license-file payload.
 ///
 /// Obtained from [`license_file::tamga_license_file_verify`]; must be freed
@@ -117,11 +189,12 @@ pub enum TamgaScheme {
 #[repr(C)]
 pub struct TamgaLicenseFile {
     _private: [u8; 0],
-    // TODO(Section C): the real decoded LicenseResource JSON (or a parsed
-    // representation of it) lives here once src/license_file.rs's verify
-    // path is implemented. Kept as a genuinely zero-sized opaque type for
-    // now so cbindgen emits a valid incomplete-type forward declaration
-    // without leaking field layout to C callers ahead of the real design.
+    // Genuinely zero-sized and opaque by design: cbindgen emits a valid
+    // incomplete-type forward declaration without leaking field layout to C
+    // callers. The real payload (decoded LicenseResource JSON) lives behind
+    // this pointer as a private, non-`#[repr(C)]` `LicenseFileHandle` in
+    // license_file.rs, reached only via pointer cast — callers must never
+    // introspect this type's layout.
 }
 
 /// Opaque handle wrapping a verified/decoded machine-file payload.
@@ -131,8 +204,8 @@ pub struct TamgaLicenseFile {
 #[repr(C)]
 pub struct TamgaMachineFile {
     _private: [u8; 0],
-    // TODO(Section D): see TamgaLicenseFile's TODO — same story, decoded
-    // MachineResource JSON instead of LicenseResource.
+    // Same pattern as TamgaLicenseFile — see its doc comment. The real
+    // payload is a private `MachineFileHandle` in machine_file.rs.
 }
 
 /// Opaque handle for a parsed `v1x0.<sig>` offline proof plus its
@@ -195,13 +268,27 @@ pub(crate) fn clear_last_error() {
 /// This is the one convention picked for error-string ownership across this
 /// crate, per Section F of `docs/plans/tamga-c.plan.md` — every error path
 /// must populate [`LAST_ERROR`] via [`set_last_error`] so this accessor
-/// stays meaningful.
+/// stays meaningful. `TAMGA_OK` always implies this returns null on the
+/// calling thread, with no exceptions — including
+/// [`offline_proof::tamga_offline_proof_verify`], whose `*out_valid`
+/// out-param (not this accessor) is the correct signal for "the proof
+/// didn't verify," which is not itself a call failure.
+///
+/// Does not go through [`ffi_guard`] — `ffi_guard` clears the last-error
+/// message on entry, which would make this specific accessor erase the very
+/// value it's about to return. Instead wraps its (currently infallible)
+/// body directly in [`panic::catch_unwind`] so a future change here still
+/// can't unwind across the FFI boundary, without the clear-on-entry
+/// behavior that would defeat this function's entire purpose.
 #[unsafe(no_mangle)]
 pub extern "C" fn tamga_last_error_message() -> *const c_char {
-    LAST_ERROR.with(|slot| match slot.borrow().as_ref() {
-        Some(cstring) => cstring.as_ptr(),
-        None => std::ptr::null(),
-    })
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        LAST_ERROR.with(|slot| match slot.borrow().as_ref() {
+            Some(cstring) => cstring.as_ptr(),
+            None => std::ptr::null(),
+        })
+    }))
+    .unwrap_or(std::ptr::null())
 }
 
 /// Frees a string previously returned as an **owned** pointer by this
@@ -219,13 +306,15 @@ pub extern "C" fn tamga_last_error_message() -> *const c_char {
 /// CLAUDE.md.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tamga_string_free(ptr: *mut c_char) {
-    if ptr.is_null() {
-        return;
-    }
-    // SAFETY: caller contract (documented above and in tamga.h) requires
-    // `ptr` to be a pointer this library previously returned via
-    // `CString::into_raw` and not already freed.
-    drop(unsafe { CString::from_raw(ptr) });
+    ffi_guard_void(|| {
+        if ptr.is_null() {
+            return;
+        }
+        // SAFETY: caller contract (documented above and in tamga.h)
+        // requires `ptr` to be a pointer this library previously returned
+        // via `CString::into_raw` and not already freed.
+        drop(unsafe { CString::from_raw(ptr) });
+    })
 }
 
 /// Shared UTF-8 validation + null-check helper for every `*const c_char`
@@ -243,17 +332,16 @@ pub(crate) unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, Tamg
     unsafe { CStr::from_ptr(ptr) }
         .to_str()
         .map_err(|_| TamgaErrorCode::TAMGA_ERR_INVALID_JSON)
-    // TODO(Section B): TAMGA_ERR_INVALID_JSON is a placeholder mapping for
-    // "argument was not valid UTF-8" — it's not really a JSON error. Add a
-    // dedicated code (or repurpose TAMGA_ERR_UNKNOWN) once real call sites
-    // in Sections C/D/E exist and this stops being purely theoretical.
+    // NOTE: TAMGA_ERR_INVALID_JSON is a placeholder mapping for "argument
+    // was not valid UTF-8" — it's not really a JSON error. Every call site
+    // in Sections C/D/E immediately overwrites the last-error message with
+    // a more specific one via `.inspect_err(...)`, so the coarse code here
+    // is only ever seen by a caller who ignores `tamga_last_error_message`.
+    // Not worth a dedicated code for that case alone.
 }
 
-/// Canonical `catch_unwind` reference pattern — every `extern "C" fn` in
-/// this crate must wrap its body in this (or an equivalent) once
-/// implemented. See [`license_file::tamga_license_file_verify`] for the one
-/// FFI entry point that already does this; every other exported function
-/// is `TODO`-marked to receive the same treatment (Section F).
+/// Canonical `catch_unwind` wrapper every `extern "C" fn` in this crate
+/// calls its body through.
 ///
 /// Clears the calling thread's last-error message, runs `f` under
 /// [`panic::catch_unwind`], and converts:
@@ -264,6 +352,17 @@ pub(crate) unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, Tamg
 /// - `Err(_)` (a caught panic) → [`TamgaErrorCode::TAMGA_ERR_PANIC`], with a
 ///   generic last-error message (the panic payload itself is not
 ///   necessarily `Send`/coherent to stringify safely in every case)
+///
+/// No production code path inside this crate is expected to ever actually
+/// panic — every fallible step (parsing, verification, decryption) returns
+/// a typed `Result` instead. This wrapper exists as defense-in-depth against
+/// an unexpected panic (a future `tamga-rust` regression, an unreachable!()
+/// that turns out reachable, an allocation failure) still being memory-safe
+/// to propagate to a C caller, per this crate's `catch_unwind` rule (see
+/// module doc comment). Its own correctness — that it really does catch and
+/// convert a panic rather than let it unwind — is proven directly below
+/// against a deliberately panicking closure, since no real call site can
+/// exercise that path by design.
 pub(crate) fn ffi_guard<F>(f: F) -> TamgaErrorCode
 where
     F: FnOnce() -> Result<(), TamgaErrorCode>,
@@ -278,5 +377,79 @@ where
             );
             TamgaErrorCode::TAMGA_ERR_PANIC
         }
+    }
+}
+
+/// [`ffi_guard`]'s counterpart for `extern "C" fn`s with no return value —
+/// the `tamga_*_free` functions and [`tamga_string_free`]. There is no
+/// `TamgaErrorCode` slot to report a caught panic through (the function
+/// signature is `-> ()`), so a caught panic here is silently swallowed
+/// after being converted to a last-error message on a best-effort basis —
+/// the point is solely to prevent the panic from unwinding across the FFI
+/// boundary (undefined behavior), not to report it. A free function
+/// panicking at all already means a caller violated its documented pointer
+/// contract (a live, correctly-typed, not-already-freed pointer); this is
+/// the difference between "caller bug turns into memory corruption" and
+/// "caller bug turns into a memory-safe no-op."
+pub(crate) fn ffi_guard_void<F>(f: F)
+where
+    F: FnOnce(),
+{
+    if panic::catch_unwind(AssertUnwindSafe(f)).is_err() {
+        set_last_error(
+            "internal panic caught at the FFI boundary in a free function (see tamga_last_error_message)",
+        );
+    }
+}
+
+#[cfg(test)]
+mod ffi_guard_tests {
+    use super::*;
+
+    #[test]
+    fn catches_a_panic_and_returns_tamga_err_panic() {
+        let code = ffi_guard(|| panic!("boom"));
+        assert_eq!(code, TamgaErrorCode::TAMGA_ERR_PANIC);
+    }
+
+    #[test]
+    fn a_caught_panic_populates_the_last_error_message() {
+        ffi_guard(|| panic!("boom"));
+        let ptr = tamga_last_error_message();
+        assert!(!ptr.is_null());
+        // SAFETY: ffi_guard just populated LAST_ERROR on this thread via
+        // set_last_error, which always produces a valid NUL-terminated
+        // CString.
+        let msg = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        assert!(msg.contains("panic"));
+    }
+
+    #[test]
+    fn success_clears_a_stale_last_error_from_an_earlier_call_on_the_same_thread() {
+        ffi_guard(|| panic!("leave a stale message"));
+        let code = ffi_guard(|| Ok(()));
+        assert_eq!(code, TamgaErrorCode::TAMGA_OK);
+        assert!(tamga_last_error_message().is_null());
+    }
+
+    #[test]
+    fn typed_error_passes_through_unchanged() {
+        let code = ffi_guard(|| Err(TamgaErrorCode::TAMGA_ERR_INVALID_PEM));
+        assert_eq!(code, TamgaErrorCode::TAMGA_ERR_INVALID_PEM);
+    }
+
+    #[test]
+    fn void_guard_catches_a_panic_without_unwinding_out() {
+        // The only observable success criterion is "this test function
+        // itself doesn't panic" — ffi_guard_void has no return value to
+        // assert on, by design (see its doc comment).
+        ffi_guard_void(|| panic!("boom"));
+    }
+
+    #[test]
+    fn void_guard_runs_a_non_panicking_closure_normally() {
+        let mut ran = false;
+        ffi_guard_void(|| ran = true);
+        assert!(ran);
     }
 }

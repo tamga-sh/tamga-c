@@ -214,11 +214,13 @@ pub unsafe extern "C" fn tamga_license_file_get_json(
 /// applied to strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tamga_license_file_free(handle: *mut TamgaLicenseFile) {
-    if handle.is_null() {
-        return;
-    }
-    // SAFETY: caller contract (documented above) requires `handle` to be a
-    // live pointer previously returned by `tamga_license_file_verify` and
-    // not already freed.
-    drop(unsafe { Box::from_raw(handle as *mut LicenseFileHandle) });
+    crate::ffi_guard_void(|| {
+        if handle.is_null() {
+            return;
+        }
+        // SAFETY: caller contract (documented above) requires `handle` to
+        // be a live pointer previously returned by
+        // `tamga_license_file_verify` and not already freed.
+        drop(unsafe { Box::from_raw(handle as *mut LicenseFileHandle) });
+    })
 }
