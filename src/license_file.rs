@@ -1,15 +1,11 @@
 //! `tamga_license_file_verify` / `_get_json` / `_free` — Section C of
 //! `docs/plans/tamga-c.plan.md` ("License Checkout FFI").
 //!
-//! # STUB — scaffolding only
-//!
-//! [`tamga_license_file_verify`] is the canonical `catch_unwind` reference
-//! implementation (see [`crate::ffi_guard`]'s docs) — every other `extern
-//! "C" fn` in this crate copies its shape once implemented. Its body
-//! currently always returns [`TamgaErrorCode::TAMGA_ERR_UNKNOWN`] rather
-//! than doing real work; [`tamga_license_file_get_json`] and
-//! [`tamga_license_file_free`] are `TODO`-marked and don't even use
-//! `ffi_guard` yet.
+//! This module is a thin FFI marshalling layer over `tamga-rust`'s already
+//! security-reviewed `checkout::license_file::verify_license_file` — no
+//! cryptographic logic is reimplemented here. All of the base64-string-vs-
+//! decoded-bytes / naive-key-derivation gotchas live (and are tested) on
+//! the `tamga-rust` side; see `../tamga-rust/src/checkout/license_file.rs`.
 //!
 //! # `.lic` file format (from `docs/sdk.md` §4 / plan §3.1)
 //!
@@ -19,81 +15,152 @@
 //! -----END LICENSE FILE-----
 //! ```
 //!
-//! - `alg` is exactly `"base64+ed25519"` (plain) or `"aes-256-gcm+ed25519"`
-//!   (encrypted) — **Ed25519 only**, independent of the license's own key
-//!   `scheme` field. Any other value is `TAMGA_ERR_UNSUPPORTED_SCHEME`.
-//! - `enc` (plain): `base64(payload_json)`, `payload_json = {"data": <LicenseResource>}`.
-//! - `enc` (encrypted): `base64(nonce(12B) ‖ ciphertext ‖ tag(16B))`, AES-256-GCM.
-//! - ⚠️ Key derivation is **not a KDF**: `license.key`'s raw UTF-8 bytes,
-//!   zero-padded/truncated to exactly 32 bytes (see [`crate::kdf`]).
-//! - ⚠️ **The single most common implementation mistake in this format**:
-//!   the signature is computed over `enc`'s base64 **string** — its
-//!   ASCII/UTF-8 bytes as text — NOT the bytes you get from base64-decoding
-//!   it. Get this backwards and every file silently fails verification.
-//!   Verify the signature *before* base64-decoding `enc` at all.
+//! `alg` is exactly `"base64+ed25519"` (plain) or `"aes-256-gcm+ed25519"`
+//! (encrypted) — Ed25519 only, independent of the license's own key
+//! `scheme` field.
+//!
+//! ⚠️ **Signature ABI deviation from the plan's original checklist**: the
+//! plan's Section C listed `tamga_license_file_verify(pem, pem_len,
+//! ed25519_pubkey, out_handle)` with no `license_key` parameter — but
+//! `tamga-rust`'s `verify_license_file` requires `license_key: Option<&str>`
+//! to decrypt an **encrypted** (`aes-256-gcm+ed25519`) file. The plan's own
+//! banner marked this signature "exact upstream signature TBD pending the
+//! v0.1 freeze" — this was a genuine gap, not a settled design, so a
+//! `license_key: *const c_char` parameter (nullable — required only for
+//! encrypted files) was added here to make the function actually usable for
+//! its stated purpose.
 
-use std::ffi::c_char;
+use std::ffi::{CString, c_char};
+use std::slice;
 
 use crate::{TamgaErrorCode, TamgaLicenseFile, ffi_guard};
 
-/// Verifies and decodes a `.lic` license file.
+/// Internal handle payload behind the opaque [`TamgaLicenseFile`] pointer.
+/// Not `#[repr(C)]`, never exposed to cbindgen — callers only ever see the
+/// zero-sized `TamgaLicenseFile` tag type via an opaque pointer they must
+/// treat as unintrospectable.
+struct LicenseFileHandle {
+    /// The decoded `LicenseResource`, pre-serialized to JSON at verify time
+    /// so [`tamga_license_file_get_json`] never needs to re-derive it (or
+    /// hold a borrow across the FFI boundary).
+    json: String,
+}
+
+/// Converts a `checkout` verification failure into the matching
+/// [`TamgaErrorCode`] and records the detailed message via
+/// [`crate::set_last_error`].
+fn map_checkout_error(err: tamga_rust::error::CheckoutError) -> TamgaErrorCode {
+    use tamga_rust::error::{CheckoutError, CryptoError};
+    let code = match &err {
+        CheckoutError::MalformedPem => TamgaErrorCode::TAMGA_ERR_INVALID_PEM,
+        CheckoutError::InvalidBase64 => TamgaErrorCode::TAMGA_ERR_INVALID_BASE64,
+        CheckoutError::InvalidJson(_) => TamgaErrorCode::TAMGA_ERR_INVALID_JSON,
+        CheckoutError::UnsupportedAlgorithm(_) => TamgaErrorCode::TAMGA_ERR_UNSUPPORTED_SCHEME,
+        CheckoutError::LicenseKeyMissing | CheckoutError::FingerprintMissing => {
+            TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT
+        }
+        CheckoutError::SchemeNotSupported => TamgaErrorCode::TAMGA_ERR_UNSUPPORTED_SCHEME,
+        CheckoutError::TtlOutOfRange(_) => TamgaErrorCode::TAMGA_ERR_UNKNOWN,
+        CheckoutError::Crypto(CryptoError::VerificationFailed) => {
+            TamgaErrorCode::TAMGA_ERR_SIGNATURE_INVALID
+        }
+        CheckoutError::Crypto(CryptoError::DecryptionFailed) => {
+            TamgaErrorCode::TAMGA_ERR_DECRYPTION_FAILED
+        }
+        CheckoutError::Crypto(CryptoError::InvalidKey | CryptoError::InvalidSignature) => {
+            TamgaErrorCode::TAMGA_ERR_SIGNATURE_INVALID
+        }
+    };
+    crate::set_last_error(err.to_string());
+    code
+}
+
+/// Verifies and decodes a `.lic` license file, fully offline, by delegating
+/// to `tamga-rust`'s `checkout::license_file::verify_license_file`.
 ///
 /// # Parameters
 /// - `pem` / `pem_len`: the raw `.lic` file bytes, PEM markers included.
+///   Need not be NUL-terminated; `pem_len` is authoritative.
 /// - `ed25519_pubkey`: the account's 32-byte Ed25519 public key.
+/// - `license_key`: NUL-terminated C string, or null. Required (non-null)
+///   only when the file's `alg` is `"aes-256-gcm+ed25519"` (encrypted);
+///   ignored for `"base64+ed25519"` (plain) files.
 /// - `out_handle`: on `TAMGA_OK`, receives an owned [`TamgaLicenseFile`]
 ///   handle; free it with [`tamga_license_file_free`] exactly once.
 ///
 /// # Safety
 /// `pem` must point to `pem_len` readable bytes (or be null, checked
 /// internally). `ed25519_pubkey` must point to 32 readable bytes (or be
-/// null). `out_handle` must be a valid pointer to a `*mut TamgaLicenseFile`
+/// null). `license_key`, if non-null, must be a valid NUL-terminated C
+/// string. `out_handle` must be a valid pointer to a `*mut TamgaLicenseFile`
 /// that this function may write to.
 ///
 /// This is the canonical `catch_unwind` reference implementation described
 /// in [`crate::ffi_guard`]'s docs — every other `extern "C" fn` in this
-/// crate MUST copy this shape once implemented (Section F; unwinding a Rust
-/// panic across an `extern "C"` boundary is undefined behavior).
+/// crate copies this shape (Section F; unwinding a Rust panic across an
+/// `extern "C"` boundary is undefined behavior).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tamga_license_file_verify(
     pem: *const c_char,
     pem_len: usize,
     ed25519_pubkey: *const u8,
+    license_key: *const c_char,
     out_handle: *mut *mut TamgaLicenseFile,
 ) -> TamgaErrorCode {
     ffi_guard(|| {
-        // TODO(Section C): implement the real verify flow once tamga-rust's
-        // v0.1 API is frozen (exact upstream signature TBD, see this repo's
-        // BLOCKED banner):
-        //   1. null-check pem / ed25519_pubkey / out_handle
-        //      (TAMGA_ERR_NULL_ARGUMENT)
-        //   2. strip "-----BEGIN LICENSE FILE-----" / "-----END LICENSE
-        //      FILE-----" markers (TAMGA_ERR_INVALID_PEM on mismatch)
-        //   3. base64-decode the PEM body -> {enc, sig, alg} JSON
-        //      (TAMGA_ERR_INVALID_BASE64 / TAMGA_ERR_INVALID_JSON)
-        //   4. validate alg is exactly "base64+ed25519" or
-        //      "aes-256-gcm+ed25519" (TAMGA_ERR_UNSUPPORTED_SCHEME
-        //      otherwise — this format is Ed25519-only regardless of the
-        //      license's own `scheme` field)
-        //   5. base64-decode `sig` to the raw 64-byte signature
-        //   6. Ed25519-verify `sig` against `enc`'s ASCII/UTF-8 STRING
-        //      bytes -- NOT its base64-decoded bytes (see module docs
-        //      above). TAMGA_ERR_SIGNATURE_INVALID on failure.
-        //   7. only AFTER the signature check passes, base64-decode `enc`
-        //      itself
-        //   8. if alg contains "aes-256-gcm": split nonce(12B) / ciphertext
-        //      / tag(16B), derive the AES key via
-        //      kdf::naive_derive_license_file_key, AES-256-GCM-open
-        //      (TAMGA_ERR_DECRYPTION_FAILED on failure)
-        //   9. parse the resulting plaintext (or the plain base64-decoded
-        //      `enc` bytes when alg == "base64+ed25519") as
-        //      {"data": <LicenseResource>} JSON (TAMGA_ERR_INVALID_JSON)
-        //  10. box the decoded payload behind `*out_handle`
-        let _ = (pem, pem_len, ed25519_pubkey, out_handle);
-        crate::set_last_error(
-            "tamga_license_file_verify is not implemented yet (see docs/plans/tamga-c.plan.md Section C)",
-        );
-        Err(TamgaErrorCode::TAMGA_ERR_UNKNOWN)
+        if pem.is_null() || ed25519_pubkey.is_null() || out_handle.is_null() {
+            crate::set_last_error("tamga_license_file_verify: null argument");
+            return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
+        }
+        if pem_len == 0 || pem_len > crate::MAX_REASONABLE_LEN {
+            crate::set_last_error("tamga_license_file_verify: pem_len out of reasonable range");
+            return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
+        }
+
+        // SAFETY: caller contract (see this function's `# Safety` section)
+        // guarantees `pem` points to `pem_len` readable bytes.
+        let pem_bytes = unsafe { slice::from_raw_parts(pem as *const u8, pem_len) };
+        let pem_str = std::str::from_utf8(pem_bytes).map_err(|_| {
+            crate::set_last_error("tamga_license_file_verify: pem is not valid UTF-8");
+            TamgaErrorCode::TAMGA_ERR_INVALID_PEM
+        })?;
+
+        // SAFETY: caller contract guarantees 32 readable bytes.
+        let pubkey: [u8; 32] = unsafe { slice::from_raw_parts(ed25519_pubkey, 32) }
+            .try_into()
+            .expect("slice::from_raw_parts(_, 32) is always exactly 32 bytes");
+
+        let license_key_str = if license_key.is_null() {
+            None
+        } else {
+            // SAFETY: caller contract guarantees a valid NUL-terminated
+            // C string when non-null.
+            Some(unsafe { crate::cstr_to_str(license_key) }.inspect_err(|_| {
+                crate::set_last_error("tamga_license_file_verify: license_key is not valid UTF-8");
+            })?)
+        };
+
+        let license = tamga_rust::checkout::license_file::verify_license_file(
+            pem_str,
+            &pubkey,
+            license_key_str,
+        )
+        .map_err(map_checkout_error)?;
+
+        let json = serde_json::to_string(&license).map_err(|e| {
+            crate::set_last_error(format!(
+                "tamga_license_file_verify: failed to serialize decoded license: {e}"
+            ));
+            TamgaErrorCode::TAMGA_ERR_INVALID_JSON
+        })?;
+
+        let handle = Box::new(LicenseFileHandle { json });
+        // SAFETY: `out_handle` is non-null (checked above) and, per the
+        // caller contract, a valid pointer this function may write to.
+        unsafe {
+            *out_handle = Box::into_raw(handle) as *mut TamgaLicenseFile;
+        }
+        Ok(())
     })
 }
 
@@ -110,12 +177,30 @@ pub unsafe extern "C" fn tamga_license_file_get_json(
     out_ptr: *mut *mut c_char,
     out_len: *mut usize,
 ) -> TamgaErrorCode {
-    // TODO(Section F): wrap this body in `ffi_guard`/`catch_unwind` like
-    // `tamga_license_file_verify` above — not yet done here, tracked
-    // explicitly per the plan's "TODO-mark every remaining extern C fn"
-    // instruction. Do not ship this function without it.
-    let _ = (handle, out_ptr, out_len);
-    TamgaErrorCode::TAMGA_ERR_UNKNOWN
+    ffi_guard(|| {
+        if handle.is_null() || out_ptr.is_null() || out_len.is_null() {
+            crate::set_last_error("tamga_license_file_get_json: null argument");
+            return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
+        }
+        // SAFETY: caller contract requires `handle` to be a live pointer
+        // previously returned by `tamga_license_file_verify`.
+        let handle = unsafe { &*(handle as *const LicenseFileHandle) };
+        let cstring = CString::new(handle.json.clone()).map_err(|_| {
+            crate::set_last_error(
+                "tamga_license_file_get_json: decoded JSON contained an interior NUL byte",
+            );
+            TamgaErrorCode::TAMGA_ERR_UNKNOWN
+        })?;
+        let len = cstring.as_bytes().len();
+        // SAFETY: `out_ptr`/`out_len` are non-null (checked above) and,
+        // per the caller contract, valid pointers this function may write
+        // to.
+        unsafe {
+            *out_ptr = cstring.into_raw();
+            *out_len = len;
+        }
+        Ok(())
+    })
 }
 
 /// Frees a [`TamgaLicenseFile`] handle obtained from
@@ -129,9 +214,11 @@ pub unsafe extern "C" fn tamga_license_file_get_json(
 /// applied to strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tamga_license_file_free(handle: *mut TamgaLicenseFile) {
-    // TODO(Section F): wrap in `ffi_guard`/`catch_unwind`, null-check, and
-    // `Box::from_raw` + drop the real payload once TamgaLicenseFile has
-    // one. Currently a no-op since the handle is a genuinely zero-sized
-    // opaque type with nothing behind it yet.
-    let _ = handle;
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: caller contract (documented above) requires `handle` to be a
+    // live pointer previously returned by `tamga_license_file_verify` and
+    // not already freed.
+    drop(unsafe { Box::from_raw(handle as *mut LicenseFileHandle) });
 }

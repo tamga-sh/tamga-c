@@ -21,8 +21,9 @@
 //!   `ikm = <license key>`, `info = <machine fingerprint>` → 32 bytes.
 
 use std::ffi::c_char;
+use std::slice;
 
-use crate::TamgaErrorCode;
+use crate::{TamgaErrorCode, ffi_guard};
 
 /// Derives the 32-byte AES key for an encrypted machine file via
 /// HKDF-SHA256: `salt = "tamga:machine-file-key-v1"`, `ikm = license_key`,
@@ -74,20 +75,24 @@ pub unsafe extern "C" fn tamga_naive_derive_license_file_key(
     license_key: *const c_char,
     out_32_bytes: *mut u8,
 ) -> TamgaErrorCode {
-    // TODO(Section F): wrap in `ffi_guard`/`catch_unwind`. Not yet done.
-    //
-    // TODO(Section C): implement:
-    //   1. null-check license_key / out_32_bytes
-    //   2. take license_key's raw UTF-8 bytes; if len < 32, zero-pad on the
-    //      right to 32; if len > 32, truncate to the first 32 bytes. This
-    //      is NOT a hash and NOT PBKDF2/HKDF -- must byte-exactly replicate
-    //      the server's transform (see module docs above).
-    //   3. write the 32 bytes to *out_32_bytes
-    // Test both the shorter-than-32 and longer-than-32 cases explicitly per
-    // the plan's tests/key_derivation.rs.
-    let _ = (license_key, out_32_bytes);
-    crate::set_last_error(
-        "tamga_naive_derive_license_file_key is not implemented yet (see docs/plans/tamga-c.plan.md Section C)",
-    );
-    TamgaErrorCode::TAMGA_ERR_UNKNOWN
+    ffi_guard(|| {
+        if out_32_bytes.is_null() {
+            crate::set_last_error("tamga_naive_derive_license_file_key: null argument");
+            return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
+        }
+        // SAFETY: caller contract requires `license_key` to be null or a
+        // valid NUL-terminated C string.
+        let license_key_str = unsafe { crate::cstr_to_str(license_key) }.inspect_err(|_| {
+            crate::set_last_error("tamga_naive_derive_license_file_key: null argument");
+        })?;
+
+        let key = tamga_rust::crypto::naive_key::derive_license_file_key(license_key_str);
+
+        // SAFETY: caller contract requires `out_32_bytes` to point to at
+        // least 32 writable bytes; checked non-null above.
+        unsafe {
+            slice::from_raw_parts_mut(out_32_bytes, 32).copy_from_slice(&key);
+        }
+        Ok(())
+    })
 }

@@ -37,8 +37,6 @@
 //! F of the plan — `security-reviewer` is mandatory on that section before
 //! merge).
 
-#![allow(dead_code)] // TODO: remove once Sections C–F wire these up for real.
-
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{self, AssertUnwindSafe};
@@ -47,6 +45,13 @@ pub mod kdf;
 pub mod license_file;
 pub mod machine_file;
 pub mod offline_proof;
+
+/// Upper bound on any caller-supplied `(*const u8, len)` buffer this crate
+/// accepts (PEM bodies, JSON blobs, etc.). Purely a sanity guard against a
+/// garbage/corrupted length value causing an absurd `slice::from_raw_parts`
+/// call before any real parsing runs — real `.lic`/`.mach` files are at most
+/// a few KB. 16 MiB comfortably covers any legitimate input.
+pub(crate) const MAX_REASONABLE_LEN: usize = 16 * 1024 * 1024;
 
 /// Error codes returned by every `tamga_*` FFI function.
 ///
@@ -204,10 +209,14 @@ pub extern "C" fn tamga_last_error_message() -> *const c_char {
 /// documented as caller-owned in `include/tamga.h`).
 ///
 /// Calling this on a null pointer is a documented no-op, not a crash.
-/// Calling it twice on the same pointer (double-free), or calling libc
-/// `free()` on a pointer this library returned instead of this function, is
-/// undefined behavior and intentionally not guarded against — guarding
-/// would hide caller bugs. See CLAUDE.md.
+///
+/// # Safety
+/// `ptr` must be null, or a pointer previously returned by this library via
+/// `CString::into_raw` and not already freed. Calling this twice on the same
+/// pointer (double-free), or calling libc `free()` on a pointer this library
+/// returned instead of this function, is undefined behavior and
+/// intentionally not guarded against — guarding would hide caller bugs. See
+/// CLAUDE.md.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tamga_string_free(ptr: *mut c_char) {
     if ptr.is_null() {

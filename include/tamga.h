@@ -40,4 +40,347 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * Error codes returned by every `tamga_*` FFI function.
+ *
+ * `TAMGA_OK` (0) means success; every other value has a corresponding
+ * detailed message retrievable via [`tamga_last_error_message`] on the
+ * calling thread.
+ */
+typedef enum TamgaErrorCode {
+    /**
+     * Success.
+     */
+    TAMGA_OK = 0,
+    /**
+     * `-----BEGIN ...-----`/`-----END ...-----` PEM markers missing or malformed.
+     */
+    TAMGA_ERR_INVALID_PEM = 1,
+    /**
+     * A base64-encoded field failed to decode.
+     */
+    TAMGA_ERR_INVALID_BASE64 = 2,
+    /**
+     * Decoded bytes were not valid JSON, or didn't match the expected shape.
+     */
+    TAMGA_ERR_INVALID_JSON = 3,
+    /**
+     * Signature verification failed (wrong key, tampered payload, or the
+     * base64-string-vs-decoded-bytes gotcha — see CLAUDE.md).
+     */
+    TAMGA_ERR_SIGNATURE_INVALID = 4,
+    /**
+     * AES-256-GCM open failed (wrong key/nonce, or tampered ciphertext/tag).
+     */
+    TAMGA_ERR_DECRYPTION_FAILED = 5,
+    /**
+     * `alg`/`scheme` value not supported by this operation (e.g.
+     * `RSA_2048_JWT_RS256` for machine files, or an unrecognized offline
+     * proof version prefix).
+     */
+    TAMGA_ERR_UNSUPPORTED_SCHEME = 6,
+    /**
+     * A required pointer argument was null.
+     */
+    TAMGA_ERR_NULL_ARGUMENT = 7,
+    /**
+     * A Rust panic was caught at the FFI boundary via [`ffi_guard`] instead
+     * of unwinding into the caller.
+     */
+    TAMGA_ERR_PANIC = 8,
+    /**
+     * Unclassified/internal error — a stub-only value while Sections C–F
+     * are unimplemented (see module docs above); should shrink toward zero
+     * call sites as those sections land.
+     */
+    TAMGA_ERR_UNKNOWN = 9,
+} TamgaErrorCode;
+
+/**
+ * Signing/key scheme, mirroring the wire `LicenseScheme` strings from
+ * `docs/sdk.md` (License Scheme, Section 10). Present for completeness —
+ * `TAMGA_SCHEME_RSA_2048_JWT_RS256` is never a legal input for machine
+ * files; it must be rejected outright (`422 SCHEME_NOT_SUPPORTED` is what
+ * the server itself does for this scheme at machine-file-checkout time).
+ */
+typedef enum TamgaScheme {
+    /**
+     * Legacy unsigned key string (`LicenseScheme::None` server-side).
+     */
+    TAMGA_SCHEME_NONE = 0,
+    TAMGA_SCHEME_ED25519_SIGN = 1,
+    TAMGA_SCHEME_RSA_2048_PKCS1_SIGN = 2,
+    TAMGA_SCHEME_RSA_2048_PKCS1_PSS_SIGN = 3,
+    TAMGA_SCHEME_ECDSA_P256_SIGN = 4,
+    /**
+     * Explicitly rejected for machine-file verification — see
+     * [`machine_file::tamga_machine_file_verify`].
+     */
+    TAMGA_SCHEME_RSA_2048_JWT_RS256 = 5,
+} TamgaScheme;
+
+/**
+ * Opaque handle wrapping a verified/decoded `.lic` license-file payload.
+ *
+ * Obtained from [`license_file::tamga_license_file_verify`]; must be freed
+ * with [`license_file::tamga_license_file_free`] exactly once.
+ */
+typedef struct TamgaLicenseFile {
+    uint8_t _private[0];
+} TamgaLicenseFile;
+
+/**
+ * Opaque handle wrapping a verified/decoded machine-file payload.
+ *
+ * Obtained from [`machine_file::tamga_machine_file_verify`]; must be freed
+ * with [`machine_file::tamga_machine_file_free`] exactly once.
+ */
+typedef struct TamgaMachineFile {
+    uint8_t _private[0];
+} TamgaMachineFile;
+
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
+/**
+ * Returns a pointer to the detailed message behind the last non-`TAMGA_OK`
+ * code returned **on the calling thread**.
+ *
+ * # Ownership
+ *
+ * The returned pointer is **borrowed**, not owned: it is valid only until
+ * the next `tamga_*` call on this same thread. Do not call
+ * [`tamga_string_free`] on it, and do not retain it across calls. Copy the
+ * string out immediately if you need it to outlive the next call. Returns
+ * null if no error has been recorded yet on this thread (or after
+ * [`clear_last_error`] ran at the start of a call that then succeeded).
+ *
+ * This is the one convention picked for error-string ownership across this
+ * crate, per Section F of `docs/plans/tamga-c.plan.md` — every error path
+ * must populate [`LAST_ERROR`] via [`set_last_error`] so this accessor
+ * stays meaningful.
+ */
+const char *tamga_last_error_message(void);
+
+/**
+ * Frees a string previously returned as an **owned** pointer by this
+ * library (decoded JSON payloads, generated proof strings — anything
+ * documented as caller-owned in `include/tamga.h`).
+ *
+ * Calling this on a null pointer is a documented no-op, not a crash.
+ *
+ * # Safety
+ * `ptr` must be null, or a pointer previously returned by this library via
+ * `CString::into_raw` and not already freed. Calling this twice on the same
+ * pointer (double-free), or calling libc `free()` on a pointer this library
+ * returned instead of this function, is undefined behavior and
+ * intentionally not guarded against — guarding would hide caller bugs. See
+ * CLAUDE.md.
+ */
+void tamga_string_free(char *ptr);
+
+/**
+ * Derives the 32-byte AES key for an encrypted machine file via
+ * HKDF-SHA256: `salt = "tamga:machine-file-key-v1"`, `ikm = license_key`,
+ * `info = fingerprint`.
+ *
+ * # Parameters
+ * - `license_key` / `fingerprint`: NUL-terminated C strings; both required
+ *   (the derivation needs both to reproduce the server's key).
+ * - `out_32_bytes`: receives exactly 32 derived bytes on `TAMGA_OK`.
+ *
+ * # Safety
+ * `license_key`/`fingerprint` must be null or valid NUL-terminated C
+ * strings. `out_32_bytes` must point to at least 32 writable bytes.
+ */
+enum TamgaErrorCode tamga_hkdf_derive_machine_file_key(const char *license_key,
+                                                       const char *fingerprint,
+                                                       uint8_t *out_32_bytes);
+
+/**
+ * Derives the 32-byte AES key for an encrypted license file via the
+ * server's **naive, non-KDF** transform: `license_key`'s raw UTF-8 bytes,
+ * zero-padded or truncated to exactly 32 bytes.
+ *
+ * # Parameters
+ * - `license_key`: NUL-terminated C string.
+ * - `out_32_bytes`: receives exactly 32 derived bytes on `TAMGA_OK`.
+ *
+ * # Safety
+ * `license_key` must be null or a valid NUL-terminated C string.
+ * `out_32_bytes` must point to at least 32 writable bytes.
+ */
+enum TamgaErrorCode tamga_naive_derive_license_file_key(const char *license_key,
+                                                        uint8_t *out_32_bytes);
+
+/**
+ * Verifies and decodes a `.lic` license file, fully offline, by delegating
+ * to `tamga-rust`'s `checkout::license_file::verify_license_file`.
+ *
+ * # Parameters
+ * - `pem` / `pem_len`: the raw `.lic` file bytes, PEM markers included.
+ *   Need not be NUL-terminated; `pem_len` is authoritative.
+ * - `ed25519_pubkey`: the account's 32-byte Ed25519 public key.
+ * - `license_key`: NUL-terminated C string, or null. Required (non-null)
+ *   only when the file's `alg` is `"aes-256-gcm+ed25519"` (encrypted);
+ *   ignored for `"base64+ed25519"` (plain) files.
+ * - `out_handle`: on `TAMGA_OK`, receives an owned [`TamgaLicenseFile`]
+ *   handle; free it with [`tamga_license_file_free`] exactly once.
+ *
+ * # Safety
+ * `pem` must point to `pem_len` readable bytes (or be null, checked
+ * internally). `ed25519_pubkey` must point to 32 readable bytes (or be
+ * null). `license_key`, if non-null, must be a valid NUL-terminated C
+ * string. `out_handle` must be a valid pointer to a `*mut TamgaLicenseFile`
+ * that this function may write to.
+ *
+ * This is the canonical `catch_unwind` reference implementation described
+ * in [`crate::ffi_guard`]'s docs — every other `extern "C" fn` in this
+ * crate copies this shape (Section F; unwinding a Rust panic across an
+ * `extern "C"` boundary is undefined behavior).
+ */
+enum TamgaErrorCode tamga_license_file_verify(const char *pem,
+                                              uintptr_t pem_len,
+                                              const uint8_t *ed25519_pubkey,
+                                              const char *license_key,
+                                              struct TamgaLicenseFile **out_handle);
+
+/**
+ * Exposes the decoded `LicenseResource` as an owned JSON C string.
+ *
+ * # Safety
+ * `handle` must be a live pointer previously returned by
+ * [`tamga_license_file_verify`]. `out_ptr`/`out_len` must be valid
+ * pointers this function may write to. The string written to `*out_ptr`
+ * is owned by the caller; free it with [`crate::tamga_string_free`].
+ */
+enum TamgaErrorCode tamga_license_file_get_json(const struct TamgaLicenseFile *handle,
+                                                char **out_ptr,
+                                                uintptr_t *out_len);
+
+/**
+ * Frees a [`TamgaLicenseFile`] handle obtained from
+ * [`tamga_license_file_verify`].
+ *
+ * # Safety
+ * `handle` must be null, or a live pointer previously returned by
+ * [`tamga_license_file_verify`] and not already freed. Double-free is
+ * documented undefined behavior and intentionally unguarded — see
+ * CLAUDE.md and `crate::tamga_string_free`'s docs for the same policy
+ * applied to strings.
+ */
+void tamga_license_file_free(struct TamgaLicenseFile *handle);
+
+/**
+ * Verifies and decodes a machine file, dispatching the signature algorithm
+ * from `scheme` (the license's `scheme` field — not hardcoded).
+ *
+ * # Parameters
+ * - `pem` / `pem_len`: the raw machine-file bytes, PEM markers included.
+ * - `scheme`: the license's signing scheme. `TAMGA_SCHEME_RSA_2048_JWT_RS256`
+ *   is always rejected with `TAMGA_ERR_UNSUPPORTED_SCHEME`.
+ * - `pubkey` / `pubkey_len`: the public key matching `scheme` (Ed25519: 32
+ *   bytes; RSA-2048: DER-encoded `SubjectPublicKeyInfo` or equivalent,
+ *   exact encoding TBD pending tamga-rust's frozen API; ECDSA P-256:
+ *   uncompressed point or DER, same caveat).
+ * - `license_key` / `fingerprint`: required only to decrypt an encrypted
+ *   (`aes-256-gcm`) machine file; ignored for plain files. Both are
+ *   NUL-terminated C strings.
+ * - `out_handle`: on `TAMGA_OK`, receives an owned [`TamgaMachineFile`]
+ *   handle; free it with [`tamga_machine_file_free`] exactly once.
+ *
+ * # Safety
+ * `pem`/`pubkey` must point to their declared lengths of readable bytes
+ * (or be null). `license_key`/`fingerprint` must be null or valid
+ * NUL-terminated C strings. `out_handle` must be a valid pointer this
+ * function may write to.
+ */
+enum TamgaErrorCode tamga_machine_file_verify(const char *pem,
+                                              uintptr_t pem_len,
+                                              enum TamgaScheme scheme,
+                                              const uint8_t *pubkey,
+                                              uintptr_t pubkey_len,
+                                              const char *license_key,
+                                              const char *fingerprint,
+                                              struct TamgaMachineFile **out_handle);
+
+/**
+ * Exposes the decoded `MachineResource` as an owned JSON C string.
+ *
+ * # Safety
+ * Same contract as [`crate::license_file::tamga_license_file_get_json`],
+ * scoped to [`TamgaMachineFile`] handles.
+ */
+enum TamgaErrorCode tamga_machine_file_get_json(const struct TamgaMachineFile *handle,
+                                                char **out_ptr,
+                                                uintptr_t *out_len);
+
+/**
+ * Frees a [`TamgaMachineFile`] handle obtained from
+ * [`tamga_machine_file_verify`].
+ *
+ * # Safety
+ * Same contract as
+ * [`crate::license_file::tamga_license_file_free`], scoped to
+ * [`TamgaMachineFile`] handles. Double-free is documented undefined
+ * behavior and intentionally unguarded.
+ */
+void tamga_machine_file_free(struct TamgaMachineFile *handle);
+
+/**
+ * Verifies a `"v1x0.<base64 signature>"` offline proof string against the
+ * exact canonical JSON the server would have signed.
+ *
+ * # Parameters
+ * - `proof_str`: the full `"v1x0.<base64 signature>"` string.
+ * - `rsa_pubkey` / (implicit length via NUL or a future explicit-length
+ *   param, TBD pending tamga-rust's frozen API): the account's RSA-2048
+ *   public key.
+ * - `account_id`, `machine_id`, `fingerprint`: the values that must appear
+ *   in the canonical signed JSON, as NUL-terminated C strings.
+ * - `dataset_json`: the client dataset as a NUL-terminated JSON string,
+ *   re-serialized internally in the server's exact field order before
+ *   verification (see module docs above — field order matters).
+ * - `out_valid`: on `TAMGA_OK`, receives whether the proof is valid.
+ *   Distinguish "the FFI call itself failed" (non-`TAMGA_OK` return) from
+ *   "the call succeeded but the proof is invalid" (`TAMGA_OK` +
+ *   `*out_valid == false`) — callers must check both.
+ *
+ * # Safety
+ * All pointer parameters must be null or valid NUL-terminated C strings
+ * (`rsa_pubkey`'s exact contract TBD). `out_valid` must be a valid pointer
+ * this function may write to.
+ */
+enum TamgaErrorCode tamga_offline_proof_verify(const char *proof_str,
+                                               const char *rsa_pubkey,
+                                               const char *account_id,
+                                               const char *machine_id,
+                                               const char *fingerprint,
+                                               const char *dataset_json,
+                                               bool *out_valid);
+
+/**
+ * Generates a `"v1x0.<base64 signature>"` offline proof, mirroring
+ * server-side generation. Intended for air-gapped/test tooling that needs
+ * to produce proofs without hitting the API — most consumers only need
+ * [`tamga_offline_proof_verify`].
+ *
+ * # Safety
+ * All pointer parameters must be null or valid NUL-terminated C strings
+ * (`rsa_privkey`'s exact contract TBD). `out_proof_str` must be a valid
+ * pointer this function may write to; on `TAMGA_OK` it receives an owned
+ * string, freed via [`crate::tamga_string_free`].
+ */
+enum TamgaErrorCode tamga_offline_proof_generate(const char *rsa_privkey,
+                                                 const char *account_id,
+                                                 const char *machine_id,
+                                                 const char *fingerprint,
+                                                 const char *dataset_json,
+                                                 char **out_proof_str);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
+
 #endif  /* TAMGA_H */

@@ -29,9 +29,41 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 # crates.io credentials/CI run available offline. The path dependency stays
 # the real, resolvable dependency for this repo's own implementation work;
 # swap to the crates.io line below only once a real publish has happened.
-tamga = { path = "../tamga-rust" }
+#
+# NOTE(crate-name collision, RESOLVED): keyed as `tamga_rust` (not `tamga`)
+# deliberately. This package's own `[lib] name` below is "tamga" — chosen so
+# the built shared library is `libtamga.so`/`tamga.h`, matching the C-facing
+# product name — and Cargo forbids one package from depending on a crate
+# under a name that collides with its own lib's extern name once integration
+# tests (which implicitly link both) enter the picture. Internal source
+# refers to this dependency as `tamga_rust::...` throughout.
+tamga_rust = { package = "tamga", path = "../tamga-rust" }
 # Swap to this once tamga-rust 0.1.0 is actually published to crates.io:
-# tamga = "0.1"
+# tamga_rust = { package = "tamga", version = "0.1" }
+# Only for re-serializing tamga-rust's already-`Serialize`-derived response
+# models into owned JSON C strings (`tamga_*_get_json`) — no independent
+# JSON handling of our own.
+serde_json = "1"
 
 [build-dependencies]
-cbindgen = "0.27"
+# NOTE(cbindgen version, RESOLVED): pinned >=0.29, not 0.27 as originally
+# scaffolded. cbindgen 0.27's syn-based parser silently fails to recognize
+# items annotated with the edition-independent `#[unsafe(no_mangle)]`
+# attribute syntax (RFC 3325) that this crate's `extern "C" fn`s use — it
+# doesn't error, it just emits zero declarations for them, which is exactly
+# the empty-header failure mode this crate's own header-freshness CI gate
+# exists to catch. Confirmed via a minimal reproduction crate: 0.27 silently
+# drops `#[unsafe(no_mangle)] pub unsafe extern "C" fn ...`; 0.29 handles it
+# correctly. Reverting to bare `#[no_mangle]` was considered and rejected —
+# it would reintroduce the `unsafe_attr_outside_unsafe` lint warning under
+# this crate's `cargo clippy -- -D warnings` gate.
+cbindgen = "0.29"
+
+[dev-dependencies]
+# Test-fixture-building only — building known-good `.lic`/`.mach` PEMs the
+# same way the real server does, using the same crate versions tamga-rust's
+# own crypto tests use (see ../tamga-rust/Cargo.toml).
+ed25519-dalek = "2"
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
