@@ -1545,7 +1545,9 @@ dependencies = [
 
 [[package]]
 name = "tamga"
-version = "0.1.0"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72bdc0067766e742857fdc1ac6603757f206a42aa293bc1fc89bb598e3d7d84b"
 dependencies = [
  "aes-gcm",
  "aws-lc-rs",

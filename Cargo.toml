@@ -22,13 +22,11 @@ name = "tamga"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-# Path dependency on the tamga-rust reference implementation (in-repo dev).
-# tamga-rust's Sections A-M are complete and its public API is stable
-# (see ../tamga-rust/docs/plans/tamga-rust.plan.md), but it has not been
-# through an actual `cargo publish` to crates.io in this session — no
-# crates.io credentials/CI run available offline. The path dependency stays
-# the real, resolvable dependency for this repo's own implementation work;
-# swap to the crates.io line below only once a real publish has happened.
+# Real crates.io dependency on the tamga-rust reference implementation —
+# tamga-rust published its first crates.io release (0.1.1) on 2026-08-11,
+# so this no longer needs a sibling-checkout path dependency (that only
+# ever resolved in a local dev environment with ../tamga-rust present, and
+# broke CI, which checks out this repo alone).
 #
 # NOTE(crate-name collision, RESOLVED): keyed as `tamga_rust` (not `tamga`)
 # deliberately. This package's own `[lib] name` below is "tamga" — chosen so
@@ -37,9 +35,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 # under a name that collides with its own lib's extern name once integration
 # tests (which implicitly link both) enter the picture. Internal source
 # refers to this dependency as `tamga_rust::...` throughout.
-tamga_rust = { package = "tamga", path = "../tamga-rust" }
-# Swap to this once tamga-rust 0.1.0 is actually published to crates.io:
-# tamga_rust = { package = "tamga", version = "0.1" }
+tamga_rust = { package = "tamga", version = "0.1" }
 # Only for re-serializing tamga-rust's already-`Serialize`-derived response
 # models into owned JSON C strings (`tamga_*_get_json`) — no independent
 # JSON handling of our own.
