@@ -1,10 +1,13 @@
 # tamga-c
 
+[![CI](https://github.com/tamga-sh/tamga-c/actions/workflows/ci.yml/badge.svg)](https://github.com/tamga-sh/tamga-c/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 C/C++ core library for Tamga. Exposes license activation and offline verification through a stable C ABI, built from the Rust reference implementation ([`tamga-rust`](https://github.com/tamga-sh/tamga-rust)) and used as the shared foundation for the Java ([`tamga-java`](https://github.com/tamga-sh/tamga-java)) and Swift ([`tamga-swift`](https://github.com/tamga-sh/tamga-swift)) SDKs.
 
 > **This is NOT an HTTP client.** There is no auth-transport, `validate`, `check-in`, or machine-management surface in this repo — no `Authorization` headers, no JSON:API request/response handling, no policy/entitlement logic. `tamga-c`'s entire surface is four offline, deterministic crypto operations: verify a `.lic` license file, verify a machine file (across 4 signing schemes), verify/generate a machine offline proof, and derive the two AES keys those file formats depend on. For everything else — license validation over HTTP, machine registration, heartbeats, entitlements — use one of the full hand-written SDKs (`tamga-rust`, `tamga-python`, `tamga-go`, `tamga-dotnet`, `tamga-js`).
 
-> **Status: scaffold only.** Every exported function currently returns an error stub. See [`docs/plans/tamga-c.plan.md`](docs/plans/tamga-c.plan.md) — this repo is blocked on `tamga-rust`'s v0.1 API freeze.
+> **Status: actively developed.** License-file verify, machine-file verify (all 4 signing schemes), machine offline-proof verify, and both key-derivation primitives are implemented and tested against a CMake+corrosion build (including an AddressSanitizer run). `tamga_offline_proof_generate` is a deliberate non-implementation — see `CLAUDE.md`. The cross-platform build matrix (beyond macOS x86_64) is still in progress.
 
 ## Install
 
@@ -67,7 +70,6 @@ See `examples/verify_license.c`, `examples/verify_machine.c`, and `examples/veri
 
 ## Documentation
 
-- [`docs/plans/tamga-c.plan.md`](docs/plans/tamga-c.plan.md) — full implementation task list, architecture, and status for this repo.
 - [`tamga-api`'s `docs/sdk.md`](https://github.com/tamga-sh/tamga-api/blob/main/docs/sdk.md) — the protocol reference this repo implements against: license/machine checkout file formats (§4, §6), offline proof (§7), and the `LicenseScheme` enum (§10). Read it before touching any verification logic here — every field name and byte layout in this crate is meant to trace back to that document, not to assumption.
 
 ## License
