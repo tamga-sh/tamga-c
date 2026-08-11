@@ -64,7 +64,7 @@ cbindgen = "0.29"
 # same way the real server does, using the same crate versions tamga-rust's
 # own crypto tests use (see ../tamga-rust/Cargo.toml).
 ed25519-dalek = "2"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 rand = "0.8"
 base64 = "0.22"
 # RSA-2048 (PKCS#1 v1.5 + PSS) and ECDSA P-256 test fixture signing —
