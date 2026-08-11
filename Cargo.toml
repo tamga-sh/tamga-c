@@ -63,7 +63,7 @@ cbindgen = "0.29"
 # Test-fixture-building only — building known-good `.lic`/`.mach` PEMs the
 # same way the real server does, using the same crate versions tamga-rust's
 # own crypto tests use (see ../tamga-rust/Cargo.toml).
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.22"
