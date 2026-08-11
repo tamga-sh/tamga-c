@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/tamga-sh/tamga-c/compare/v1.0.0...v1.0.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* **ci:** explicitly grant contents:write to package-and-attach ([8bb89bd](https://github.com/tamga-sh/tamga-c/commit/8bb89bdbcf7d5a32fcca55743c22164a782e3195))
+
 ## 1.0.0 (2026-08-11)
 
 
