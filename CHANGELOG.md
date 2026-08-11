@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.0 (2026-08-11)
+
+
+### Features
+
+* implement C test harness and working examples (Sections C-H) ([0bad927](https://github.com/tamga-sh/tamga-c/commit/0bad92720c01a33aac2a9ca855848d602af29e68))
+* implement license-file checkout FFI (Section C) ([34d1f65](https://github.com/tamga-sh/tamga-c/commit/34d1f654042806983d844eedd7e6a7ad056d1dd6))
+* implement machine-file checkout FFI (Section D) ([2277a7e](https://github.com/tamga-sh/tamga-c/commit/2277a7e7a1e00635a99cb8846cd6df2cdedfe7f2))
+* implement offline-proof verify FFI (Section E, partial) ([864d01c](https://github.com/tamga-sh/tamga-c/commit/864d01c1e4cbd34fb95c6dddebdb36461cb94be4))
+* implement Section F (memory/lifecycle) + security-reviewer fixes ([992ebcd](https://github.com/tamga-sh/tamga-c/commit/992ebcdb0c316179ca83a2a12cc0a56416733aa1))
+
+
+### Bug Fixes
+
+* **ci:** allow Unicode-3.0, CDLA-Permissive-2.0, and MPL-2.0 licenses ([e1848c6](https://github.com/tamga-sh/tamga-c/commit/e1848c68f4f9a1cd1062df192ae467fb9ef8ccb3))
+* **ci:** depend on tamga-rust via crates.io instead of a local path ([9d606cb](https://github.com/tamga-sh/tamga-c/commit/9d606cb44834404b99a73576d05e18b10d05c40b))
+* **ci:** link Windows system libraries into the C test harness ([124b981](https://github.com/tamga-sh/tamga-c/commit/124b9819eb0b5fe324b6629bf05564fbf9ce623e))
+
+## Changelog
+
 All notable changes to this project are documented in this file.
 
 This file is maintained automatically by
