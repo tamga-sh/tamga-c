@@ -114,7 +114,7 @@ pub unsafe extern "C" fn tamga_license_file_verify(
         }
         if pem_len == 0 || pem_len > crate::MAX_REASONABLE_LEN {
             crate::set_last_error("tamga_license_file_verify: pem_len out of reasonable range");
-            return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
+            return Err(TamgaErrorCode::TAMGA_ERR_LENGTH_INVALID);
         }
 
         // SAFETY: caller contract (see this function's `# Safety` section)

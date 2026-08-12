@@ -404,3 +404,46 @@ fn null_pem_pointer_rejected() {
     assert_eq!(code, TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
     assert!(handle.is_null());
 }
+
+#[test]
+fn zero_pem_len_rejected_with_length_specific_code_not_null_argument() {
+    // Regression test: pem_len/pubkey_len == 0 used to be reported as
+    // TAMGA_ERR_NULL_ARGUMENT even though the pointers themselves are
+    // valid non-null pointers -- the actual problem is the length.
+    let (pubkey, pem) = build_pem(TamgaScheme::TAMGA_SCHEME_ED25519_SIGN, None);
+    let mut handle: *mut tamga::TamgaMachineFile = ptr::null_mut();
+    let code = unsafe {
+        tamga_machine_file_verify(
+            pem.as_ptr() as *const i8,
+            0, // pem_len
+            TamgaScheme::TAMGA_SCHEME_ED25519_SIGN as u32,
+            pubkey.as_ptr(),
+            pubkey.len(),
+            ptr::null(),
+            ptr::null(),
+            &mut handle,
+        )
+    };
+    assert_eq!(code, TamgaErrorCode::TAMGA_ERR_LENGTH_INVALID);
+    assert!(handle.is_null());
+}
+
+#[test]
+fn oversized_pubkey_len_rejected_with_length_specific_code_not_null_argument() {
+    let (pubkey, pem) = build_pem(TamgaScheme::TAMGA_SCHEME_ED25519_SIGN, None);
+    let mut handle: *mut tamga::TamgaMachineFile = ptr::null_mut();
+    let code = unsafe {
+        tamga_machine_file_verify(
+            pem.as_ptr() as *const i8,
+            pem.len(),
+            TamgaScheme::TAMGA_SCHEME_ED25519_SIGN as u32,
+            pubkey.as_ptr(),
+            usize::MAX, // absurd length, well past MAX_REASONABLE_LEN
+            ptr::null(),
+            ptr::null(),
+            &mut handle,
+        )
+    };
+    assert_eq!(code, TamgaErrorCode::TAMGA_ERR_LENGTH_INVALID);
+    assert!(handle.is_null());
+}

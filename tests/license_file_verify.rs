@@ -256,3 +256,44 @@ fn null_pem_pointer_rejected() {
     assert_eq!(code, TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
     assert!(handle.is_null());
 }
+
+#[test]
+fn zero_pem_len_rejected_with_length_specific_code_not_null_argument() {
+    // Regression test: pem_len == 0 used to be reported as
+    // TAMGA_ERR_NULL_ARGUMENT even though `pem` itself is a valid non-null
+    // pointer -- the actual problem is the length, not the pointer. A
+    // caller branching on the numeric error code alone (not the string
+    // message) would have misdiagnosed this as a null-pointer bug.
+    let (pubkey, signing_key) = gen_keypair();
+    let pem = build_pem(&representative_payload_json(), &signing_key, None);
+    let mut handle: *mut tamga::TamgaLicenseFile = ptr::null_mut();
+    let code = unsafe {
+        tamga_license_file_verify(
+            pem.as_ptr() as *const i8,
+            0, // pem_len
+            pubkey.as_ptr(),
+            ptr::null(),
+            &mut handle,
+        )
+    };
+    assert_eq!(code, TamgaErrorCode::TAMGA_ERR_LENGTH_INVALID);
+    assert!(handle.is_null());
+}
+
+#[test]
+fn oversized_pem_len_rejected_with_length_specific_code_not_null_argument() {
+    let (pubkey, signing_key) = gen_keypair();
+    let pem = build_pem(&representative_payload_json(), &signing_key, None);
+    let mut handle: *mut tamga::TamgaLicenseFile = ptr::null_mut();
+    let code = unsafe {
+        tamga_license_file_verify(
+            pem.as_ptr() as *const i8,
+            usize::MAX, // absurd length, well past MAX_REASONABLE_LEN
+            pubkey.as_ptr(),
+            ptr::null(),
+            &mut handle,
+        )
+    };
+    assert_eq!(code, TamgaErrorCode::TAMGA_ERR_LENGTH_INVALID);
+    assert!(handle.is_null());
+}
