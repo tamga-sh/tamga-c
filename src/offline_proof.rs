@@ -100,7 +100,7 @@ pub unsafe extern "C" fn tamga_offline_proof_verify(
             crate::set_last_error(
                 "tamga_offline_proof_verify: rsa_pubkey_len out of reasonable range",
             );
-            return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
+            return Err(TamgaErrorCode::TAMGA_ERR_LENGTH_INVALID);
         }
 
         // SAFETY: all pointers checked non-null above; caller contract

@@ -96,6 +96,15 @@ typedef enum TamgaErrorCode {
      * containing an interior NUL byte) that don't warrant a dedicated code.
      */
     TAMGA_ERR_UNKNOWN = 9,
+    /**
+     * A length-carrying argument (e.g. `pem_len`, `pubkey_len`) was zero or
+     * exceeded [`MAX_REASONABLE_LEN`] — distinct from
+     * `TAMGA_ERR_NULL_ARGUMENT`, which is reserved for an actual null
+     * pointer. Added in a later release than the other codes (ABI-additive
+     * only: appended, not renumbered — existing numeric values are
+     * unchanged) — see CLAUDE.md's ABI-freeze commitment.
+     */
+    TAMGA_ERR_LENGTH_INVALID = 10,
 } TamgaErrorCode;
 
 /**

@@ -146,7 +146,7 @@ pub unsafe extern "C" fn tamga_machine_file_verify(
             || pubkey_len > crate::MAX_REASONABLE_LEN
         {
             crate::set_last_error("tamga_machine_file_verify: length out of reasonable range");
-            return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
+            return Err(TamgaErrorCode::TAMGA_ERR_LENGTH_INVALID);
         }
 
         let scheme = TamgaScheme::from_raw(scheme).ok_or_else(|| {

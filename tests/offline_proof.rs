@@ -273,6 +273,55 @@ fn null_proof_str_pointer_rejected() {
 }
 
 #[test]
+fn zero_rsa_pubkey_len_rejected_with_length_specific_code_not_null_argument() {
+    // Regression test: rsa_pubkey_len == 0 used to be reported as
+    // TAMGA_ERR_NULL_ARGUMENT even though rsa_pubkey itself is a valid
+    // non-null pointer -- the actual problem is the length.
+    let (pubkey, _kp) = gen_rsa_keypair();
+    let account_id_c = CString::new(uuid::Uuid::nil().to_string()).unwrap();
+    let machine_id_c = CString::new(uuid::Uuid::nil().to_string()).unwrap();
+    let fingerprint_c = CString::new("fp").unwrap();
+    let dataset_c = CString::new("{}").unwrap();
+    let mut out_valid = false;
+    let code = unsafe {
+        tamga_offline_proof_verify(
+            CString::new("v1x0.dummy").unwrap().as_ptr(),
+            pubkey.as_ptr(),
+            0, // rsa_pubkey_len
+            account_id_c.as_ptr(),
+            machine_id_c.as_ptr(),
+            fingerprint_c.as_ptr(),
+            dataset_c.as_ptr(),
+            &mut out_valid,
+        )
+    };
+    assert_eq!(code, TamgaErrorCode::TAMGA_ERR_LENGTH_INVALID);
+}
+
+#[test]
+fn oversized_rsa_pubkey_len_rejected_with_length_specific_code_not_null_argument() {
+    let (pubkey, _kp) = gen_rsa_keypair();
+    let account_id_c = CString::new(uuid::Uuid::nil().to_string()).unwrap();
+    let machine_id_c = CString::new(uuid::Uuid::nil().to_string()).unwrap();
+    let fingerprint_c = CString::new("fp").unwrap();
+    let dataset_c = CString::new("{}").unwrap();
+    let mut out_valid = false;
+    let code = unsafe {
+        tamga_offline_proof_verify(
+            CString::new("v1x0.dummy").unwrap().as_ptr(),
+            pubkey.as_ptr(),
+            usize::MAX, // absurd length, well past MAX_REASONABLE_LEN
+            account_id_c.as_ptr(),
+            machine_id_c.as_ptr(),
+            fingerprint_c.as_ptr(),
+            dataset_c.as_ptr(),
+            &mut out_valid,
+        )
+    };
+    assert_eq!(code, TamgaErrorCode::TAMGA_ERR_LENGTH_INVALID);
+}
+
+#[test]
 fn generate_is_not_implemented() {
     // tamga-rust exposes no local RSA-signing primitive (see
     // src/offline_proof.rs's module doc comment) — this documents the
