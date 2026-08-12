@@ -3,15 +3,16 @@ name: Build Native
 # Reusable workflow_call job: cross-compiles tamga-c's cdylib/staticlib for
 # every release target. Called from release.yml on a `v*` tag push.
 #
-# REUSE POINT: tamga-swift's release workflow will call this workflow once
-# that repo exists, instead of duplicating this cross-compile matrix -- see
+# REUSE POINT: also called from tamga-swift's build-xcframework.yml
+# (`uses: tamga-sh/tamga-c/.github/workflows/build-native.yml@main`), which
+# lipo's the per-arch macOS/iOS-simulator outputs into universal slices and
+# feeds all three (macOS universal, iOS device, iOS-simulator universal)
+# into `xcodebuild -create-xcframework` -- see that repo's CLAUDE.md and
 # docs/sdk.md's Architecture section (tamga-swift wraps tamga-c via a
-# Swift/Objective-C bridge) and docs/plans/tamga-c.plan.md Section 6.
-# tamga-swift does not exist yet as of this scaffold (it has its own
-# in-progress repo under tamga-sdk/tamga-swift, but no release workflow
-# depends on this one yet) -- do not delete this comment when it does; wire
-# the actual `uses: tamga-sh/tamga-c/.github/workflows/build-native.yml@...`
-# call from that repo instead.
+# Swift/Objective-C bridge). Do not remove the ios-* matrix entries below
+# without updating tamga-swift's workflow to match; do not rename a target
+# without doing the same (tamga-swift's `dist/tamga-c-<name>/` artifact
+# paths are keyed on the `name:` values here).
 
 on:
   workflow_call: {}
@@ -45,6 +46,23 @@ jobs:
           - name: windows-x86_64-msvc
             os: windows-latest
             target: x86_64-pc-windows-msvc
+            use_cross: false
+          # iOS targets — consumed by tamga-swift's build-xcframework.yml
+          # (this workflow's original reuse point). Real device + both
+          # simulator archs (Apple Silicon dev machines run the arm64
+          # simulator slice, Intel ones run x86_64) so tamga-swift can
+          # `lipo` the two simulator libs into one universal slice.
+          - name: ios-arm64
+            os: macos-14
+            target: aarch64-apple-ios
+            use_cross: false
+          - name: ios-simulator-arm64
+            os: macos-14
+            target: aarch64-apple-ios-sim
+            use_cross: false
+          - name: ios-simulator-x86_64
+            os: macos-14
+            target: x86_64-apple-ios
             use_cross: false
     runs-on: ${{ matrix.os }}
     steps:
