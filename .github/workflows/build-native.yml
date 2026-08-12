@@ -56,6 +56,16 @@ jobs:
             os: macos-14
             target: aarch64-apple-ios
             use_cross: false
+            # Real iOS device linking of this crate's cdylib output fails
+            # with "Undefined symbols ... ___chkstk_darwin" from
+            # aws-lc-sys's precompiled arm64 asm objects — a known
+            # aws-lc-sys/iOS-device-cdylib gotcha that doesn't affect the
+            # iOS Simulator targets below (they link like normal macOS
+            # binaries) or this crate's staticlib output. XCFramework
+            # bundling only needs the staticlib anyway, so this target
+            # builds *only* that crate-type rather than chasing the
+            # underlying upstream linking issue.
+            staticlib_only: true
           - name: ios-simulator-arm64
             os: macos-14
             target: aarch64-apple-ios-sim
@@ -92,8 +102,18 @@ jobs:
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Build (native cargo)
-        if: ${{ !matrix.use_cross }}
+        if: ${{ !matrix.use_cross && !matrix.staticlib_only }}
         run: cargo build --release --target ${{ matrix.target }}
+
+      # See the ios-arm64 matrix entry's comment: this target's cdylib
+      # output fails to link (an aws-lc-sys/iOS-device gotcha unrelated to
+      # this crate's own code), and only the staticlib is actually needed
+      # here. `cargo rustc --crate-type` overrides Cargo.toml's declared
+      # crate-type list for this one invocation instead of building all of
+      # them.
+      - name: Build (native cargo, staticlib only)
+        if: ${{ !matrix.use_cross && matrix.staticlib_only }}
+        run: cargo rustc --release --target ${{ matrix.target }} --crate-type staticlib
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
