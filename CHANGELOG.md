@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/tamga-sh/tamga-c/compare/v1.0.1...v1.1.0) (2026-08-12)
+
+
+### Features
+
+* **ci:** add iOS device + simulator targets to build-native.yml ([50fe00c](https://github.com/tamga-sh/tamga-c/commit/50fe00c7ce8e27781a0191d51b08428e948bff1b))
+
+
+### Bug Fixes
+
+* **ci:** build ios-arm64 as staticlib-only ([4ef359b](https://github.com/tamga-sh/tamga-c/commit/4ef359b76d230520406335125c52d9a138cc29cc))
+* **ci:** pin build-native.yml's checkout to tamga-c explicitly ([885a9ce](https://github.com/tamga-sh/tamga-c/commit/885a9ce25d3f58c11c0df3312d4cda0429b1eff5))
+
 ## [1.0.1](https://github.com/tamga-sh/tamga-c/compare/v1.0.0...v1.0.1) (2026-08-11)
 
 
