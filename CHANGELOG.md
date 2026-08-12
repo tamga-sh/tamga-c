@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.1](https://github.com/tamga-sh/tamga-c/compare/v1.1.0...v1.1.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* return a length-specific error code instead of NULL_ARGUMENT ([f3aaca9](https://github.com/tamga-sh/tamga-c/commit/f3aaca97904014ebc4190251a6099119cc158a26))
+* return a length-specific error code instead of NULL_ARGUMENT ([dd1def8](https://github.com/tamga-sh/tamga-c/commit/dd1def8588a661bf42f42139e7626a76976ad376))
+
 ## [1.1.0](https://github.com/tamga-sh/tamga-c/compare/v1.0.1...v1.1.0) (2026-08-12)
 
 
