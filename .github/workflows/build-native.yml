@@ -67,6 +67,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Explicit, not implicit-current-repo: actions/checkout with no
+          # `repository:` checks out whichever repo/ref the CURRENT JOB's
+          # context resolves to -- for a cross-repo `workflow_call` (as
+          # tamga-swift's build-xcframework.yml does), that's the CALLING
+          # repo, not tamga-c itself. Confirmed by a real failure: "could
+          # not find Cargo.toml in .../tamga-swift/tamga-swift". Pinning
+          # this explicitly makes the workflow correctly self-contained
+          # for both callers (tamga-c's own release.yml and tamga-swift's).
+          repository: tamga-sh/tamga-c
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
