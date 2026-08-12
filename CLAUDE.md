@@ -6,15 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `tamga-c` is a pure crypto/FFI wrapper crate over `tamga-rust`'s offline-verification API, exposed through a stable C ABI (`cdylib` + `staticlib` + a committed `include/tamga.h`). It has **no HTTP transport surface** — no auth headers, no `validate`/`check-in`/machine-management/entitlements endpoints. Its entire surface is four offline, deterministic crypto operations: license-file verify, machine-file verify, machine offline-proof verify + generate, and the two key-derivation primitives those file formats depend on. `tamga-java` (JNI) and `tamga-swift` (Swift/ObjC bridge) both wrap this crate rather than re-implementing signature verification in each language.
 
-Full task breakdown and status: [`docs/plans/tamga-c.plan.md`](docs/plans/tamga-c.plan.md). Protocol/field-name source of truth for everything this repo touches: [`tamga-api`'s `docs/sdk.md`](/Users/neco/Projects/tamga-api/docs/sdk.md) (Sections 4, 6, 7, 10 specifically — checkout file formats, offline proof, and the `LicenseScheme` enum).
+Full task breakdown and status: [`../docs/plans/tamga-c.plan.md`](../docs/plans/tamga-c.plan.md) (lives one directory up, in the sibling `tamga-sdk` monorepo, not inside this repo). Protocol/field-name source of truth for everything this repo touches: [`tamga-api`'s `docs/sdk.md`](/Users/neco/Projects/tamga-api/docs/sdk.md) (Sections 4, 6, 7, 10 specifically — checkout file formats, offline proof, and the `LicenseScheme` enum).
 
-> **UNBLOCKED**: `tamga-rust` Sections A–L are implemented, tested, and security-reviewed (see `../tamga-rust/CLAUDE.md`); `../tamga-rust` resolves as a real crate via the path dependency and everything in this repo builds. Not yet done: an actual `cargo publish` of `tamga-rust` to crates.io (no credentials in this environment — `Cargo.toml` documents the swap-over line for when that happens). Sections C (License Checkout FFI), D (Machine Checkout FFI, all 4 signing schemes + HKDF), E's `tamga_offline_proof_verify`, F (Memory & Lifecycle, `security-reviewer`-passed), the `tests/c/` CTest harness, and `examples/*.c` are all implemented and verified — including a full CMake+corrosion build and an `-DTAMGA_C_ENABLE_ASAN=ON` run — on macOS x86_64. `tamga_offline_proof_generate` is a deliberate, documented non-implementation — see the GOTCHAS entry below. Remaining: the other 3 platform/arch combinations in Section G's build matrix (this environment only has macOS x86_64 to test against) and a real CI execution (Section I's workflow is scaffolded but has never actually run). See the plan file for the current per-section checklist.
+> **UNBLOCKED**: `tamga-rust` Sections A–L are implemented, tested, and security-reviewed (see `../tamga-rust/CLAUDE.md`); this crate depends on `tamga-rust`'s real crates.io release (`tamga_rust = { package = "tamga", version = "0.1" }` — `tamga-rust` published v0.1.1, this is no longer a sibling-checkout path dependency) and everything in this repo builds against it. Sections C (License Checkout FFI), D (Machine Checkout FFI, all 4 signing schemes + HKDF), E's `tamga_offline_proof_verify`, F (Memory & Lifecycle, `security-reviewer`-passed), the `tests/c/` CTest harness, and `examples/*.c` are all implemented and verified — including a full CMake+corrosion build and an `-DTAMGA_C_ENABLE_ASAN=ON` run. `tamga_offline_proof_generate` is a deliberate, documented non-implementation — see the GOTCHAS entry below. Section G's build matrix now covers 8 platform/arch targets (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64, plus iOS device arm64 and both iOS Simulator archs added for `tamga-swift`'s XCFramework pipeline — see `build-native.yml`'s REUSE POINT comment), exercised via real CI runs, not just scaffolded. See the plan file for the current per-section checklist.
 
 ## Architecture
 
 ```
 tamga-c/
-├── Cargo.toml                    # crate-type = ["cdylib", "staticlib", "rlib"]; [lib] name = "tamga"; tamga_rust = {package="tamga", path="../tamga-rust"}
+├── Cargo.toml                    # crate-type = ["cdylib", "staticlib", "rlib"]; [lib] name = "tamga"; tamga_rust = {package="tamga", version="0.1"} (real crates.io dep)
 ├── build.rs                      # runs cbindgen against src/lib.rs to (re)generate include/tamga.h
 ├── cbindgen.toml                 # cbindgen config: C header style, export filters, include guard, cpp_compat
 ├── rust-toolchain.toml           # pinned toolchain, intended to match tamga-rust
@@ -30,7 +30,7 @@ tamga-c/
 │   └── FetchCorrosion.cmake      # FetchContent for corrosion-rs/corrosion, vendored via CMake
 ├── CMakeLists.txt                # corrosion_import_crate(...), exposes IMPORTED target tamga_c::tamga_c
 ├── tests/
-│   ├── license_file_verify.rs    # Rust-side integration tests (Section C) — STUB, currently unlinkable, see GOTCHAS
+│   ├── license_file_verify.rs    # Rust-side integration tests (Section C) — real, passing (incl. the decoded-bytes-signature-verification-fails regression test cited in GOTCHAS)
 │   ├── machine_file_verify.rs    # (Section D)
 │   ├── offline_proof.rs          # (Section E)
 │   ├── key_derivation.rs         # (Sections C/D)
