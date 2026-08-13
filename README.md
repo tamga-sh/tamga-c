@@ -7,20 +7,22 @@ C/C++ core library for Tamga. Exposes license activation and offline verificatio
 
 > **This is NOT an HTTP client.** There is no auth-transport, `validate`, `check-in`, or machine-management surface in this repo — no `Authorization` headers, no JSON:API request/response handling, no policy/entitlement logic. `tamga-c`'s entire surface is four offline, deterministic crypto operations: verify a `.lic` license file, verify a machine file (across 4 signing schemes), verify/generate a machine offline proof, and derive the two AES keys those file formats depend on. For everything else — license validation over HTTP, machine registration, heartbeats, entitlements — use one of the full hand-written SDKs (`tamga-rust`, `tamga-python`, `tamga-go`, `tamga-dotnet`, `tamga-js`).
 
-> **Status: actively developed.** License-file verify, machine-file verify (all 4 signing schemes), machine offline-proof verify, and both key-derivation primitives are implemented and tested against a CMake+corrosion build (including an AddressSanitizer run). `tamga_offline_proof_generate` is a deliberate non-implementation — see `CLAUDE.md`. The cross-platform build matrix (beyond macOS x86_64) is still in progress.
+> **Status: implemented and tested.** License-file verify (offline format v2), machine-file verify (all 4 signing schemes), machine offline-proof verify, and both key-derivation primitives are implemented, tested against a real CMake+corrosion build (including an AddressSanitizer run), and cross-compiled for 8 platform/arch targets (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64, iOS device + both Simulator archs) on every release. `tamga_offline_proof_generate` is a deliberate non-implementation — see `CLAUDE.md`.
 
 ## Install
 
-`tamga-c` ships as a prebuilt static/shared library + header via **GitHub Releases** (`.so`/`.dylib`/`.dll` + `tamga.h`) — there is no crates.io/npm-style package registry for this repo. An optional `vcpkg`/Conan port is backlog (see `vcpkg.json`, present but without a portfile yet).
+`tamga-c` ships as a prebuilt static/shared library + header via **GitHub Releases** (`.so`/`.dylib`/`.dll`/`.a` + `tamga.h`, one archive per platform) — there is no crates.io/npm-style package registry for this repo.
 
-**Static link via CMake (recommended once a real release exists):**
+**TODO: vcpkg port.** A `vcpkg.json` manifest already exists; the portfile and CMake `install()` rules needed to actually package a working library through it are done and verified locally (`cmake --install` now produces the header + both library artifacts). Submitting this to the central vcpkg registry (`microsoft/vcpkg`) is blocked until this repo meets vcpkg's own maturity bar — **a release at least 6 months old, or 6 months of active public development** (see the [vcpkg Maintainer Guide](https://learn.microsoft.com/en-us/vcpkg/contributing/maintainer-guide)). First real public release here was 2026-08-11, so the earliest this is eligible is **~2027-02**. Until then, the prepared port works as a local overlay port (`vcpkg install tamga-c --overlay-ports=<path>`) for anyone who wants it now.
+
+**Static link via CMake:**
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(
     tamga_c
     GIT_REPOSITORY https://github.com/tamga-sh/tamga-c.git
-    GIT_TAG v0.1.0
+    GIT_TAG v1.2.0  # see https://github.com/tamga-sh/tamga-c/releases for the latest
 )
 FetchContent_MakeAvailable(tamga_c)
 
@@ -31,7 +33,7 @@ target_link_libraries(your_target PRIVATE tamga_c::tamga_c)
 
 ## Quickstart
 
-> Illustrative only — the exact function signatures below match the current scaffold in `src/license_file.rs`, but every one of them is still a stub that returns `TAMGA_ERR_UNKNOWN`. This snippet shows the intended shape of the API, not something you can run today.
+The example below matches the real, tested implementation in `src/license_file.rs` — this runs today, it's not illustrative.
 
 ```c
 #include <stdio.h>
