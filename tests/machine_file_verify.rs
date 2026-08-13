@@ -253,7 +253,7 @@ fn encrypted_machine_file_requires_correct_fingerprint() {
     let license_key = "lic-abc123";
     let fingerprint = "fp-abc123";
     let key = tamga_rust::crypto::hkdf::derive_machine_file_key(license_key, fingerprint);
-    let (pubkey, pem) = build_pem(TamgaScheme::TAMGA_SCHEME_ED25519_SIGN, Some(key));
+    let (pubkey, pem) = build_pem(TamgaScheme::TAMGA_SCHEME_ED25519_SIGN, Some(*key));
 
     let (code, handle) = unsafe {
         verify(
@@ -286,7 +286,7 @@ fn missing_fingerprint_for_encrypted_file_fails() {
     let license_key = "lic-abc123";
     let fingerprint = "fp-abc123";
     let key = tamga_rust::crypto::hkdf::derive_machine_file_key(license_key, fingerprint);
-    let (pubkey, pem) = build_pem(TamgaScheme::TAMGA_SCHEME_ED25519_SIGN, Some(key));
+    let (pubkey, pem) = build_pem(TamgaScheme::TAMGA_SCHEME_ED25519_SIGN, Some(*key));
 
     let (code, handle) = unsafe {
         verify(

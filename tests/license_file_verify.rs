@@ -46,7 +46,7 @@ fn build_pem(
     const PEM_FOOTER: &str = "-----END LICENSE FILE-----";
 
     let (enc, alg) = match encryption_key {
-        None => (B64.encode(payload_json.as_bytes()), "base64+ed25519"),
+        None => (B64.encode(payload_json.as_bytes()), "base64+ed25519+v2"),
         Some(key) => {
             use aes_gcm::aead::{Aead, OsRng as AeadOsRng, rand_core::RngCore as _};
             use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
@@ -57,7 +57,7 @@ fn build_pem(
             let ciphertext_and_tag = cipher.encrypt(&nonce, payload_json.as_bytes()).unwrap();
             let mut out = nonce_bytes.to_vec();
             out.extend_from_slice(&ciphertext_and_tag);
-            (B64.encode(&out), "aes-256-gcm+ed25519")
+            (B64.encode(&out), "aes-256-gcm+ed25519+v2")
         }
     };
 
@@ -82,7 +82,10 @@ fn representative_payload_json() -> String {
                 "machines_count": 0, "metadata": {},
                 "created": "2026-01-01T00:00:00Z", "updated": "2026-01-01T00:00:00Z",
             }
-        }
+        },
+        // Format v2 puts the claims inside the signed bytes; a payload without
+        // them is a v1 file and no longer verifies.
+        "meta": { "iat": 1_767_225_600, "jti": "test-jti", "kid": "test-kid" }
     })
     .to_string()
 }
@@ -143,7 +146,7 @@ fn verifies_a_known_good_plain_fixture() {
 fn verifies_a_known_good_encrypted_fixture() {
     let (pubkey, signing_key) = gen_keypair();
     let license_key = "lic-abc123";
-    let enc_key = tamga_rust::crypto::naive_key::derive_license_file_key(license_key);
+    let enc_key = tamga_rust::crypto::hkdf::derive_license_file_key(license_key);
     let pem = build_pem(&representative_payload_json(), &signing_key, Some(&enc_key));
     let (code, handle) = unsafe { verify(&pem, &pubkey, Some(license_key)) };
     assert_eq!(code, TamgaErrorCode::TAMGA_OK, "error: {}", last_error());
@@ -155,7 +158,7 @@ fn verifies_a_known_good_encrypted_fixture() {
 fn missing_license_key_for_encrypted_file_fails() {
     let (pubkey, signing_key) = gen_keypair();
     let license_key = "lic-abc123";
-    let enc_key = tamga_rust::crypto::naive_key::derive_license_file_key(license_key);
+    let enc_key = tamga_rust::crypto::hkdf::derive_license_file_key(license_key);
     let pem = build_pem(&representative_payload_json(), &signing_key, Some(&enc_key));
     let (code, handle) = unsafe { verify(&pem, &pubkey, None) };
     assert_ne!(code, TamgaErrorCode::TAMGA_OK);
@@ -237,7 +240,7 @@ fn decoded_bytes_signature_verification_fails_proving_the_string_bytes_gotcha() 
     // Sign over the DECODED bytes -- the wrong way to do it.
     let wrong_sig = signing_key.sign(&decoded_enc_bytes);
     let sig = B64.encode(wrong_sig.to_bytes());
-    let cert = serde_json::json!({ "enc": enc, "sig": sig, "alg": "base64+ed25519" });
+    let cert = serde_json::json!({ "enc": enc, "sig": sig, "alg": "base64+ed25519+v2" });
     let pem_body = B64.encode(serde_json::to_string(&cert).unwrap().as_bytes());
     let pem = format!("-----BEGIN LICENSE FILE-----\n{pem_body}\n-----END LICENSE FILE-----");
 
@@ -296,4 +299,50 @@ fn oversized_pem_len_rejected_with_length_specific_code_not_null_argument() {
     };
     assert_eq!(code, TamgaErrorCode::TAMGA_ERR_LENGTH_INVALID);
     assert!(handle.is_null());
+}
+
+// ── Format v2: expiry is inside the signature ────────────────────────────────
+
+#[test]
+fn an_expired_file_is_refused_with_its_own_error_code() {
+    // In v1 the requested TTL lived only in the JSON:API envelope around the
+    // certificate, so a 24-hour trial file stayed cryptographically valid
+    // forever and the client — which is the attacker — simply kept the PEM.
+    let (pubkey, signing_key) = gen_keypair();
+
+    let mut payload: serde_json::Value =
+        serde_json::from_str(&representative_payload_json()).unwrap();
+    // An hour after `iat`, and `iat` is in the past.
+    payload["meta"]["exp"] = serde_json::json!(1_767_229_200_i64);
+
+    let pem = build_pem(&payload.to_string(), &signing_key, None);
+    let (code, _handle) = unsafe { verify(&pem, &pubkey, None) };
+
+    assert_eq!(
+        code,
+        TamgaErrorCode::TAMGA_ERR_EXPIRED,
+        "an expired file must be distinguishable from a forged one"
+    );
+}
+
+#[test]
+fn a_v1_file_is_refused_outright() {
+    // Accepting both formats would hand back the permanent-file problem: any
+    // certificate issued before v2 could be kept and reused forever.
+    let (pubkey, signing_key) = gen_keypair();
+    let pem = build_pem(&representative_payload_json(), &signing_key, None);
+
+    use base64::Engine as _;
+    const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+
+    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    let mut cert: serde_json::Value =
+        serde_json::from_slice(&B64.decode(body.trim()).unwrap()).unwrap();
+    cert["alg"] = serde_json::json!("base64+ed25519");
+    let repacked = B64.encode(serde_json::to_string(&cert).unwrap().as_bytes());
+    let v1_pem =
+        format!("-----BEGIN LICENSE FILE-----\n{repacked}\n-----END LICENSE FILE-----");
+
+    let (code, _handle) = unsafe { verify(&v1_pem, &pubkey, None) };
+    assert_eq!(code, TamgaErrorCode::TAMGA_ERR_UNSUPPORTED_SCHEME);
 }

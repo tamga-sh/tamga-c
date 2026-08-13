@@ -71,3 +71,13 @@ base64 = "0.23"
 # deliberately NOT the `rsa` crate, same house ban as tamga-rust
 # (RUSTSEC-2023-0071, unpatched Marvin timing attack).
 aws-lc-rs = "1"
+
+# Build against the sibling checkout during development.
+#
+# `[patch]` is honoured only in the root of the build being run, so this has no
+# effect on anyone who depends on the published `tamga-c` — they still resolve
+# `tamga` from crates.io. What it buys is that a change to the reference
+# implementation and its C wrapper can be developed and tested together, rather
+# than the wrapper only compiling after the other crate has been released.
+[patch.crates-io]
+tamga = { path = "../tamga-rust" }
