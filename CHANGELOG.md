@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/tamga-sh/tamga-c/compare/v1.1.1...v1.2.0) (2026-08-13)
+
+
+### Features
+
+* license-file HKDF + offline format v2 (via tamga-rust delegation) ([fd79a8a](https://github.com/tamga-sh/tamga-c/commit/fd79a8a4e8394b6ea0daff463d6c930efb884b16))
+
 ## [1.1.1](https://github.com/tamga-sh/tamga-c/compare/v1.1.0...v1.1.1) (2026-08-12)
 
 
