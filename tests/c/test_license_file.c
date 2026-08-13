@@ -19,26 +19,36 @@
 #include "tamga.h"
 
 static const uint8_t LICENSE_PUBKEY[32] = {
-    0x66, 0xba, 0x85, 0x92, 0xb3, 0xf5, 0x5c, 0x92, 0xe8, 0x70, 0xf6, 0xcc, 0xdf, 0xd1, 0xe6, 0x72,
-    0xa4, 0x5e, 0x28, 0x39, 0x24, 0xd9, 0x46, 0x88, 0xba, 0x2a, 0xa2, 0xc9, 0x02, 0x53, 0x7a, 0x37,
+    0xc3, 0xa6, 0x1e, 0xe4, 0xad, 0xb2, 0x22, 0x39, 0x42, 0x75, 0x05, 0xd6, 0xd8, 0xb8, 0xcd, 0xd0,
+    0x6c, 0xcc, 0xdb, 0xa4, 0xee, 0x27, 0x8a, 0x7e, 0x28, 0x16, 0x02, 0x9f, 0xde, 0xb3, 0x6c, 0xcf,
 };
 
+/* Format v2 (alg ends "+v2", signed meta.{iat,jti,kid} inside the payload) --
+ * regenerated when the license-file key derivation moved off naive_key onto
+ * HKDF and the verifier started requiring the v2 alg suffix. The old v1
+ * fixture here (no +v2, no meta) started failing with "unsupported
+ * algorithm: base64+ed25519" once that landed -- the verifier correctly
+ * doing its job, not a regression. Fresh Ed25519 keypair signing a v2
+ * payload built the same way tamga-rust's own build_pem test helper does
+ * (src/checkout/license_file.rs). */
 static const char *LICENSE_PEM =
     "-----BEGIN LICENSE FILE-----\n"
-    "eyJhbGciOiJiYXNlNjQrZWQyNTUxOSIsImVuYyI6ImV5SmtZWFJoSWpwN0ltRjBkSEpwWW5WMFpY"
-    "TWlPbnNpWTNKbFlYUmxaQ0k2SWpJd01qWXRNREV0TURGVU1EQTZNREE2TURCYUlpd2laVzVqY25s"
-    "d2RHVmtJanBtWVd4elpTd2laWGh3YVhKNUlqcHVkV3hzTENKbWJHOWhkR2x1WnlJNlptRnNjMlVz"
-    "SW10bGVTSTZJbXhwWXkxaFltTXhNak1pTENKc1lYTjBYMk5vWldOclgybHVYMkYwSWpwdWRXeHNM"
-    "Q0pzWVhOMFgyTm9aV05yWDI5MWRGOWhkQ0k2Ym5Wc2JDd2liR0Z6ZEY5MllXeHBaR0YwWldSZllY"
-    "UWlPbTUxYkd3c0ltMWhZMmhwYm1WelgyTnZkVzUwSWpvd0xDSnRZWGhmYldGamFHbHVaWE1pT201"
-    "MWJHd3NJbTFoZUY5MWMyVnljeUk2Ym5Wc2JDd2liV0Y0WDNWelpYTWlPbTUxYkd3c0ltMWxkR0Zr"
-    "WVhSaElqcDdmU3dpYm1GdFpTSTZJa0ZqYldVZ1EyOXljQ0lzSW5CeWIzUmxZM1JsWkNJNlptRnNj"
-    "MlVzSW5OamFHVnRaU0k2Ym5Wc2JDd2ljM1JoZEhWeklqb2lRVU5VU1ZaRklpd2ljM1J5YVdOMElq"
-    "cG1ZV3h6WlN3aWMzVnpjR1Z1WkdWa0lqcG1ZV3h6WlN3aWRYQmtZWFJsWkNJNklqSXdNall0TURF"
-    "dE1ERlVNREE2TURBNk1EQmFJaXdpZFhObGN5STZNSDBzSW1sa0lqb2lNREU1TWpaaU0yVXRNREF3"
-    "TUMwM01EQXdMVGd3TURBdE1EQXdNREF3TURBd01EQXdJaXdpZEhsd1pTSTZJbXhwWTJWdWMyVnpJ"
-    "bjE5Iiwic2lnIjoic2RvSzhJbzV1djB0dmdhVlJHUUJtOXJ1R2xCcllzcUZMMmhkNENxc3ZkZEpH"
-    "N3FtVW1mdXc3YmFVeWZaNEwxbmxORUMwQ2lGRjF2ZXJMTXRQVkU2RGc9PSJ9"
+    "eyJhbGciOiJiYXNlNjQrZWQyNTUxOSt2MiIsImVuYyI6ImV5SmtZWFJoSWpwN0ltRjBkSEpwWW5W"
+    "MFpYTWlPbnNpWTNKbFlYUmxaQ0k2SWpJd01qWXRNREV0TURGVU1EQTZNREE2TURCYUlpd2laVzVq"
+    "Y25sd2RHVmtJanBtWVd4elpTd2laWGh3YVhKNUlqcHVkV3hzTENKbWJHOWhkR2x1WnlJNlptRnNj"
+    "MlVzSW10bGVTSTZJbXhwWXkxaFltTXhNak1pTENKc1lYTjBYMk5vWldOclgybHVYMkYwSWpwdWRX"
+    "eHNMQ0pzWVhOMFgyTm9aV05yWDI5MWRGOWhkQ0k2Ym5Wc2JDd2liR0Z6ZEY5MllXeHBaR0YwWldS"
+    "ZllYUWlPbTUxYkd3c0ltMWhZMmhwYm1WelgyTnZkVzUwSWpvd0xDSnRZWGhmYldGamFHbHVaWE1p"
+    "T201MWJHd3NJbTFoZUY5MWMyVnljeUk2Ym5Wc2JDd2liV0Y0WDNWelpYTWlPbTUxYkd3c0ltMWxk"
+    "R0ZrWVhSaElqcDdmU3dpYm1GdFpTSTZJa0ZqYldVZ1EyOXljQ0lzSW5CeWIzUmxZM1JsWkNJNlpt"
+    "RnNjMlVzSW5OamFHVnRaU0k2Ym5Wc2JDd2ljM1JoZEhWeklqb2lRVU5VU1ZaRklpd2ljM1J5YVdO"
+    "MElqcG1ZV3h6WlN3aWMzVnpjR1Z1WkdWa0lqcG1ZV3h6WlN3aWRYQmtZWFJsWkNJNklqSXdNall0"
+    "TURFdE1ERlVNREE2TURBNk1EQmFJaXdpZFhObGN5STZNSDBzSW1sa0lqb2lNREU1TWpaaU0yVXRN"
+    "REF3TUMwM01EQXdMVGd3TURBdE1EQXdNREF3TURBd01EQXdJaXdpZEhsd1pTSTZJbXhwWTJWdWMy"
+    "VnpJbjBzSW0xbGRHRWlPbnNpYVdGMElqb3hOelkzTWpJMU5qQXdMQ0pxZEdraU9pSjBaWE4wTFdw"
+    "MGFTSXNJbXRwWkNJNkluUmxjM1F0YTJsa0luMTkiLCJzaWciOiJRbEpZbS8rTUJLZloySnlVcmdn"
+    "V1ZhUnVJVG9oNHkwbW1hdGsxaDZvcy9VTy9LMkFHYjlRVDRodTJrWXBPRTh4d3h2SVRUREU3RndB"
+    "aVd5NVNVRC9BQT09In0="
     "\n-----END LICENSE FILE-----";
 
 int main(void) {
