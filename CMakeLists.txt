@@ -34,13 +34,38 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/tamga.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-# TODO(Section G): install() the corrosion-built cdylib/staticlib artifacts
-# themselves once real cross-platform builds exist to test against --
-# likely `install(IMPORTED_RUNTIME_ARTIFACTS tamga_c::tamga_c ...)` (CMake
-# 3.21+) alongside an archive/library destination for the staticlib. Left
-# as a TODO rather than guessed at, since corrosion's exact artifact target
-# properties should be confirmed against the pinned corrosion version
-# before writing install() rules that silently install nothing.
+# Plain `install(TARGETS tamga_c::tamga_c ...)` does NOT work here -- the
+# targets corrosion_import_crate() exports are an INTERFACE library wrapping
+# internal IMPORTED SHARED/STATIC targets, and CMake's own install(TARGETS)
+# does not know how to install an IMPORTED target's artifacts.
+#
+# corrosion's own corrosion_install() looks like the documented answer (see
+# https://corrosion-rs.github.io/corrosion/usage.html) but is genuinely
+# broken for library crates in the pinned version -- read its actual
+# implementation (cmake/FetchCorrosion.cmake pins the version; see
+# Corrosion.cmake's corrosion_install() body) and it only ever installs
+# targets where `get_property(... PROPERTY TYPE)` equals EXECUTABLE; there
+# is no branch for STATIC_LIBRARY/SHARED_LIBRARY at all, so
+# corrosion_install(TARGETS tamga) silently installs nothing for a
+# cdylib/staticlib crate -- confirmed empirically (built libtamga.a and
+# libtamga.dylib existed in the build dir, cmake --install copied neither)
+# before reading the source and finding why. EXPORT is separately listed as
+# "not yet implemented" and hard-errors if used.
+#
+# Installing the real underlying IMPORTED targets directly instead --
+# corrosion names these <crate>-static / <crate>-shared internally (see
+# Corrosion.cmake's add_library(${target_name}-static STATIC IMPORTED ...)
+# and the -shared equivalent), which DO support $<TARGET_FILE:...> like any
+# normal IMPORTED library target.
+if(TARGET tamga-static)
+    install(FILES $<TARGET_FILE:tamga-static> DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
+if(TARGET tamga-shared)
+    install(FILES $<TARGET_FILE:tamga-shared> DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    if(WIN32)
+        install(FILES $<TARGET_LINKER_FILE:tamga-shared> DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    endif()
+endif()
 
 # --- Subprojects -------------------------------------------------------
 option(TAMGA_C_BUILD_TESTS "Build the tests/c/ CTest harness" ON)
