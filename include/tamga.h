@@ -107,15 +107,6 @@ typedef enum TamgaErrorCode {
     TAMGA_ERR_LENGTH_INVALID = 10,
     /**
      * The file's signature verified, but its signed `exp` claim is in the
-     * past — an authentic licence file that has simply run out.
-     *
-     * Distinct from TAMGA_ERR_SIGNATURE_INVALID on purpose: a caller that
-     * cannot tell "expired" from "forged" either warns about tampering when
-     * a trial merely ended, or treats a forgery as a renewal prompt.
-     */
-    TAMGA_ERR_EXPIRED = 11,
-    /**
-     * The file's signature verified, but its signed `exp` claim is in the
      * past — an authentic licence file that has simply run out. Check out a
      * fresh one.
      *
