@@ -22,13 +22,13 @@
 use std::ffi::CString;
 
 use tamga::TamgaErrorCode;
-use tamga::kdf::tamga_naive_derive_license_file_key;
+use tamga::kdf::tamga_hkdf_derive_license_file_key;
 
 #[test]
 fn tamga_err_panic_is_a_distinct_value_never_returned_on_success() {
     let c_key = CString::new("lic-abc123").unwrap();
     let mut out = [0u8; 32];
-    let code = unsafe { tamga_naive_derive_license_file_key(c_key.as_ptr(), out.as_mut_ptr()) };
+    let code = unsafe { tamga_hkdf_derive_license_file_key(c_key.as_ptr(), out.as_mut_ptr()) };
     assert_eq!(code, TamgaErrorCode::TAMGA_OK);
     assert_ne!(code, TamgaErrorCode::TAMGA_ERR_PANIC);
 }

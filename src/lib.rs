@@ -101,6 +101,16 @@ pub enum TamgaErrorCode {
     /// only: appended, not renumbered — existing numeric values are
     /// unchanged) — see CLAUDE.md's ABI-freeze commitment.
     TAMGA_ERR_LENGTH_INVALID = 10,
+    /// The file's signature verified, but its signed `exp` claim is in the
+    /// past — an authentic licence file that has simply run out. Check out a
+    /// fresh one.
+    ///
+    /// Distinct from `TAMGA_ERR_SIGNATURE_INVALID` on purpose: a caller that
+    /// cannot tell "expired" from "forged" either nags the user about
+    /// tampering when their trial ended, or treats a forgery as a renewal
+    /// prompt. Appended, not renumbered — see CLAUDE.md's ABI-freeze
+    /// commitment.
+    TAMGA_ERR_EXPIRED = 11,
 }
 
 /// Signing/key scheme, mirroring the wire `LicenseScheme` strings from

@@ -4,10 +4,16 @@
 //!
 //! # Two different derivations — do not confuse them
 //!
-//! - **License-file key** ([`tamga_naive_derive_license_file_key`]): `docs/sdk.md`
-//!   §4 — ⚠️ **not a KDF**. `license.key`'s raw UTF-8 bytes, zero-padded or
-//!   truncated to exactly 32 bytes. Not a hash, not PBKDF2, not HKDF — must
-//!   byte-exactly replicate the server's naive transform.
+//! - **License-file key** ([`tamga_hkdf_derive_license_file_key`]): HKDF-SHA256,
+//!   `salt = "tamga:license-file-key-v1"`, `ikm = <license key>`,
+//!   `info = "license-file"` → 32 bytes.
+//!
+//!   Before format v2 this was not a KDF at all — the licence key's raw bytes
+//!   zero-padded to 32 — which meant an attacker holding a stolen `.lic` was
+//!   attacking the licence key's own entropy rather than a 256-bit key space.
+//!   The old `tamga_hkdf_derive_license_file_key` symbol is **removed**, not
+//!   deprecated: leaving it exported would let a caller silently keep using
+//!   the weaker derivation.
 //! - **Machine-file key** ([`tamga_hkdf_derive_machine_file_key`]): `docs/sdk.md`
 //!   §6 — properly HKDF-SHA256 derived: `salt = "tamga:machine-file-key-v1"`,
 //!   `ikm = <license key>`, `info = <machine fingerprint>` → 32 bytes.
@@ -59,15 +65,15 @@ pub unsafe extern "C" fn tamga_hkdf_derive_machine_file_key(
         // SAFETY: caller contract requires `out_32_bytes` to point to at
         // least 32 writable bytes; checked non-null above.
         unsafe {
-            slice::from_raw_parts_mut(out_32_bytes, 32).copy_from_slice(&key);
+            slice::from_raw_parts_mut(out_32_bytes, 32).copy_from_slice(&key[..]);
         }
         Ok(())
     })
 }
 
-/// Derives the 32-byte AES key for an encrypted license file via the
-/// server's **naive, non-KDF** transform: `license_key`'s raw UTF-8 bytes,
-/// zero-padded or truncated to exactly 32 bytes.
+/// Derives the 32-byte AES key for an encrypted license file via HKDF-SHA256:
+/// `salt = "tamga:license-file-key-v1"`, `ikm = license_key`,
+/// `info = "license-file"`.
 ///
 /// # Parameters
 /// - `license_key`: NUL-terminated C string.
@@ -77,29 +83,29 @@ pub unsafe extern "C" fn tamga_hkdf_derive_machine_file_key(
 /// `license_key` must be null or a valid NUL-terminated C string.
 /// `out_32_bytes` must point to at least 32 writable bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn tamga_naive_derive_license_file_key(
+pub unsafe extern "C" fn tamga_hkdf_derive_license_file_key(
     license_key: *const c_char,
     out_32_bytes: *mut u8,
 ) -> TamgaErrorCode {
     ffi_guard(|| {
         if out_32_bytes.is_null() {
-            crate::set_last_error("tamga_naive_derive_license_file_key: null argument");
+            crate::set_last_error("tamga_hkdf_derive_license_file_key: null argument");
             return Err(TamgaErrorCode::TAMGA_ERR_NULL_ARGUMENT);
         }
         // SAFETY: caller contract requires `license_key` to be null or a
         // valid NUL-terminated C string.
         let license_key_str = unsafe { crate::cstr_to_str(license_key) }.inspect_err(|_| {
             crate::set_last_error(
-                "tamga_naive_derive_license_file_key: license_key is null or not valid UTF-8",
+                "tamga_hkdf_derive_license_file_key: license_key is null or not valid UTF-8",
             );
         })?;
 
-        let key = tamga_rust::crypto::naive_key::derive_license_file_key(license_key_str);
+        let key = tamga_rust::crypto::hkdf::derive_license_file_key(license_key_str);
 
         // SAFETY: caller contract requires `out_32_bytes` to point to at
         // least 32 writable bytes; checked non-null above.
         unsafe {
-            slice::from_raw_parts_mut(out_32_bytes, 32).copy_from_slice(&key);
+            slice::from_raw_parts_mut(out_32_bytes, 32).copy_from_slice(&key[..]);
         }
         Ok(())
     })

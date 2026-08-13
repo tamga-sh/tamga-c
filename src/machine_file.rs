@@ -84,6 +84,10 @@ fn map_checkout_error(err: tamga_rust::error::CheckoutError) -> TamgaErrorCode {
         }
         CheckoutError::SchemeNotSupported => TamgaErrorCode::TAMGA_ERR_UNSUPPORTED_SCHEME,
         CheckoutError::TtlOutOfRange(_) => TamgaErrorCode::TAMGA_ERR_UNKNOWN,
+        // Machine files carry no `exp` claim today, so this is unreachable
+        // here — mapped rather than left to a catch-all so that adding one
+        // later cannot silently report it as an unknown failure.
+        CheckoutError::Expired { .. } => TamgaErrorCode::TAMGA_ERR_EXPIRED,
         CheckoutError::Crypto(CryptoError::VerificationFailed) => {
             TamgaErrorCode::TAMGA_ERR_SIGNATURE_INVALID
         }

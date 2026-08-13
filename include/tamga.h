@@ -105,6 +105,18 @@ typedef enum TamgaErrorCode {
      * unchanged) — see CLAUDE.md's ABI-freeze commitment.
      */
     TAMGA_ERR_LENGTH_INVALID = 10,
+    /**
+     * The file's signature verified, but its signed `exp` claim is in the
+     * past — an authentic licence file that has simply run out. Check out a
+     * fresh one.
+     *
+     * Distinct from `TAMGA_ERR_SIGNATURE_INVALID` on purpose: a caller that
+     * cannot tell "expired" from "forged" either nags the user about
+     * tampering when their trial ended, or treats a forgery as a renewal
+     * prompt. Appended, not renumbered — see CLAUDE.md's ABI-freeze
+     * commitment.
+     */
+    TAMGA_ERR_EXPIRED = 11,
 } TamgaErrorCode;
 
 /**
@@ -221,9 +233,9 @@ enum TamgaErrorCode tamga_hkdf_derive_machine_file_key(const char *license_key,
                                                        uint8_t *out_32_bytes);
 
 /**
- * Derives the 32-byte AES key for an encrypted license file via the
- * server's **naive, non-KDF** transform: `license_key`'s raw UTF-8 bytes,
- * zero-padded or truncated to exactly 32 bytes.
+ * Derives the 32-byte AES key for an encrypted license file via HKDF-SHA256:
+ * `salt = "tamga:license-file-key-v1"`, `ikm = license_key`,
+ * `info = "license-file"`.
  *
  * # Parameters
  * - `license_key`: NUL-terminated C string.
@@ -233,8 +245,8 @@ enum TamgaErrorCode tamga_hkdf_derive_machine_file_key(const char *license_key,
  * `license_key` must be null or a valid NUL-terminated C string.
  * `out_32_bytes` must point to at least 32 writable bytes.
  */
-enum TamgaErrorCode tamga_naive_derive_license_file_key(const char *license_key,
-                                                        uint8_t *out_32_bytes);
+enum TamgaErrorCode tamga_hkdf_derive_license_file_key(const char *license_key,
+                                                       uint8_t *out_32_bytes);
 
 /**
  * Verifies and decodes a `.lic` license file, fully offline, by delegating

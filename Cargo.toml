@@ -35,7 +35,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 # under a name that collides with its own lib's extern name once integration
 # tests (which implicitly link both) enter the picture. Internal source
 # refers to this dependency as `tamga_rust::...` throughout.
-tamga_rust = { package = "tamga", version = "0.1" }
+tamga_rust = { package = "tamga", version = "0.2" }
 # Only for re-serializing tamga-rust's already-`Serialize`-derived response
 # models into owned JSON C strings (`tamga_*_get_json`) — no independent
 # JSON handling of our own.
@@ -71,3 +71,11 @@ base64 = "0.23"
 # deliberately NOT the `rsa` crate, same house ban as tamga-rust
 # (RUSTSEC-2023-0071, unpatched Marvin timing attack).
 aws-lc-rs = "1"
+
+# The [patch.crates-io] override that used to point this at the sibling
+# ../tamga-rust checkout during tamga-rust's pre-publish phase is gone now
+# that tamga-rust is a real, published crate (0.2.0+) -- this crate resolves
+# `tamga` from crates.io like any other dependent, in CI and locally alike.
+# See tamga_rust's version constraint above/below and ci.yml's header comment
+# for why that patch existed and why removing it was always the intended
+# unblock step, not an afterthought.
