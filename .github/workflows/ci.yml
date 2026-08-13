@@ -5,13 +5,11 @@ on:
     branches: [main]
   pull_request:
 
-# NOTE: this crate has a path dependency on ../tamga-rust (see Cargo.toml),
-# which is BLOCKED per docs/plans/tamga-c.plan.md's top-of-file banner --
-# tamga-rust does not exist as a real, publishable crate yet. This workflow
-# will not go green in a standalone CI checkout (no sibling tamga-rust
-# checkout exists) until tamga-rust ships 0.1.0 to crates.io and Cargo.toml
-# swaps to the commented-out crates.io dependency line. Scaffolded now so
-# the pipeline shape is reviewable ahead of that unblock landing.
+# UNBLOCKED: tamga-rust published to crates.io (0.2.0+), so the
+# [patch.crates-io] override that used to point this crate at a sibling
+# ../tamga-rust checkout is gone -- Cargo.toml's `tamga_rust = { package =
+# "tamga", version = "0.2" }` resolves from crates.io like any other
+# dependency, in this standalone CI checkout same as locally.
 
 env:
   CARGO_TERM_COLOR: always
