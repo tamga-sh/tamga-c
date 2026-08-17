@@ -1,7 +1,7 @@
 {
   "name": "tamga-c",
   "version": "1.2.0",
-  "description": "C ABI bindings for the Tamga licensing SDK. Exposes tamga-rust's offline-verification primitives (license-file, machine-file, offline-proof, key derivation) through a stable C ABI.",
+  "description": "Official C/C++ SDK for Tamga. Integrate license activation, offline verification, and machine management into your C/C++ applications.",
   "homepage": "https://github.com/tamga-sh/tamga-c",
   "license": "MIT",
   "dependencies": [

@@ -2,9 +2,21 @@
 name = "tamga-c"
 version = "0.1.0"
 edition = "2024"
-description = "C ABI bindings for the Tamga licensing SDK. Exposes tamga-rust's offline-verification primitives (license-file, machine-file, offline-proof, key derivation) through a stable C ABI."
+description = "Official C/C++ SDK for Tamga. Integrate license activation, offline verification, and machine management into your C/C++ applications."
 license = "MIT"
 repository = "https://github.com/tamga-sh/tamga-c"
+homepage = "https://tamga.sh"
+# Canonical fleet keyword set, shared across every official Tamga SDK.
+# crates.io caps this at 5 keywords of at most 20 characters each; the set
+# below is exactly at that limit, so a sixth entry cannot be added without
+# dropping one.
+keywords = [
+    "licensing",
+    "software-licensing",
+    "license-key",
+    "activation",
+    "entitlements",
+]
 publish = false # GitHub Releases is the v0.1 artifact store, not crates.io — see .github/workflows/release.yml.
 
 # NOTE(rlib-vs-cdylib gotcha, RESOLVED): "rlib" is included alongside
