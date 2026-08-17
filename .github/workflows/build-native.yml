@@ -7,12 +7,13 @@ name: Build Native
 # (`uses: tamga-sh/tamga-c/.github/workflows/build-native.yml@main`), which
 # lipo's the per-arch macOS/iOS-simulator outputs into universal slices and
 # feeds all three (macOS universal, iOS device, iOS-simulator universal)
-# into `xcodebuild -create-xcframework` -- see that repo's CLAUDE.md and
-# docs/sdk.md's Architecture section (tamga-swift wraps tamga-c via a
-# Swift/Objective-C bridge). Do not remove the ios-* matrix entries below
-# without updating tamga-swift's workflow to match; do not rename a target
-# without doing the same (tamga-swift's `dist/tamga-c-<name>/` artifact
-# paths are keyed on the `name:` values here).
+# into `xcodebuild -create-xcframework` -- see that repo's CLAUDE.md and the
+# Tamga API protocol specification's Architecture section (tamga-swift wraps
+# tamga-c via a Swift/Objective-C bridge). Do not remove the ios-* matrix
+# entries below without updating tamga-swift's workflow to match; do not
+# rename a target without doing the same (tamga-swift's
+# `dist/tamga-c-<name>/` artifact paths are keyed on the `name:` values
+# here).
 
 on:
   workflow_call: {}

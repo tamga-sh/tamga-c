@@ -9,8 +9,8 @@
 //! happening not to visibly corrupt anything that run) while still being
 //! undefined behavior; asserting on that outcome would be actively
 //! misleading. Real double-free detection belongs in the ASAN-gated C
-//! harness (`tests/c/CMakeLists.txt`'s `TAMGA_C_ENABLE_ASAN` option,
-//! Section G), which is built specifically to catch it.
+//! harness (`tests/c/CMakeLists.txt`'s `TAMGA_C_ENABLE_ASAN` option), which
+//! is built specifically to catch it.
 
 use std::ptr;
 

@@ -62,8 +62,8 @@ fn map_scheme(scheme: TamgaScheme) -> Result<tamga_rust::models::policy::License
         TamgaScheme::TAMGA_SCHEME_ECDSA_P256_SIGN => Ok(LicenseScheme::EcdsaP256Sign),
         // Passed through deliberately, not rejected here — verify_machine_file
         // itself rejects this scheme up front (defense in depth: the
-        // rejection lives in the one place the plan's security review
-        // already covered, rather than being duplicated at this FFI layer).
+        // rejection lives in the one place the security review already
+        // covered, rather than being duplicated at this FFI layer).
         TamgaScheme::TAMGA_SCHEME_RSA_2048_JWT_RS256 => Ok(LicenseScheme::Rsa2048JwtRs256),
     }
 }

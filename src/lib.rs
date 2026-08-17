@@ -355,7 +355,7 @@ pub(crate) unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, Tamg
         .map_err(|_| TamgaErrorCode::TAMGA_ERR_INVALID_JSON)
     // NOTE: TAMGA_ERR_INVALID_JSON is a placeholder mapping for "argument
     // was not valid UTF-8" — it's not really a JSON error. Every call site
-    // in Sections C/D/E immediately overwrites the last-error message with
+    // in the FFI modules immediately overwrites the last-error message with
     // a more specific one via `.inspect_err(...)`, so the coarse code here
     // is only ever seen by a caller who ignores `tamga_last_error_message`.
     // Not worth a dedicated code for that case alone.

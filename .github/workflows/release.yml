@@ -2,16 +2,16 @@ name: Release
 
 # release-please (release-type: simple) maintains CHANGELOG.md + tags only
 # -- there's no single Cargo.toml version file to bump the way a normal
-# published Rust crate's release-please config would (see
-# docs/plans/tamga-c.plan.md Section 6). On release, cross-compile via
-# build-native.yml (reusable workflow_call), package each target's library
-# + include/tamga.h, and attach everything to the matching GitHub Release.
+# published Rust crate's release-please config would. On release,
+# cross-compile via build-native.yml (reusable workflow_call), package each
+# target's library + include/tamga.h, and attach everything to the matching
+# GitHub Release.
 #
 # No registry publish for v0.1 -- GitHub Releases IS the artifact store,
-# matching the SDK Index in docs/sdk.md ("GitHub Releases (.so/.dylib/.dll
-# + tamga.h); optional vcpkg/Conan"). The vcpkg/Conan path stays backlog
-# (see vcpkg.json and docs/plans/tamga-c.plan.md Section A) -- no portfile
-# work happens here.
+# matching the SDK Index in the Tamga API protocol specification ("GitHub
+# Releases (.so/.dylib/.dll + tamga.h); optional vcpkg/Conan"). The
+# vcpkg/Conan path stays backlog (see vcpkg.json) -- no portfile work
+# happens here.
 
 on:
   push:
