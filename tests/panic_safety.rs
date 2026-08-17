@@ -1,5 +1,5 @@
 //! Regression coverage for the `catch_unwind` contract every `extern "C"
-//! fn` must uphold (docs/plans/tamga-c.plan.md Section F).
+//! fn` must uphold.
 //!
 //! The actual "does `ffi_guard` catch a panic and convert it to
 //! `TAMGA_ERR_PANIC` instead of unwinding" proof lives as a unit test —

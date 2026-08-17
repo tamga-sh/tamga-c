@@ -1,16 +1,16 @@
 /**
  * test_offline_proof.c
  *
- * CTest harness for Section E of docs/plans/tamga-c.plan.md ("Machine
- * Offline Proof FFI"). Drives tamga_offline_proof_verify purely through the
- * public C ABI in tamga.h. `tamga_offline_proof_generate` is deliberately
- * unimplemented (tamga-rust exposes no local RSA-signing primitive — see
- * src/offline_proof.rs's module doc comment), so this harness only checks
- * that calling it reports that clearly rather than crashing.
+ * CTest harness for the offline-proof FFI. Drives
+ * tamga_offline_proof_verify purely through the public C ABI in tamga.h.
+ * `tamga_offline_proof_generate` is deliberately unimplemented (tamga-rust
+ * exposes no local RSA-signing primitive — see src/offline_proof.rs's module
+ * doc comment), so this harness only checks that calling it reports that
+ * clearly rather than crashing.
  *
  * Fixture: a real RSA-2048 keypair, PKCS#1 v1.5/SHA-256 signature over the
  * canonical (alphabetically-ordered, NOT source-declaration-ordered — see
- * CLAUDE.md) JSON payload, mirroring what tamga-api's own
+ * CLAUDE.md) JSON payload, mirroring what the server's own
  * generate-offline-proof endpoint produces.
  */
 #include <assert.h>

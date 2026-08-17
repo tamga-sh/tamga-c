@@ -1,4 +1,4 @@
-//! Alloc/free contract tests (docs/plans/tamga-c.plan.md Section F).
+//! Alloc/free contract tests for the handle and string lifecycle.
 //!
 //! See `tests/license_file_verify.rs`'s module doc comment for why this
 //! crate's own lib is imported here as `tamga::...`, not `tamga_c::...`.

@@ -1,9 +1,9 @@
 /**
  * test_machine_file.c
  *
- * CTest harness for Section D of docs/plans/tamga-c.plan.md ("Machine
- * Checkout FFI"). Drives tamga_machine_file_verify/_get_json/_free purely
- * through the public C ABI in tamga.h. Only the Ed25519 scheme is fixtured
+ * CTest harness for the machine-file FFI. Drives
+ * tamga_machine_file_verify/_get_json/_free purely through the public C
+ * ABI in tamga.h. Only the Ed25519 scheme is fixtured
  * here (the Rust-side tests/machine_file_verify.rs already exercises all 4
  * schemes plus encrypted round-trips exhaustively — this C harness exists
  * to prove the ABI itself links and behaves correctly from a real C

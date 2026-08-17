@@ -1,13 +1,14 @@
-//! `tamga_license_file_verify` / `_get_json` / `_free` — Section C of
-//! `docs/plans/tamga-c.plan.md` ("License Checkout FFI").
+//! `tamga_license_file_verify` / `_get_json` / `_free` — the license-file
+//! FFI surface.
 //!
 //! This module is a thin FFI marshalling layer over `tamga-rust`'s already
 //! security-reviewed `checkout::license_file::verify_license_file` — no
-//! cryptographic logic is reimplemented here. All of the base64-string-vs-
-//! decoded-bytes / naive-key-derivation gotchas live (and are tested) on
-//! the `tamga-rust` side; see `../tamga-rust/src/checkout/license_file.rs`.
+//! cryptographic logic is reimplemented here. The base64-string-vs-decoded-
+//! bytes gotcha and the HKDF-SHA256 key derivation both live (and are tested)
+//! on the `tamga-rust` side; see that crate's `src/checkout/license_file.rs`
+//! and `src/crypto/hkdf.rs`.
 //!
-//! # `.lic` file format (from `docs/sdk.md` §4 / plan §3.1)
+//! # `.lic` file format
 //!
 //! ```text
 //! -----BEGIN LICENSE FILE-----
@@ -15,20 +16,35 @@
 //! -----END LICENSE FILE-----
 //! ```
 //!
-//! `alg` is exactly `"base64+ed25519"` (plain) or `"aes-256-gcm+ed25519"`
-//! (encrypted) — Ed25519 only, independent of the license's own key
-//! `scheme` field.
+//! `alg` is exactly `"base64+ed25519+v2"` (plain) or
+//! `"aes-256-gcm+ed25519+v2"` (encrypted) — Ed25519 only, independent of the
+//! license's own key `scheme` field.
 //!
-//! ⚠️ **Signature ABI deviation from the plan's original checklist**: the
-//! plan's Section C listed `tamga_license_file_verify(pem, pem_len,
-//! ed25519_pubkey, out_handle)` with no `license_key` parameter — but
-//! `tamga-rust`'s `verify_license_file` requires `license_key: Option<&str>`
-//! to decrypt an **encrypted** (`aes-256-gcm+ed25519`) file. The plan's own
-//! banner marked this signature "exact upstream signature TBD pending the
-//! v0.1 freeze" — this was a genuine gap, not a settled design, so a
-//! `license_key: *const c_char` parameter (nullable — required only for
-//! encrypted files) was added here to make the function actually usable for
-//! its stated purpose.
+//! # Offline format v2 — v1 files are refused, with no fallback
+//!
+//! ⚠️ A file whose `alg` does not end in `+v2` is rejected with
+//! [`TamgaErrorCode::TAMGA_ERR_UNSUPPORTED_SCHEME`]. In v1 the requested
+//! `ttl`/`expiry` lived only in the JSON:API envelope *around* the
+//! certificate, never inside the signed bytes, so a 24-hour trial file was
+//! cryptographically valid forever — the client is the attacker, and any
+//! check built on the envelope is bypassed by keeping the raw certificate.
+//! v2 moves those claims (`iat`, `exp`, `jti`, `kid`) inside the signature,
+//! and accepting both formats would hand that back. Callers holding v1 `.lic`
+//! files must check out fresh ones; this is a behavioral break, not a
+//! deprecation.
+//!
+//! `exp` is enforced by `tamga-rust` with a 60-second clock-skew tolerance
+//! and surfaced here as the dedicated
+//! [`TamgaErrorCode::TAMGA_ERR_EXPIRED`] code, so callers can distinguish an
+//! authentic-but-expired file from a forged one.
+//!
+//! # The `license_key` parameter
+//!
+//! `tamga-rust`'s `verify_license_file` takes `license_key: Option<&str>` to
+//! decrypt an **encrypted** (`aes-256-gcm+ed25519+v2`) file, so this FFI
+//! entry point carries a nullable `license_key: *const c_char` alongside the
+//! PEM and public key. It is required only for encrypted files and ignored
+//! for plain ones.
 
 use std::ffi::{CString, c_char};
 use std::slice;
@@ -79,13 +95,18 @@ fn map_checkout_error(err: tamga_rust::error::CheckoutError) -> TamgaErrorCode {
 /// Verifies and decodes a `.lic` license file, fully offline, by delegating
 /// to `tamga-rust`'s `checkout::license_file::verify_license_file`.
 ///
+/// The file must be offline format v2 (`alg` ending in `+v2`); v1 files are
+/// rejected with `TAMGA_ERR_UNSUPPORTED_SCHEME` and there is no fallback
+/// path. The signed `exp` claim is enforced (60-second clock-skew tolerance)
+/// and reported as `TAMGA_ERR_EXPIRED`. See this module's doc comment.
+///
 /// # Parameters
 /// - `pem` / `pem_len`: the raw `.lic` file bytes, PEM markers included.
 ///   Need not be NUL-terminated; `pem_len` is authoritative.
 /// - `ed25519_pubkey`: the account's 32-byte Ed25519 public key.
 /// - `license_key`: NUL-terminated C string, or null. Required (non-null)
-///   only when the file's `alg` is `"aes-256-gcm+ed25519"` (encrypted);
-///   ignored for `"base64+ed25519"` (plain) files.
+///   only when the file's `alg` is `"aes-256-gcm+ed25519+v2"` (encrypted);
+///   ignored for `"base64+ed25519+v2"` (plain) files.
 /// - `out_handle`: on `TAMGA_OK`, receives an owned [`TamgaLicenseFile`]
 ///   handle; free it with [`tamga_license_file_free`] exactly once.
 ///
@@ -98,8 +119,8 @@ fn map_checkout_error(err: tamga_rust::error::CheckoutError) -> TamgaErrorCode {
 ///
 /// This is the canonical `catch_unwind` reference implementation described
 /// in [`crate::ffi_guard`]'s docs — every other `extern "C" fn` in this
-/// crate copies this shape (Section F; unwinding a Rust panic across an
-/// `extern "C"` boundary is undefined behavior).
+/// crate copies this shape, because unwinding a Rust panic across an
+/// `extern "C"` boundary is undefined behavior.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tamga_license_file_verify(
     pem: *const c_char,

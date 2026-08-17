@@ -120,9 +120,9 @@ typedef enum TamgaErrorCode {
 } TamgaErrorCode;
 
 /**
- * Signing/key scheme, mirroring the wire `LicenseScheme` strings from
- * `docs/sdk.md` (License Scheme, Section 10). Present for completeness —
- * `TAMGA_SCHEME_RSA_2048_JWT_RS256` is never a legal input for machine
+ * Signing/key scheme, mirroring the wire `LicenseScheme` strings the server
+ * uses. Present for completeness — `TAMGA_SCHEME_RSA_2048_JWT_RS256` is
+ * never a legal input for machine
  * files; it must be rejected outright (`422 SCHEME_NOT_SUPPORTED` is what
  * the server itself does for this scheme at machine-file-checkout time).
  */
@@ -180,9 +180,9 @@ extern "C" {
  * [`clear_last_error`] ran at the start of a call that then succeeded).
  *
  * This is the one convention picked for error-string ownership across this
- * crate, per Section F of `docs/plans/tamga-c.plan.md` — every error path
- * must populate [`LAST_ERROR`] via [`set_last_error`] so this accessor
- * stays meaningful. `TAMGA_OK` always implies this returns null on the
+ * crate — every error path must populate [`LAST_ERROR`] via
+ * [`set_last_error`] so this accessor stays meaningful. `TAMGA_OK` always
+ * implies this returns null on the
  * calling thread, with no exceptions — including
  * [`offline_proof::tamga_offline_proof_verify`], whose `*out_valid`
  * out-param (not this accessor) is the correct signal for "the proof
@@ -252,13 +252,18 @@ enum TamgaErrorCode tamga_hkdf_derive_license_file_key(const char *license_key,
  * Verifies and decodes a `.lic` license file, fully offline, by delegating
  * to `tamga-rust`'s `checkout::license_file::verify_license_file`.
  *
+ * The file must be offline format v2 (`alg` ending in `+v2`); v1 files are
+ * rejected with `TAMGA_ERR_UNSUPPORTED_SCHEME` and there is no fallback
+ * path. The signed `exp` claim is enforced (60-second clock-skew tolerance)
+ * and reported as `TAMGA_ERR_EXPIRED`. See this module's doc comment.
+ *
  * # Parameters
  * - `pem` / `pem_len`: the raw `.lic` file bytes, PEM markers included.
  *   Need not be NUL-terminated; `pem_len` is authoritative.
  * - `ed25519_pubkey`: the account's 32-byte Ed25519 public key.
  * - `license_key`: NUL-terminated C string, or null. Required (non-null)
- *   only when the file's `alg` is `"aes-256-gcm+ed25519"` (encrypted);
- *   ignored for `"base64+ed25519"` (plain) files.
+ *   only when the file's `alg` is `"aes-256-gcm+ed25519+v2"` (encrypted);
+ *   ignored for `"base64+ed25519+v2"` (plain) files.
  * - `out_handle`: on `TAMGA_OK`, receives an owned [`TamgaLicenseFile`]
  *   handle; free it with [`tamga_license_file_free`] exactly once.
  *
@@ -271,8 +276,8 @@ enum TamgaErrorCode tamga_hkdf_derive_license_file_key(const char *license_key,
  *
  * This is the canonical `catch_unwind` reference implementation described
  * in [`crate::ffi_guard`]'s docs — every other `extern "C" fn` in this
- * crate copies this shape (Section F; unwinding a Rust panic across an
- * `extern "C"` boundary is undefined behavior).
+ * crate copies this shape, because unwinding a Rust panic across an
+ * `extern "C"` boundary is undefined behavior.
  */
 enum TamgaErrorCode tamga_license_file_verify(const char *pem,
                                               uintptr_t pem_len,
@@ -375,9 +380,7 @@ void tamga_machine_file_free(struct TamgaMachineFile *handle);
  * - `rsa_pubkey` / `rsa_pubkey_len`: the account's RSA-2048 public key as a
  *   raw `SubjectPublicKeyInfo` DER blob — same convention as
  *   [`crate::machine_file::tamga_machine_file_verify`]'s RSA pubkey
- *   parameter (a deviation from the plan's original `*const c_char`
- *   wording, which didn't specify an encoding; TBD-pending-freeze per
- *   Section C/D's precedent).
+ *   parameter.
  * - `account_id`, `machine_id`: UUID strings (NUL-terminated), parsed via
  *   `uuid::Uuid::parse_str`.
  * - `fingerprint`: NUL-terminated C string.

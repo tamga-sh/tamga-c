@@ -1,7 +1,7 @@
-//! `tamga_offline_proof_verify` / `_generate` — Section E of
-//! `docs/plans/tamga-c.plan.md` ("Machine Offline Proof FFI").
+//! `tamga_offline_proof_verify` / `_generate` — the machine offline-proof
+//! FFI surface.
 //!
-//! # Offline proof format (from `docs/sdk.md` §7 / plan §3.3)
+//! # Offline proof format
 //!
 //! Response shape: `meta.proof = "v1x0.<base64 signature>"`. Always signed
 //! with **RSA-2048 PKCS#1 v1.5 / SHA-256**, regardless of the license's own
@@ -36,10 +36,10 @@
 //! payload construction independently in this crate.
 //!
 //! [`TamgaOfflineProof`](crate::TamgaOfflineProof) is declared in `lib.rs`
-//! per Section B's checklist but has no producer/consumer here — `_verify`
-//! reports its result via `out_valid: *mut bool` and `_generate` (once
-//! implemented) would return an owned `*mut c_char`, neither of which needs
-//! a handle. See that type's doc comment.
+//! but has no producer/consumer here — `_verify` reports its result via
+//! `out_valid: *mut bool` and `_generate` (once implemented) would return an
+//! owned `*mut c_char`, neither of which needs a handle. See that type's doc
+//! comment.
 
 use std::ffi::c_char;
 use std::slice;
@@ -54,9 +54,7 @@ use crate::{TamgaErrorCode, ffi_guard};
 /// - `rsa_pubkey` / `rsa_pubkey_len`: the account's RSA-2048 public key as a
 ///   raw `SubjectPublicKeyInfo` DER blob — same convention as
 ///   [`crate::machine_file::tamga_machine_file_verify`]'s RSA pubkey
-///   parameter (a deviation from the plan's original `*const c_char`
-///   wording, which didn't specify an encoding; TBD-pending-freeze per
-///   Section C/D's precedent).
+///   parameter.
 /// - `account_id`, `machine_id`: UUID strings (NUL-terminated), parsed via
 ///   `uuid::Uuid::parse_str`.
 /// - `fingerprint`: NUL-terminated C string.

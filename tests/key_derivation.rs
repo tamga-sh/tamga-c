@@ -1,6 +1,5 @@
-//! Integration tests for `tamga_hkdf_derive_license_file_key` (Section C)
-//! and `tamga_hkdf_derive_machine_file_key` (Section D) —
-//! `docs/plans/tamga-c.plan.md`, `src/kdf.rs`.
+//! Integration tests for `tamga_hkdf_derive_license_file_key` and
+//! `tamga_hkdf_derive_machine_file_key` — see `src/kdf.rs`.
 //!
 //! See `tests/license_file_verify.rs`'s module doc comment for why this
 //! crate's own lib is imported here as `tamga::...`, not `tamga_c::...`.

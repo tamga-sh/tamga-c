@@ -1,9 +1,9 @@
 /**
  * test_license_file.c
  *
- * CTest harness for Section C of docs/plans/tamga-c.plan.md ("License
- * Checkout FFI"). Drives tamga_license_file_verify/_get_json/_free purely
- * through the public C ABI in tamga.h.
+ * CTest harness for the license-file FFI. Drives
+ * tamga_license_file_verify/_get_json/_free purely through the public C
+ * ABI in tamga.h.
  *
  * The fixture PEM/pubkey below were generated with a real Ed25519 keypair
  * and signed the same way the real server signs a `.lic` file (see

@@ -1,22 +1,31 @@
-//! Standalone key-derivation primitives, split out of Sections C/D of
-//! `docs/plans/tamga-c.plan.md` for callers who need the raw AES key
-//! without a full file-verify round-trip.
+//! Standalone key-derivation primitives, for callers who need the raw AES
+//! key without a full file-verify round-trip.
 //!
 //! # Two different derivations — do not confuse them
 //!
-//! - **License-file key** ([`tamga_hkdf_derive_license_file_key`]): HKDF-SHA256,
-//!   `salt = "tamga:license-file-key-v1"`, `ikm = <license key>`,
-//!   `info = "license-file"` → 32 bytes.
+//! Both are HKDF-SHA256 (RFC 5869) as of offline file format v2, but with
+//! different parameters. Using one where the other belongs produces a
+//! function that looks plausible, compiles, and silently decrypts nothing.
 //!
-//!   Before format v2 this was not a KDF at all — the licence key's raw bytes
-//!   zero-padded to 32 — which meant an attacker holding a stolen `.lic` was
-//!   attacking the licence key's own entropy rather than a 256-bit key space.
-//!   The old `tamga_hkdf_derive_license_file_key` symbol is **removed**, not
-//!   deprecated: leaving it exported would let a caller silently keep using
-//!   the weaker derivation.
-//! - **Machine-file key** ([`tamga_hkdf_derive_machine_file_key`]): `docs/sdk.md`
-//!   §6 — properly HKDF-SHA256 derived: `salt = "tamga:machine-file-key-v1"`,
-//!   `ikm = <license key>`, `info = <machine fingerprint>` → 32 bytes.
+//! - **License-file key** ([`tamga_hkdf_derive_license_file_key`]):
+//!   `salt = "tamga:license-file-key-v1"`, `ikm = <license key>`,
+//!   `info = "license-file"` → 32 bytes. No fingerprint is involved; a
+//!   licence file is not bound to a machine.
+//! - **Machine-file key** ([`tamga_hkdf_derive_machine_file_key`]):
+//!   `salt = "tamga:machine-file-key-v1"`, `ikm = <license key>`,
+//!   `info = <machine fingerprint>` → 32 bytes. Decryption needs **both**
+//!   the licence key and the target machine's fingerprint.
+//!
+//! Before format v2 the license-file key was not derived at all — it was the
+//! licence key's raw bytes zero-padded (or truncated) to 32, so an attacker
+//! holding a stolen `.lic` was attacking the licence key's own entropy rather
+//! than a 256-bit key space. That transform is **removed, not deprecated**:
+//! the old `tamga_naive_derive_license_file_key` symbol is gone, which is a
+//! deliberate ABI break — leaving it exported would let a caller silently
+//! keep decrypting with the weaker key.
+//!
+//! Both derivations delegate to `tamga-rust`'s `crypto::hkdf`; nothing is
+//! reimplemented here.
 
 use std::ffi::c_char;
 use std::slice;

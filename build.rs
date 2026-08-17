@@ -1,11 +1,12 @@
 //! Regenerates `include/tamga.h` from this crate's `extern "C"` API via
 //! cbindgen on every build.
 //!
-//! The committed `include/tamga.h` is a placeholder until `src/lib.rs` has
-//! real exports (see that file's module docs and
-//! docs/plans/tamga-c.plan.md Section B). CI's header-freshness gate
-//! (`.github/workflows/ci.yml`) runs a build and then `git diff --exit-code
-//! include/tamga.h` — a drifted/uncommitted header fails CI.
+//! The committed `include/tamga.h` is the last-generated snapshot of the real
+//! exported ABI, checked in so downstream consumers can build without running
+//! Rust tooling. CI's header-freshness gate (`.github/workflows/ci.yml`) runs
+//! a build and then `git diff --exit-code include/tamga.h` — a
+//! drifted/uncommitted header fails CI, so regenerate and commit the header
+//! alongside any change to an `extern "C"` signature or its doc comment.
 
 use std::env;
 
@@ -33,12 +34,12 @@ fn main() {
             bindings.write_to_file("include/tamga.h");
         }
         Err(error) => {
-            // Non-fatal during scaffolding: src/lib.rs's `extern "C"` fns
-            // are still `todo!()` stubs with signatures that may not be
-            // fully cbindgen-clean yet (Sections C/D/E aren't implemented).
-            // Warn instead of panicking so `cargo build` stays usable while
-            // the ABI is still being designed; tighten this to a hard
-            // failure once Section B's header freeze is real.
+            // Warn rather than panic: a cbindgen failure here leaves the
+            // committed header untouched, and CI's header-freshness gate
+            // (`git diff --exit-code include/tamga.h`) is what actually
+            // catches drift. Failing the build instead would make every
+            // `cargo build` in the repo depend on cbindgen succeeding, which
+            // is a worse trade for a header that is already committed.
             println!("cargo:warning=cbindgen failed to generate include/tamga.h: {error}");
         }
     }
