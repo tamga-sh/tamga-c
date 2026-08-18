@@ -18,24 +18,36 @@ jobs:
   lint-and-coverage:
     name: clippy, clang-format, header freshness, coverage, deny
     runs-on: ubuntu-latest
+    # 2m24s-3m05s across the last ~37 runs; 20 is ~6x the worst observed.
+    # Sized to catch a hung step (see the per-step timeouts below), not to
+    # police a slow day -- the point is bounding the 6h GitHub default.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 10
         with:
           components: clippy, rustfmt
 
       - name: Install cargo-binstall
         uses: taiki-e/install-action@cargo-binstall
+        timeout-minutes: 10
 
       - name: Install cbindgen, cargo-llvm-cov, cargo-deny via binstall
+        timeout-minutes: 10
         run: cargo binstall --no-confirm cbindgen cargo-llvm-cov cargo-deny
 
       - name: cargo clippy --all-targets -D warnings
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Install clang-format
+        # This exact step is why every job here now carries a bound: an
+        # apt-get that never returned burned ~30 minutes of a release run
+        # before a human noticed. A stuck package mirror produces no output,
+        # so the step needs its own cap rather than riding the job's.
+        timeout-minutes: 10
         run: sudo apt-get update && sudo apt-get install -y clang-format
 
       - name: clang-format --dry-run --Werror (tests/c/, examples/)
@@ -69,13 +81,23 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-14, windows-latest]
     runs-on: ${{ matrix.os }}
+    # windows-latest is the long pole at 5m55s worst observed (macOS peaks at
+    # 2m08s, Linux at 1m49s); 30 is ~5x that and the usual bound for a
+    # cross-platform matrix leg.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 10
 
       - name: Configure (CMake + corrosion)
+        # Not an ordinary configure: cmake/FetchCorrosion.cmake pulls
+        # corrosion in over the network (FetchContent git clone of
+        # corrosion-rs/corrosion), so this step can stall silently the way
+        # the pure-compile Build step below cannot.
+        timeout-minutes: 10
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build (native cdylib/staticlib + C test harness)
