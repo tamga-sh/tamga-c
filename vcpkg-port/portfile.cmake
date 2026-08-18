@@ -1,10 +1,7 @@
-# NOTE: REF/SHA512 below point at v1.2.0 -- the latest tag as of writing, but
-# v1.2.0's CMakeLists.txt only install()s include/tamga.h, not the compiled
-# library (fixed in PR #18, "fix: actually install the compiled library, not
-# just the header" -- merged after this file was written, not yet part of a
-# tagged release). Update REF/SHA512 to the next release once it's out;
-# until then this portfile would configure and build correctly but produce a
-# package with no library in it, same failure PR #18 fixes upstream.
+# NOTE: REF/SHA512 below point at v1.2.1, the first tag whose CMakeLists.txt
+# install()s the compiled library alongside include/tamga.h. Keep REF, SHA512
+# and vcpkg.json's "version" in lockstep when bumping to a later release --
+# regenerate the hash with `vcpkg hash <downloaded-tarball>`.
 #
 # This crate has zero HTTP surface and depends on a working Rust toolchain
 # via corrosion (see cmake/FetchCorrosion.cmake) -- vcpkg has no reliable
@@ -16,8 +13,8 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO tamga-sh/tamga-c
-    REF v1.2.0
-    SHA512 0 # TODO: fill in via `vcpkg hash <downloaded-tarball>` once REF points at a release that includes PR #18's install() fix.
+    REF v1.2.1
+    SHA512 cc9b1ce06a70ee7e33e0d28bb90a6a0a38e2f056b278357bb2885ff0a97d90dcc5f3f11fd8932e9ed76da6383dd9c0a5e7959be92233463a3c72dfe250ce237d
     HEAD_REF main
 )
 
