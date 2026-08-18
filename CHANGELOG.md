@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/tamga-sh/tamga-c/compare/v1.2.1...v1.2.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* open release PRs with a GitHub App token and make the vcpkg port installable ([#22](https://github.com/tamga-sh/tamga-c/issues/22)) ([9c24f16](https://github.com/tamga-sh/tamga-c/commit/9c24f168357d30ff176dc551b4aead25a31fba57))
+
 ## [1.2.1](https://github.com/tamga-sh/tamga-c/compare/v1.2.0...v1.2.1) (2026-08-18)
 
 
