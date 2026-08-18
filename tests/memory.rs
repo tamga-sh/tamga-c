@@ -1,4 +1,4 @@
-//! Alloc/free contract tests (docs/plans/tamga-c.plan.md Section F).
+//! Alloc/free contract tests for the handle and string lifecycle.
 //!
 //! See `tests/license_file_verify.rs`'s module doc comment for why this
 //! crate's own lib is imported here as `tamga::...`, not `tamga_c::...`.
@@ -9,8 +9,8 @@
 //! happening not to visibly corrupt anything that run) while still being
 //! undefined behavior; asserting on that outcome would be actively
 //! misleading. Real double-free detection belongs in the ASAN-gated C
-//! harness (`tests/c/CMakeLists.txt`'s `TAMGA_C_ENABLE_ASAN` option,
-//! Section G), which is built specifically to catch it.
+//! harness (`tests/c/CMakeLists.txt`'s `TAMGA_C_ENABLE_ASAN` option), which
+//! is built specifically to catch it.
 
 use std::ptr;
 

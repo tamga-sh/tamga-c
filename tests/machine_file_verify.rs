@@ -1,5 +1,5 @@
 //! Integration tests for `tamga_machine_file_verify` / `_get_json` /
-//! `_free` (docs/plans/tamga-c.plan.md Section D).
+//! `_free`.
 //!
 //! See `tests/license_file_verify.rs`'s module doc comment for why this
 //! crate's own lib is imported here as `tamga::...`, not `tamga_c::...`.
@@ -36,9 +36,9 @@ fn scheme_alg_suffix(scheme: TamgaScheme) -> &'static str {
     }
 }
 
-/// Signs `enc` with a scheme-appropriate freshly-generated key, mirroring
-/// `tamga-api`'s own signing dispatch and `tamga-rust`'s equivalent test
-/// helper — same pubkey-extraction gotcha noted there (`.public_key()`, NOT
+/// Signs `enc` with a scheme-appropriate freshly-generated key, mirroring the
+/// server's own signing dispatch and `tamga-rust`'s equivalent test helper —
+/// same pubkey-extraction gotcha noted there (`.public_key()`, NOT
 /// `.as_der()`, which is the PKCS8 *private* key DER).
 fn sign_for_scheme(scheme: TamgaScheme, enc: &str) -> (Vec<u8>, Vec<u8>) {
     use aws_lc_rs::rand::SystemRandom;

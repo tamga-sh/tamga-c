@@ -1,5 +1,5 @@
 //! Integration tests for `tamga_license_file_verify` / `_get_json` /
-//! `_free` (docs/plans/tamga-c.plan.md Section C).
+//! `_free`.
 //!
 //! This crate's own `[lib] name` is `"tamga"` (chosen so the built shared
 //! library is `libtamga.so`/`tamga.h`, matching the C-facing product name),
@@ -28,9 +28,10 @@ fn last_error() -> String {
     }
 }
 
-/// Builds a `.lic` PEM the same way the real server does — signature over
-/// `enc`'s base64 **string**, optional AES-256-GCM encryption keyed by the
-/// server's naive zero-pad/truncate transform. Mirrors
+/// Builds a format-v2 `.lic` PEM the same way the real server does —
+/// signature over `enc`'s base64 **string**, `alg` ending in `+v2`, and
+/// optional AES-256-GCM encryption under a caller-supplied key (in the real
+/// flow that key comes from `crypto::hkdf::derive_license_file_key`). Mirrors
 /// `tamga-rust/src/checkout/license_file.rs`'s own test helper so these
 /// tests exercise the real wire format, not this crate's assumptions about
 /// it.

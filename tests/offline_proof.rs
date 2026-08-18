@@ -1,4 +1,4 @@
-//! Integration tests for `tamga_offline_proof_verify` (Section E) —
+//! Integration tests for `tamga_offline_proof_verify` —
 //! `tamga_offline_proof_generate` is intentionally unimplemented (see
 //! `src/offline_proof.rs`'s module doc comment: `tamga-rust` exposes no
 //! local RSA-signing primitive), so proof fixtures here are built directly

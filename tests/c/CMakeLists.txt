@@ -1,6 +1,6 @@
 # CTest harness for tamga-c's C ABI. Pass/fail only -- no coverage counted
 # on the C side (C-side coverage tooling isn't part of this stack; see
-# CLAUDE.md and docs/plans/tamga-c.plan.md Section I).
+# CLAUDE.md).
 
 enable_testing()
 
@@ -25,8 +25,8 @@ function(tamga_c_add_test NAME SOURCE)
 
     if(TAMGA_C_ENABLE_ASAN)
         # Catches use-after-free/double-free/leaks at the FFI boundary --
-        # the #1 bug class for this kind of library (Section F of
-        # docs/plans/tamga-c.plan.md). Every handle-returning function
+        # the #1 bug class for this kind of library. Every
+        # handle-returning function
         # needs a matching successful free with zero ASAN leak reports.
         target_compile_options(${NAME} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -g)
         target_link_options(${NAME} PRIVATE -fsanitize=address,undefined)

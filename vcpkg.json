@@ -1,7 +1,7 @@
 {
   "name": "tamga-c",
   "version": "0.1.0",
-  "description": "C/C++ core library for Tamga. Exposes license activation and offline verification through a stable C ABI, built from the Rust reference implementation and used as the shared foundation for the Java and Swift SDKs.",
+  "description": "Official C/C++ SDK for Tamga. Integrate license activation, offline verification, and machine management into your C/C++ applications.",
   "homepage": "https://github.com/tamga-sh/tamga-c",
   "license": "MIT",
   "dependencies": []

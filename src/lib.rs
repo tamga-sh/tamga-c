@@ -7,9 +7,8 @@
 //! re-implementing signature verification.
 //!
 //! **This is NOT an HTTP client.** There is no auth-transport, `validate`,
-//! `check-in`, or machine-management surface here — see README.md and
-//! `docs/plans/tamga-c.plan.md` Section 3.4 ("Out of scope for this repo").
-//! The entire surface is four offline, deterministic crypto operations:
+//! `check-in`, or machine-management surface here — see README.md. The
+//! entire surface is four offline, deterministic crypto operations:
 //!
 //! 1. Verify (and decode) a `.lic` license file — [`license_file`].
 //! 2. Verify (and decode) a machine file, across 4 signing schemes — [`machine_file`].
@@ -20,14 +19,17 @@
 //!
 //! # Status
 //!
-//! Sections C (license-file FFI), D (machine-file FFI), and E's
-//! `tamga_offline_proof_verify` are implemented, delegating all
-//! cryptographic logic to `tamga-rust`'s already security-reviewed
+//! License-file verification, machine-file verification (all four signing
+//! schemes), `tamga_offline_proof_verify`, both key-derivation primitives,
+//! and the memory/lifecycle contract are implemented and tested, delegating
+//! all cryptographic logic to `tamga-rust`'s already security-reviewed
 //! `checkout`/`proof`/`crypto` modules — this crate is a marshalling layer,
-//! not a second implementation. `tamga_offline_proof_generate` remains
-//! unimplemented by design (see [`offline_proof`]'s module doc comment).
-//! Section F (memory/lifecycle) is in progress; see
-//! `docs/plans/tamga-c.plan.md` for the current per-item checklist.
+//! not a second implementation. `tamga_offline_proof_generate` is a
+//! deliberate non-implementation (see [`offline_proof`]'s module doc
+//! comment), and it is the only gap in the exported surface.
+//!
+//! Offline license files must be format v2; v1 files are rejected outright
+//! with no fallback path. See [`license_file`]'s module doc comment.
 //!
 //! # The `catch_unwind` rule
 //!
@@ -113,9 +115,9 @@ pub enum TamgaErrorCode {
     TAMGA_ERR_EXPIRED = 11,
 }
 
-/// Signing/key scheme, mirroring the wire `LicenseScheme` strings from
-/// `docs/sdk.md` (License Scheme, Section 10). Present for completeness —
-/// `TAMGA_SCHEME_RSA_2048_JWT_RS256` is never a legal input for machine
+/// Signing/key scheme, mirroring the wire `LicenseScheme` strings the server
+/// uses. Present for completeness — `TAMGA_SCHEME_RSA_2048_JWT_RS256` is
+/// never a legal input for machine
 /// files; it must be rejected outright (`422 SCHEME_NOT_SUPPORTED` is what
 /// the server itself does for this scheme at machine-file-checkout time).
 #[repr(C)]
@@ -228,16 +230,18 @@ pub struct TamgaMachineFile {
 /// Opaque handle for a parsed `v1x0.<sig>` offline proof plus its
 /// verification result.
 ///
-/// NOTE: as currently specified in Section E of the plan,
+/// NOTE: this type has no producer or consumer today, and is deliberately
+/// not emitted into `include/tamga.h` (cbindgen only exports types reachable
+/// from an exported function signature). It is retained for forward
+/// compatibility only.
+///
 /// [`offline_proof::tamga_offline_proof_verify`] reports its result via an
 /// `out_valid: *mut bool` parameter rather than returning a handle, and
-/// [`offline_proof::tamga_offline_proof_generate`] returns an owned
-/// `*mut c_char` (freed via [`tamga_string_free`]) rather than a handle
-/// either. This type is declared per Section B's checklist for forward
-/// compatibility but has no current producer/consumer function — there is
-/// deliberately no `tamga_offline_proof_free` exported yet. If a
-/// handle-returning variant of verify/generate is introduced later, wire
-/// this type up then; otherwise remove it before the real Section E lands.
+/// [`offline_proof::tamga_offline_proof_generate`] is specified to return an
+/// owned `*mut c_char` (freed via [`tamga_string_free`]) rather than a
+/// handle — so neither needs one, and there is deliberately no
+/// `tamga_offline_proof_free` exported. If a handle-returning variant is
+/// ever introduced, wire this type up then.
 #[repr(C)]
 pub struct TamgaOfflineProof {
     _private: [u8; 0],
@@ -283,9 +287,9 @@ pub(crate) fn clear_last_error() {
 /// [`clear_last_error`] ran at the start of a call that then succeeded).
 ///
 /// This is the one convention picked for error-string ownership across this
-/// crate, per Section F of `docs/plans/tamga-c.plan.md` — every error path
-/// must populate [`LAST_ERROR`] via [`set_last_error`] so this accessor
-/// stays meaningful. `TAMGA_OK` always implies this returns null on the
+/// crate — every error path must populate [`LAST_ERROR`] via
+/// [`set_last_error`] so this accessor stays meaningful. `TAMGA_OK` always
+/// implies this returns null on the
 /// calling thread, with no exceptions — including
 /// [`offline_proof::tamga_offline_proof_verify`], whose `*out_valid`
 /// out-param (not this accessor) is the correct signal for "the proof
@@ -351,7 +355,7 @@ pub(crate) unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, Tamg
         .map_err(|_| TamgaErrorCode::TAMGA_ERR_INVALID_JSON)
     // NOTE: TAMGA_ERR_INVALID_JSON is a placeholder mapping for "argument
     // was not valid UTF-8" — it's not really a JSON error. Every call site
-    // in Sections C/D/E immediately overwrites the last-error message with
+    // in the FFI modules immediately overwrites the last-error message with
     // a more specific one via `.inspect_err(...)`, so the coarse code here
     // is only ever seen by a caller who ignores `tamga_last_error_message`.
     // Not worth a dedicated code for that case alone.

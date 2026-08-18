@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `tamga-c` is a pure crypto/FFI wrapper crate over `tamga-rust`'s offline-verification API, exposed through a stable C ABI (`cdylib` + `staticlib` + a committed `include/tamga.h`). It has **no HTTP transport surface** — no auth headers, no `validate`/`check-in`/machine-management/entitlements endpoints. Its entire surface is four offline, deterministic crypto operations: license-file verify, machine-file verify, machine offline-proof verify + generate, and the two key-derivation primitives those file formats depend on. `tamga-java` (JNI) and `tamga-swift` (Swift/ObjC bridge) both wrap this crate rather than re-implementing signature verification in each language.
 
-Full task breakdown and status: [`../docs/plans/tamga-c.plan.md`](../docs/plans/tamga-c.plan.md) (lives one directory up, in the sibling `tamga-sdk` monorepo, not inside this repo). Protocol/field-name source of truth for everything this repo touches: [`tamga-api`'s `docs/sdk.md`](/Users/neco/Projects/tamga-api/docs/sdk.md) (Sections 4, 6, 7, 10 specifically — checkout file formats, offline proof, and the `LicenseScheme` enum).
+Protocol/field-name source of truth for everything this repo touches: the Tamga API protocol specification (Sections 4, 6, 7, 10 specifically — checkout file formats, offline proof, and the `LicenseScheme` enum).
 
-> **UNBLOCKED**: `tamga-rust` Sections A–L are implemented, tested, and security-reviewed (see `../tamga-rust/CLAUDE.md`); this crate depends on `tamga-rust`'s real crates.io release (`tamga_rust = { package = "tamga", version = "0.1" }` — `tamga-rust` published v0.1.1, this is no longer a sibling-checkout path dependency) and everything in this repo builds against it. Sections C (License Checkout FFI), D (Machine Checkout FFI, all 4 signing schemes + HKDF), E's `tamga_offline_proof_verify`, F (Memory & Lifecycle, `security-reviewer`-passed), the `tests/c/` CTest harness, and `examples/*.c` are all implemented and verified — including a full CMake+corrosion build and an `-DTAMGA_C_ENABLE_ASAN=ON` run. `tamga_offline_proof_generate` is a deliberate, documented non-implementation — see the GOTCHAS entry below. Section G's build matrix now covers 8 platform/arch targets (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64, plus iOS device arm64 and both iOS Simulator archs added for `tamga-swift`'s XCFramework pipeline — see `build-native.yml`'s REUSE POINT comment), exercised via real CI runs, not just scaffolded. See the plan file for the current per-section checklist.
+> **UNBLOCKED**: `tamga-rust` is implemented, tested, and security-reviewed; this crate depends on `tamga-rust`'s real crates.io release (`tamga_rust = { package = "tamga", version = "0.1" }` — `tamga-rust` published v0.1.1, this is no longer a sibling-checkout path dependency) and everything in this repo builds against it. The license-file checkout FFI, the machine-file checkout FFI (all 4 signing schemes + HKDF), `tamga_offline_proof_verify`, the memory & lifecycle layer (`security-reviewer`-passed), the `tests/c/` CTest harness, and `examples/*.c` are all implemented and verified — including a full CMake+corrosion build and an `-DTAMGA_C_ENABLE_ASAN=ON` run. `tamga_offline_proof_generate` is a deliberate, documented non-implementation — see the GOTCHAS entry below. The cross-platform build matrix now covers 8 platform/arch targets (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64, plus iOS device arm64 and both iOS Simulator archs added for `tamga-swift`'s XCFramework pipeline — see `build-native.yml`'s REUSE POINT comment), exercised via real CI runs, not just scaffolded.
 
 ## Architecture
 
@@ -20,8 +20,8 @@ tamga-c/
 ├── rust-toolchain.toml           # pinned toolchain, intended to match tamga-rust
 ├── src/
 │   ├── lib.rs                    # extern "C" fns, opaque handles, thread-local last-error, catch_unwind pattern
-│   ├── license_file.rs           # tamga_license_file_verify / _get_json / _free — IMPLEMENTED (Section C), catch_unwind wired
-│   ├── machine_file.rs           # tamga_machine_file_verify / _get_json / _free — IMPLEMENTED (Section D), multi-scheme + HKDF decrypt
+│   ├── license_file.rs           # tamga_license_file_verify / _get_json / _free — IMPLEMENTED, catch_unwind wired
+│   ├── machine_file.rs           # tamga_machine_file_verify / _get_json / _free — IMPLEMENTED, multi-scheme + HKDF decrypt
 │   ├── offline_proof.rs          # tamga_offline_proof_verify IMPLEMENTED; _generate deliberately NOT (no signing primitive upstream — see GOTCHAS)
 │   └── kdf.rs                    # both tamga_hkdf_derive_license_file_key and tamga_hkdf_derive_machine_file_key IMPLEMENTED
 ├── include/
@@ -30,12 +30,12 @@ tamga-c/
 │   └── FetchCorrosion.cmake      # FetchContent for corrosion-rs/corrosion, vendored via CMake
 ├── CMakeLists.txt                # corrosion_import_crate(...), exposes IMPORTED target tamga_c::tamga_c
 ├── tests/
-│   ├── license_file_verify.rs    # Rust-side integration tests (Section C) — real, passing (incl. the decoded-bytes-signature-verification-fails regression test cited in GOTCHAS)
-│   ├── machine_file_verify.rs    # (Section D)
-│   ├── offline_proof.rs          # (Section E)
-│   ├── key_derivation.rs         # (Sections C/D)
-│   ├── panic_safety.rs           # catch_unwind regression tests (Section F)
-│   ├── memory.rs                 # alloc/free contract tests (Section F)
+│   ├── license_file_verify.rs    # Rust-side integration tests — real, passing (incl. the decoded-bytes-signature-verification-fails regression test cited in GOTCHAS)
+│   ├── machine_file_verify.rs    # machine-file FFI integration tests
+│   ├── offline_proof.rs          # offline-proof verify integration tests
+│   ├── key_derivation.rs         # HKDF derivation integration tests
+│   ├── panic_safety.rs           # catch_unwind regression tests
+│   ├── memory.rs                 # alloc/free contract tests
 │   └── c/
 │       ├── CMakeLists.txt        # CTest registration, ASAN build option
 │       ├── test_license_file.c   # real fixture-based CTest, passes under ctest and ASAN
@@ -79,15 +79,15 @@ ctest --test-dir build-asan --output-on-failure
 clang-format --dry-run --Werror $(find tests/c examples -name '*.c' -o -name '*.h')
 ```
 
-All of the `cargo`/`cbindgen` commands above work today. The `cmake`/`ctest` lines are still unverified in this environment — Section G (Cross-Platform Build Matrix) hasn't been exercised locally.
+All of the `cargo`/`cbindgen` commands above work today. The `cmake`/`ctest` lines are still unverified in this environment — the cross-platform build matrix hasn't been exercised locally.
 
 ## GOTCHAS
 
-### docs/sdk.md's "Known Server-Side Gaps" — none apply directly
+### The protocol specification's "Known Server-Side Gaps" — none apply directly
 
-`tamga-api`'s `docs/sdk.md` lists 10 numbered "Known Server-Side Gaps". Several are now fixed server-side (auth *is* enforced, rate limiting *is* live, `/releases/actions/upgrade` works), so treat that list as dated. **All 10 are about the HTTP transport surface** — endpoints, auth headers, validation codes, policy objects read over the wire. `tamga-c` has zero HTTP surface: it never makes a request, never sees a `ValidationCode`, never reads a `Policy` resource. None of those 10 items apply to this repo, and nothing here should be built to work around any of them. If you find yourself reasoning about `ValidationCode`, rate limiting, or auth headers while working in this repo, you've drifted out of scope — that logic belongs in the hand-written SDKs (`tamga-rust`, `tamga-python`, `tamga-go`, `tamga-dotnet`, `tamga-js`), not here.
+The Tamga API protocol specification lists 10 numbered "Known Server-Side Gaps". Several are now fixed server-side (auth *is* enforced, rate limiting *is* live, `/releases/actions/upgrade` works), so treat that list as dated. **All 10 are about the HTTP transport surface** — endpoints, auth headers, validation codes, policy objects read over the wire. `tamga-c` has zero HTTP surface: it never makes a request, never sees a `ValidationCode`, never reads a `Policy` resource. None of those 10 items apply to this repo, and nothing here should be built to work around any of them. If you find yourself reasoning about `ValidationCode`, rate limiting, or auth headers while working in this repo, you've drifted out of scope — that logic belongs in the hand-written SDKs (`tamga-rust`, `tamga-python`, `tamga-go`, `tamga-dotnet`, `tamga-js`), not here.
 
-### The gotchas that actually matter here (from docs/sdk.md §4, §6, §7)
+### The gotchas that actually matter here (Tamga API protocol specification §4, §6, §7)
 
 - **Base64 string, not decoded bytes.** The license-file and machine-file signature is computed over `enc`'s base64 **string** — its ASCII/UTF-8 bytes as text — never the bytes you get from base64-decoding it. This is *the* single most common implementation mistake in this format. Every verify path must check the signature **before** base64-decoding `enc`, not after. Both `tests/license_file_verify.rs::decoded_bytes_signature_verification_fails_proving_the_string_bytes_gotcha` and its machine-file equivalent inside `tamga-rust`'s own already-security-reviewed suite cover this — `tamga-c` delegates rather than re-testing it a third time.
 - **Two different key derivations — do not swap them.** Both are HKDF-SHA256 as of file format v2, but with different parameters. License-file: `salt="tamga:license-file-key-v1"`, `ikm=<license key>`, `info="license-file"` (`tamga_hkdf_derive_license_file_key`). Machine-file: `salt="tamga:machine-file-key-v1"`, `ikm=<license key>`, `info=<machine fingerprint>` (`tamga_hkdf_derive_machine_file_key`). Using one where the other belongs produces a function that looks plausible, compiles, and silently decrypts nothing. Both are cross-checked against `tamga-rust`'s reference derivations in `tests/key_derivation.rs`.
@@ -112,7 +112,7 @@ Pinned to `0.27` in the original scaffold; bumped to `0.29` after discovering th
 
 ### Every `extern "C" fn` wraps its body in `catch_unwind`
 
-Unwinding a Rust panic across an `extern "C"` boundary is undefined behavior. Every exported function goes through one of two shared wrappers in `src/lib.rs`: `ffi_guard` (for the `TamgaErrorCode`-returning majority — `tamga_license_file_verify` is the reference example) or `ffi_guard_void` (for the four `()`-returning functions: `tamga_string_free`, `tamga_license_file_free`, `tamga_machine_file_free`, and `tamga_last_error_message`'s own inline `catch_unwind`, which can't use either wrapper since it must NOT clear `LAST_ERROR` before reading it). Both wrappers' actual panic-catching behavior is proven directly in `src/lib.rs`'s `ffi_guard_tests` module against deliberately panicking closures — not just by code inspection — since no real production input can reach a panic today by design. **`security-reviewer` is mandatory** on any change to Section F (memory/lifecycle) before merge — use-after-free, double-free, panic-across-FFI UB, and string-ownership confusion are the #1 FFI bug class, and a defect here is a memory-safety vulnerability in every downstream consumer (`tamga-java`, `tamga-swift`, any direct C/C++ integrator), not a localized bug. A first such pass (this session) found and fixed: `TamgaScheme` accepted by value directly as an `extern "C" fn` parameter (an out-of-range C `enum` value is UB the instant it's loaded into the typed Rust parameter — fixed by taking a raw `u32` through `TamgaScheme::from_raw` instead, the pattern every future FFI parameter backed by a `#[repr(C)]` enum should follow); the four functions above not being panic-guarded at all; and `tamga_offline_proof_verify` breaking `tamga_last_error_message`'s "`TAMGA_OK` implies null" contract on an invalid (but not call-failed) proof.
+Unwinding a Rust panic across an `extern "C"` boundary is undefined behavior. Every exported function goes through one of two shared wrappers in `src/lib.rs`: `ffi_guard` (for the `TamgaErrorCode`-returning majority — `tamga_license_file_verify` is the reference example) or `ffi_guard_void` (for the four `()`-returning functions: `tamga_string_free`, `tamga_license_file_free`, `tamga_machine_file_free`, and `tamga_last_error_message`'s own inline `catch_unwind`, which can't use either wrapper since it must NOT clear `LAST_ERROR` before reading it). Both wrappers' actual panic-catching behavior is proven directly in `src/lib.rs`'s `ffi_guard_tests` module against deliberately panicking closures — not just by code inspection — since no real production input can reach a panic today by design. **`security-reviewer` is mandatory** on any change to the memory/lifecycle layer before merge — use-after-free, double-free, panic-across-FFI UB, and string-ownership confusion are the #1 FFI bug class, and a defect here is a memory-safety vulnerability in every downstream consumer (`tamga-java`, `tamga-swift`, any direct C/C++ integrator), not a localized bug. A first such pass (this session) found and fixed: `TamgaScheme` accepted by value directly as an `extern "C" fn` parameter (an out-of-range C `enum` value is UB the instant it's loaded into the typed Rust parameter — fixed by taking a raw `u32` through `TamgaScheme::from_raw` instead, the pattern every future FFI parameter backed by a `#[repr(C)]` enum should follow); the four functions above not being panic-guarded at all; and `tamga_offline_proof_verify` breaking `tamga_last_error_message`'s "`TAMGA_OK` implies null" contract on an invalid (but not call-failed) proof.
 
 ### Alloc/free pairing
 
@@ -126,7 +126,7 @@ CI gates `cargo llvm-cov` at **70% lines**, lower than this org's usual 80% norm
 
 - **ABI-freeze commitment**: once a version of `include/tamga.h` ships in a GitHub Release, struct layout and function signature changes require a version bump — no silent breaking changes. `tamga-java` and `tamga-swift` both link against built artifacts of this exact header; a mismatch between the documented C ABI and what the `cdylib` actually exports is a memory-safety bug in every downstream consumer, not just a compile error.
 - **`rsa` crate is banned**, inherited from `tamga-rust`'s house policy (RUSTSEC-2023-0071, the Marvin timing attack, unpatched). `cargo deny check` enforces this in CI. If RSA-2048 PKCS#1/PSS support (needed for machine-file verification and offline proofs) needs a crate, use `aws-lc-rs` — do not reach for `rsa` because it has the friendliest API.
-- **No registry publish for v0.1.** GitHub Releases is the artifact store (`.tar.gz`/`.zip` bundling the built library + `tamga.h`), matching `docs/sdk.md`'s SDK Index. `crates.io` publish is explicitly disabled (`publish = false` in `Cargo.toml`); vcpkg/Conan portfile work is backlog (`vcpkg.json` exists with no portfile).
+- **No registry publish for v0.1.** GitHub Releases is the artifact store (`.tar.gz`/`.zip` bundling the built library + `tamga.h`), matching the Tamga API protocol specification's SDK Index. `crates.io` publish is explicitly disabled (`publish = false` in `Cargo.toml`); vcpkg/Conan portfile work is backlog (`vcpkg.json` exists with no portfile).
 - **`tamga-swift`'s `Package.swift` already has a reuse-point comment** referencing `build-native.yml`'s cross-compile matrix, written before this repo had one. Keep the two comments in sync if either side's target list changes.
 
 ## Branch & Commit Convention

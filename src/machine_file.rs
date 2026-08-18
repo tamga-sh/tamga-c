@@ -1,11 +1,11 @@
-//! `tamga_machine_file_verify` / `_get_json` / `_free` — Section D of
-//! `docs/plans/tamga-c.plan.md` ("Machine Checkout FFI").
+//! `tamga_machine_file_verify` / `_get_json` / `_free` — the machine-file
+//! FFI surface.
 //!
 //! Thin FFI marshalling layer over `tamga-rust`'s already security-reviewed
 //! `checkout::machine_file::verify_machine_file` — no cryptographic logic
 //! is reimplemented here, same shape as `src/license_file.rs`.
 //!
-//! # Machine file format (from `docs/sdk.md` §6 / plan §3.2)
+//! # Machine file format
 //!
 //! Same `{enc, sig, alg}` inner JSON shape as license files, wrapped in
 //! `-----BEGIN MACHINE FILE-----` / `-----END MACHINE FILE-----` (distinct
@@ -21,13 +21,16 @@
 //!   `LicenseScheme` equivalent — that C enum value only makes sense for a
 //!   legacy unsigned *license key*, not a machine file) is rejected the
 //!   same way at this FFI layer before ever reaching `tamga-rust`.
-//! - Encryption key (when `alg` contains `"aes-256-gcm"`) is **properly
-//!   HKDF-SHA256 derived** — unlike license-file checkout's naive
-//!   zero-pad/truncate: `salt = "tamga:machine-file-key-v1"`,
-//!   `ikm = <license key>`, `info = <machine fingerprint>` → 32-byte AES
-//!   key (see [`crate::kdf::tamga_hkdf_derive_machine_file_key`]). Needs
-//!   **both** the license key and the target machine's fingerprint to
-//!   decrypt.
+//! - Encryption key (when `alg` contains `"aes-256-gcm"`) is HKDF-SHA256
+//!   derived: `salt = "tamga:machine-file-key-v1"`, `ikm = <license key>`,
+//!   `info = <machine fingerprint>` → 32-byte AES key (see
+//!   [`crate::kdf::tamga_hkdf_derive_machine_file_key`]). Needs **both** the
+//!   license key and the target machine's fingerprint to decrypt, where the
+//!   license-file derivation needs only the license key — same primitive,
+//!   different salt and info, and they must not be swapped.
+//! - Machine files carry no `+v2` suffix and no signed `meta` claims; the
+//!   format-v2 requirement documented in `src/license_file.rs` applies to
+//!   license files only.
 
 use std::ffi::{CString, c_char};
 use std::slice;
@@ -59,8 +62,8 @@ fn map_scheme(scheme: TamgaScheme) -> Result<tamga_rust::models::policy::License
         TamgaScheme::TAMGA_SCHEME_ECDSA_P256_SIGN => Ok(LicenseScheme::EcdsaP256Sign),
         // Passed through deliberately, not rejected here — verify_machine_file
         // itself rejects this scheme up front (defense in depth: the
-        // rejection lives in the one place the plan's security review
-        // already covered, rather than being duplicated at this FFI layer).
+        // rejection lives in the one place the security review already
+        // covered, rather than being duplicated at this FFI layer).
         TamgaScheme::TAMGA_SCHEME_RSA_2048_JWT_RS256 => Ok(LicenseScheme::Rsa2048JwtRs256),
     }
 }

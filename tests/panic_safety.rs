@@ -1,5 +1,5 @@
 //! Regression coverage for the `catch_unwind` contract every `extern "C"
-//! fn` must uphold (docs/plans/tamga-c.plan.md Section F).
+//! fn` must uphold.
 //!
 //! The actual "does `ffi_guard` catch a panic and convert it to
 //! `TAMGA_ERR_PANIC` instead of unwinding" proof lives as a unit test —
@@ -9,10 +9,10 @@
 //! reach a real panic today (every fallible step in every FFI function
 //! returns a typed `Result`, not `unwrap()`/`expect()` on attacker-
 //! controlled data), so there is no "malformed internal state" to simulate
-//! through the public C ABI the way the plan's original wording envisioned.
-//! Testing the generic wrapper directly against a deliberately panicking
-//! closure is the correct level for this: it proves the mechanism holds for
-//! *any* panic, not just ones we can currently think up an input for.
+//! through the public C ABI. Testing the generic wrapper directly against a
+//! deliberately panicking closure is the correct level for this: it proves
+//! the mechanism holds for *any* panic, not just ones we can currently think
+//! up an input for.
 //!
 //! This file keeps a thin companion check: that `TAMGA_ERR_PANIC` exists in
 //! the public C ABI at all (a compile-time guarantee cbindgen also depends

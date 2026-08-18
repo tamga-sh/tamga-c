@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.22)
 
 project(tamga_c
     VERSION 0.1.0
-    DESCRIPTION "C ABI bindings for the Tamga licensing SDK"
+    # CMake's DESCRIPTION is a single line; this is the fleet-wide SDK
+    # description, matching Cargo.toml and vcpkg.json.
+    DESCRIPTION "Official C/C++ SDK for Tamga. Integrate license activation, offline verification, and machine management into your C/C++ applications."
     LANGUAGES C CXX
 )
 

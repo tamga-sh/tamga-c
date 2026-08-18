@@ -1,11 +1,10 @@
 # Vendors corrosion-rs/corrosion via CMake FetchContent instead of requiring
-# consumers to have it pre-installed system-wide (Section A of
-# docs/plans/tamga-c.plan.md).
+# consumers to have it pre-installed system-wide.
 #
 # Pin a tagged release, not a floating branch, so builds stay reproducible.
 # Bump TAMGA_C_CORROSION_VERSION deliberately, not as a side effect of an
-# unrelated change, and update the tested-version note in README.md (see
-# docs/plans/tamga-c.plan.md Section G) when you do.
+# unrelated change, and update the tested-version note in README.md when you
+# do.
 
 include(FetchContent)
 
