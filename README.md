@@ -51,13 +51,17 @@ library, and link against `libtamga.a`/`libtamga.so`/`libtamga.dylib`/`tamga.dll
 library name is `libtamga`, not `libtamga_c` — `[lib] name` in `Cargo.toml` is `tamga` so the
 built artifact matches the C-facing product name.
 
-**vcpkg: not consumable yet.** A prepared port lives in [`vcpkg-port/`](vcpkg-port/), but it is
-not usable as-is — its `SHA512` is still a placeholder, and its `REF` points at `v1.2.0`, whose
-`CMakeLists.txt` installs only `include/tamga.h` and not the compiled library. The `install()`
-rules that fix that are on `main` (`cmake --install` now produces the header plus both the
-static and shared library) and will ship in the next tagged release; the portfile's `REF`/`SHA512`
-need updating to that tag before it will build a usable package. Submission to the central vcpkg
-registry is separately blocked: the
+**vcpkg: overlay port only.** A port lives in [`vcpkg-port/`](vcpkg-port/), pinned at `v1.2.1` —
+the first tag whose `CMakeLists.txt` installs the compiled library alongside `include/tamga.h`.
+Consume it as an overlay:
+
+```sh
+vcpkg install tamga-c --overlay-ports=<path-to-this-repo>/vcpkg-port
+```
+
+Like every other build-from-source path here, the port needs `cargo`/`rustc` on `PATH` — vcpkg
+does not provision a Rust toolchain. Submission to the central vcpkg registry is separately
+blocked: the
 [Maintainer Guide](https://learn.microsoft.com/en-us/vcpkg/contributing/maintainer-guide) requires
 a release at least 6 months old or 6 months of active public development, and the first public
 release here was 2026-08-11.
