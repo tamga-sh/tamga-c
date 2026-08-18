@@ -39,7 +39,7 @@ jobs:
       # release PR never gets the required status checks and can only be
       # merged with an admin override. App-authored PRs do trigger CI.
       # Scope the token to the release-PR step only.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}
