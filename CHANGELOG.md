@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/tamga-sh/tamga-c/compare/v1.2.0...v1.2.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* actually install the compiled library, not just the header ([97d8790](https://github.com/tamga-sh/tamga-c/commit/97d879085f4db8e714ee33e931d7e3c6baf258f4))
+* correct SDK documentation and align package metadata ([22389f5](https://github.com/tamga-sh/tamga-c/commit/22389f5423196621eaa94dc24ca05b5e34979bb2))
+
 ## [1.2.0](https://github.com/tamga-sh/tamga-c/compare/v1.1.1...v1.2.0) (2026-08-13)
 
 
