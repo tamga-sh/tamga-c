@@ -25,6 +25,10 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    # 10-23s across 18 observed runs -- it only mints a token and calls the
+    # GitHub API. 15 is far more than it can legitimately need; it exists so
+    # a wedged API call fails the release instead of parking a runner for 6h.
+    timeout-minutes: 15
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -50,12 +54,20 @@ jobs:
   build-native:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    # No timeout-minutes here on purpose: GitHub rejects it on a job that
+    # calls a reusable workflow ("Invalid workflow file"). The bound lives on
+    # the `build` job inside build-native.yml instead -- do not "fix" this by
+    # adding one here.
     uses: ./.github/workflows/build-native.yml
 
   package-and-attach:
     needs: [release-please, build-native]
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    # 17-26s across 6 observed runs (download 8 artifacts, tar/zip, upload).
+    # 20 is generous headroom for a slow GitHub artifact or upload API day
+    # while still bounding a wedged transfer.
+    timeout-minutes: 20
     # Explicit, not inherited from the top-level `permissions:` block —
     # softprops/action-gh-release@v2's asset-upload path failed with
     # "Resource not accessible by integration" while re-fetching the
