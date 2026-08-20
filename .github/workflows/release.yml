@@ -1,17 +1,18 @@
 name: Release
 
-# release-please (release-type: simple) maintains CHANGELOG.md + tags only
-# -- there's no single Cargo.toml version file to bump the way a normal
-# published Rust crate's release-please config would. On release,
-# cross-compile via build-native.yml (reusable workflow_call), package each
-# target's library + include/tamga.h, and attach everything to the matching
-# GitHub Release.
+# release-please maintains CHANGELOG.md, the tag, and the four places the
+# version appears (CMakeLists.txt, include/tamga.h, and both vcpkg.json
+# files) via release-please-config.json's extra-files. Keeping those in the
+# config rather than in a hand-maintained step is what stops them drifting --
+# through v1.2 the CMake project version still said 0.1.0 while the repository
+# was tagged v1.2.2.
 #
-# No registry publish for v0.1 -- GitHub Releases IS the artifact store,
-# matching the SDK Index in the Tamga API protocol specification ("GitHub
-# Releases (.so/.dylib/.dll + tamga.h); optional vcpkg/Conan"). The
-# vcpkg/Conan path stays backlog (see vcpkg.json) -- no portfile work
-# happens here.
+# On release: build every target via build-native.yml (reusable
+# workflow_call), package each one, and attach the archives to the GitHub
+# Release.
+#
+# GitHub Releases is the artifact store. A vcpkg port lives in vcpkg-port/ for
+# registry submission; publishing it is a separate, manual step.
 
 on:
   push:
@@ -48,7 +49,8 @@ jobs:
       - uses: googleapis/release-please-action@v5
         id: release
         with:
-          release-type: simple
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
           token: ${{ steps.app-token.outputs.token }}
 
   build-native:
@@ -84,31 +86,23 @@ jobs:
         with:
           path: dist
 
-      - name: Package per-target archives (.tar.gz Unix / .zip Windows)
-        # TODO: this packaging loop is a scaffold-only sketch -- verify the
-        # actual artifact directory layout `actions/download-artifact@v4`
-        # produces (one dir per `name:` from build-native.yml) once Section
-        # G's cross-compile jobs produce real binaries to test against, and
-        # replace the `case "$name" in *windows*)` OS sniff with something
-        # less brittle if a target naming scheme changes.
+      - name: Package per-target archives (.tar.gz Unix, .zip Windows)
+        # Each downloaded directory is already a complete install tree --
+        # headers, libraries and the CMake package config -- staged by
+        # build-native.yml's `cmake --install`. Nothing is copied in here;
+        # anything missing from an archive is missing from the install rules,
+        # which is where it should be fixed.
         run: |
           set -euo pipefail
           mkdir -p out
           for dir in dist/*/; do
             name=$(basename "$dir")
-            stage="package/$name"
-            mkdir -p "$stage"
-            cp -r "$dir"/. "$stage/"
-            cp include/tamga.h "$stage/"
             case "$name" in
-              *windows*)
-                (cd package && zip -r "../out/$name.zip" "$name")
-                ;;
-              *)
-                tar -czf "out/$name.tar.gz" -C package "$name"
-                ;;
+              *windows*) (cd dist && zip -r "../out/$name.zip" "$name") ;;
+              *)         tar -czf "out/$name.tar.gz" -C dist "$name" ;;
             esac
           done
+          ls -l out
 
       - name: Attach artifacts to GitHub Release
         uses: softprops/action-gh-release@v3

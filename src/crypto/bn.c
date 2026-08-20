@@ -103,7 +103,7 @@ static uint32_t tamga_bn_n0inv(uint32_t m0) {
     for (i = 0; i < 5; i++) {
         inverse *= 2u - (m0 * inverse);
     }
-    return (uint32_t)(0u - inverse);
+    return 0u - inverse;
 }
 
 /*
@@ -136,8 +136,9 @@ static void tamga_bn_mont_mul(uint32_t *r, const uint32_t *a, const uint32_t *b,
         /* Choose m so that t + m*modulus is divisible by 2^32, then shift one
          * limb down -- that division is what Montgomery form buys. */
         m = (uint32_t)((uint64_t)t[0] * (uint64_t)n0inv);
-        carry = 0u;
         {
+            /* By construction this sum's low 32 bits are zero -- that is what
+             * choosing m achieves -- so only the carry out matters. */
             uint64_t product = (uint64_t)t[0] + ((uint64_t)m * (uint64_t)modulus[0]);
             carry = product >> 32;
         }
@@ -149,7 +150,7 @@ static void tamga_bn_mont_mul(uint32_t *r, const uint32_t *a, const uint32_t *b,
         {
             uint64_t sum = (uint64_t)t[n] + carry;
             t[n - 1u] = (uint32_t)sum;
-            t[n] = (uint32_t)(t[n + 1u] + (uint32_t)(sum >> 32));
+            t[n] = t[n + 1u] + (uint32_t)(sum >> 32);
         }
     }
 

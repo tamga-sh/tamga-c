@@ -4,13 +4,6 @@
 
 #include "tamga_mem.h"
 
-#if defined(TAMGA_HTTP_CURL)
-TamgaHttpTransport *tamga_http_transport_create_curl(void);
-#endif
-#if defined(TAMGA_HTTP_WINHTTP)
-TamgaHttpTransport *tamga_http_transport_create_winhttp(void);
-#endif
-
 void tamga_http_response_init(TamgaHttpResponse *response) {
     if (response == NULL) {
         return;

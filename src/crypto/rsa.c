@@ -314,6 +314,10 @@ bool tamga_rsa_verify_pss_sha256(const unsigned char *spki, size_t spki_len,
     db_len = em_len - hash_len - 1u;
     h = &encoded[db_len];
 
+    /* MGF1 takes (seed, seed_len, mask, mask_len): the seed is H with
+     * hash_len, the mask is db_mask with db_len. Both lengths are named for
+     * what they measure, which is what reads as a swap to clang-tidy. */
+    /* NOLINTNEXTLINE(readability-suspicious-call-argument) */
     tamga_mgf1_sha256(h, hash_len, db_mask, db_len);
     db = encoded; /* unmask in place */
     for (i = 0u; i < db_len; i++) {

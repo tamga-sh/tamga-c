@@ -1,5 +1,6 @@
 #include "crypto/fe25519.h"
 
+#include <stddef.h>
 #include <string.h>
 
 /* p = 2^255 - 19, little-endian limbs. */
@@ -229,23 +230,23 @@ bool tamga_fe_is_negative(const TamgaFe *a) {
 
 void tamga_fe_to_bytes(const TamgaFe *a, unsigned char out[32]) {
     uint32_t v[8];
-    int i;
+    size_t i;
 
     memcpy(v, a->v, sizeof(v));
     tamga_fe_reduce(v);
-    for (i = 0; i < 8; i++) {
-        out[i * 4] = (unsigned char)v[i];
-        out[(i * 4) + 1] = (unsigned char)(v[i] >> 8);
-        out[(i * 4) + 2] = (unsigned char)(v[i] >> 16);
-        out[(i * 4) + 3] = (unsigned char)(v[i] >> 24);
+    for (i = 0u; i < 8u; i++) {
+        out[i * 4u] = (unsigned char)v[i];
+        out[(i * 4u) + 1u] = (unsigned char)(v[i] >> 8);
+        out[(i * 4u) + 2u] = (unsigned char)(v[i] >> 16);
+        out[(i * 4u) + 3u] = (unsigned char)(v[i] >> 24);
     }
 }
 
 void tamga_fe_from_bytes(TamgaFe *r, const unsigned char in[32]) {
-    int i;
-    for (i = 0; i < 8; i++) {
-        r->v[i] = (uint32_t)in[i * 4] | ((uint32_t)in[(i * 4) + 1] << 8) |
-                  ((uint32_t)in[(i * 4) + 2] << 16) | ((uint32_t)in[(i * 4) + 3] << 24);
+    size_t i;
+    for (i = 0u; i < 8u; i++) {
+        r->v[i] = (uint32_t)in[i * 4u] | ((uint32_t)in[(i * 4u) + 1u] << 8) |
+                  ((uint32_t)in[(i * 4u) + 2u] << 16) | ((uint32_t)in[(i * 4u) + 3u] << 24);
     }
     r->v[7] &= 0x7fffffffu; /* the top bit is the sign flag, never part of y */
     tamga_fe_reduce(r->v);

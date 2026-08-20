@@ -142,7 +142,7 @@ static uint32_t p256_n0inv(uint32_t m0) {
     for (i = 0; i < 5; i++) {
         inverse *= 2u - (m0 * inverse);
     }
-    return (uint32_t)(0u - inverse);
+    return 0u - inverse;
 }
 
 /* r = a * b * R^-1 mod m (CIOS). */
@@ -178,7 +178,7 @@ static void p256_mont_mul(const P256Mod *ctx, uint32_t r[P256_LIMBS], const uint
         {
             uint64_t sum = (uint64_t)t[P256_LIMBS] + carry;
             t[P256_LIMBS - 1] = (uint32_t)sum;
-            t[P256_LIMBS] = (uint32_t)(t[P256_LIMBS + 1] + (uint32_t)(sum >> 32));
+            t[P256_LIMBS] = t[P256_LIMBS + 1] + (uint32_t)(sum >> 32);
         }
     }
 

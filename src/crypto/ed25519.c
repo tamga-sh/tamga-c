@@ -30,11 +30,11 @@ static bool tamga_sc_is_canonical(const unsigned char s[32]) {
 }
 
 static void tamga_sc_load_l(uint32_t out[8]) {
-    int i;
-    for (i = 0; i < 8; i++) {
-        out[i] = (uint32_t)TAMGA_SC_L[i * 4] | ((uint32_t)TAMGA_SC_L[(i * 4) + 1] << 8) |
-                 ((uint32_t)TAMGA_SC_L[(i * 4) + 2] << 16) |
-                 ((uint32_t)TAMGA_SC_L[(i * 4) + 3] << 24);
+    size_t i;
+    for (i = 0u; i < 8u; i++) {
+        out[i] = (uint32_t)TAMGA_SC_L[i * 4u] | ((uint32_t)TAMGA_SC_L[(i * 4u) + 1u] << 8) |
+                 ((uint32_t)TAMGA_SC_L[(i * 4u) + 2u] << 16) |
+                 ((uint32_t)TAMGA_SC_L[(i * 4u) + 3u] << 24);
     }
 }
 
@@ -54,7 +54,7 @@ static void tamga_sc_reduce512(const unsigned char in[64], unsigned char out[32]
     uint32_t remainder[8];
     uint32_t l[8];
     int bit;
-    int i;
+    size_t i;
 
     memset(remainder, 0, sizeof(remainder));
     tamga_sc_load_l(l);
@@ -66,13 +66,13 @@ static void tamga_sc_reduce512(const unsigned char in[64], unsigned char out[32]
 
         /* remainder = remainder * 2 + next bit. The remainder stays below L,
          * so doubling it cannot exceed 2L < 2^254 and never overflows. */
-        for (i = 0; i < 8; i++) {
+        for (i = 0u; i < 8u; i++) {
             uint32_t next_carry = remainder[i] >> 31;
             remainder[i] = (remainder[i] << 1) | carry;
             carry = next_carry;
         }
 
-        for (i = 0; i < 8; i++) {
+        for (i = 0u; i < 8u; i++) {
             uint64_t diff = (uint64_t)remainder[i] - (uint64_t)l[i] - borrow;
             candidate[i] = (uint32_t)diff;
             borrow = (diff >> 63) & 1u;
@@ -82,11 +82,11 @@ static void tamga_sc_reduce512(const unsigned char in[64], unsigned char out[32]
         }
     }
 
-    for (i = 0; i < 8; i++) {
-        out[i * 4] = (unsigned char)remainder[i];
-        out[(i * 4) + 1] = (unsigned char)(remainder[i] >> 8);
-        out[(i * 4) + 2] = (unsigned char)(remainder[i] >> 16);
-        out[(i * 4) + 3] = (unsigned char)(remainder[i] >> 24);
+    for (i = 0u; i < 8u; i++) {
+        out[i * 4u] = (unsigned char)remainder[i];
+        out[(i * 4u) + 1u] = (unsigned char)(remainder[i] >> 8);
+        out[(i * 4u) + 2u] = (unsigned char)(remainder[i] >> 16);
+        out[(i * 4u) + 3u] = (unsigned char)(remainder[i] >> 24);
     }
 }
 

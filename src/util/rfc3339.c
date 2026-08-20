@@ -54,7 +54,7 @@ static int64_t tamga_days_from_civil(int64_t year, unsigned int month, unsigned 
     y -= (month <= 2u) ? 1 : 0;
     era = ((y >= 0) ? y : (y - 399)) / 400;
     yoe = y - (era * 400); /* [0, 399] */
-    doy = (int64_t)((153u * ((month > 2u) ? (month - 3u) : (month + 9u)) + 2u) / 5u) +
+    doy = (int64_t)(((153u * ((month > 2u) ? (month - 3u) : (month + 9u))) + 2u) / 5u) +
           (int64_t)day - 1;                            /* [0, 365] */
     doe = (yoe * 365) + (yoe / 4) - (yoe / 100) + doy; /* [0, 146096] */
     return (era * 146097) + doe - 719468;

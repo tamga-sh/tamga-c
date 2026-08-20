@@ -190,6 +190,10 @@ bool tamga_gcm_open(const unsigned char key[TAMGA_AES256_KEY_LEN],
     }
     tag = &ciphertext_and_tag[ciphertext_len];
 
+    /* `out` is the output buffer and `computed_tag` the tag, in that order.
+     * clang-tidy's suspicious-argument check matches on name similarity, not
+     * on types, and reads them as swapped. */
+    /* NOLINTNEXTLINE(readability-suspicious-call-argument) */
     (void)tamga_gcm_core(key, nonce, aad, aad_len, ciphertext_and_tag, ciphertext_len, out,
                          computed_tag, ciphertext_and_tag, ciphertext_len);
 

@@ -305,8 +305,6 @@ static void tamga_winhttp_destroy(void *user_data) {
     tamga_free(state);
 }
 
-TamgaHttpTransport *tamga_http_transport_create_winhttp(void);
-
 TamgaHttpTransport *tamga_http_transport_create_winhttp(void) {
     TamgaHttpTransport *transport;
     TamgaWinHttpState *state;

@@ -264,7 +264,7 @@ static bool tamga_json_sort_keys(const TamgaJson *object, size_t count, size_t *
             size_t mid = start + width;
             size_t end = start + (width * 2u);
             size_t left = start;
-            size_t right = mid;
+            size_t right;
             size_t at = start;
 
             if (mid > count) {
@@ -273,6 +273,8 @@ static bool tamga_json_sort_keys(const TamgaJson *object, size_t count, size_t *
             if (end > count) {
                 end = count;
             }
+            /* Assigned after the clamp, not before it: the unclamped mid can
+             * exceed count on the final, partial run. */
             right = mid;
             while (left < mid || right < end) {
                 bool take_left;

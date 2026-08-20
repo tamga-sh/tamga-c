@@ -55,11 +55,15 @@
 #define TAMGA_API
 #endif
 
-/* Library version, matching the git tag and CMake project version. */
-#define TAMGA_VERSION_MAJOR 1
-#define TAMGA_VERSION_MINOR 3
-#define TAMGA_VERSION_PATCH 0
-#define TAMGA_VERSION_STRING "1.3.0"
+/*
+ * Library version, matching the git tag and the CMake project version.
+ * The trailing markers are what release-please rewrites on a release; do not
+ * edit these by hand or the three places the version appears will drift.
+ */
+#define TAMGA_VERSION_MAJOR 1 /* x-release-please-major */
+#define TAMGA_VERSION_MINOR 3 /* x-release-please-minor */
+#define TAMGA_VERSION_PATCH 0 /* x-release-please-patch */
+#define TAMGA_VERSION_STRING "1.3.0" /* x-release-please-version */
 
 #ifdef __cplusplus
 extern "C" {

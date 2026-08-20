@@ -1,10 +1,7 @@
 version: 2
 updates:
-  - package-ecosystem: "cargo"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-
+  # The library itself has no package dependencies to update -- that is the
+  # point of it. Only the workflow actions do.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

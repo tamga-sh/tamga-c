@@ -84,6 +84,19 @@ TAMGA_NODISCARD bool tamga_http_response_add_header(TamgaHttpResponse *response,
  */
 const char *tamga_http_response_header(const TamgaHttpResponse *response, const char *name);
 
+/*
+ * Backend constructors. Declared here rather than forward-declared at the one
+ * call site so that the definition and the declaration are visibly the same
+ * thing -- otherwise each looks like a function that could have been static.
+ * Each is compiled only when CMake selected that backend.
+ */
+#if defined(TAMGA_HTTP_CURL)
+TAMGA_NODISCARD struct TamgaHttpTransport *tamga_http_transport_create_curl(void);
+#endif
+#if defined(TAMGA_HTTP_WINHTTP)
+TAMGA_NODISCARD struct TamgaHttpTransport *tamga_http_transport_create_winhttp(void);
+#endif
+
 /**
  * Creates the transport this build was configured with, or NULL when built
  * with TAMGA_HTTP=none. The caller owns the result and releases it with

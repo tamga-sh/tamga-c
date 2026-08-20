@@ -64,7 +64,9 @@ bool tamga_buf_reserve(TamgaBuf *buf, size_t extra) {
         buf->failed = true;
         return false;
     }
-    if (buf->len > 0u) {
+    /* len > 0 implies data != NULL by construction, but the analyser cannot
+     * see that and a future caller might not preserve it. */
+    if (buf->len > 0u && buf->data != NULL) {
         memcpy(grown, buf->data, buf->len);
     }
     tamga_secure_free(buf->data, buf->cap);

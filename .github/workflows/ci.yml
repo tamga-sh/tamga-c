@@ -5,103 +5,169 @@ on:
     branches: [main]
   pull_request:
 
-# UNBLOCKED: tamga-rust published to crates.io (0.2.0+), so the
-# [patch.crates-io] override that used to point this crate at a sibling
-# ../tamga-rust checkout is gone -- Cargo.toml's `tamga_rust = { package =
-# "tamga", version = "0.2" }` resolves from crates.io like any other
-# dependency, in this standalone CI checkout same as locally.
-
-env:
-  CARGO_TERM_COLOR: always
+# Every job is bounded. An unbounded job that wedges parks a runner for six
+# hours; a bounded one fails in minutes and tells you which step hung.
 
 jobs:
-  lint-and-coverage:
-    name: clippy, clang-format, header freshness, coverage, deny
+  format-and-analyse:
+    name: clang-format, clang-tidy
     runs-on: ubuntu-latest
-    # 2m24s-3m05s across the last ~37 runs; 20 is ~6x the worst observed.
-    # Sized to catch a hung step (see the per-step timeouts below), not to
-    # police a slow day -- the point is bounding the 6h GitHub default.
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        timeout-minutes: 10
-        with:
-          components: clippy, rustfmt
+      - name: Install tooling
+        run: sudo apt-get update && sudo apt-get install -y clang-format clang-tidy
 
-      - name: Install cargo-binstall
-        uses: taiki-e/install-action@cargo-binstall
-        timeout-minutes: 10
-
-      - name: Install cbindgen, cargo-llvm-cov, cargo-deny via binstall
-        timeout-minutes: 10
-        run: cargo binstall --no-confirm cbindgen cargo-llvm-cov cargo-deny
-
-      - name: cargo clippy --all-targets -D warnings
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Install clang-format
-        # This exact step is why every job here now carries a bound: an
-        # apt-get that never returned burned ~30 minutes of a release run
-        # before a human noticed. A stuck package mirror produces no output,
-        # so the step needs its own cap rather than riding the job's.
-        timeout-minutes: 10
-        run: sudo apt-get update && sudo apt-get install -y clang-format
-
-      - name: clang-format --dry-run --Werror (tests/c/, examples/)
+      - name: clang-format
         run: |
-          find tests/c examples -type f \( -name '*.c' -o -name '*.h' \) -print0 \
-            | xargs -0 clang-format --dry-run --Werror
+          FILES=$(find src include tests examples -name '*.c' -o -name '*.h')
+          clang-format --dry-run --Werror $FILES
 
-      - name: Header freshness gate (cbindgen regenerate + diff)
+      # clang-tidy needs a compilation database, which CMake emits.
+      - name: Configure for static analysis
+        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # Only the sources this configuration actually compiles. The Windows
+      # transport is not among them on Linux, and analysing it here would fail
+      # on a missing windows.h rather than on anything about the code.
+      - name: clang-tidy
         run: |
-          cargo build --lib
-          git diff --exit-code include/tamga.h
-
-      - name: cargo llvm-cov (70% line gate)
-        # Lower than this org's usual 80% norm: most of the underlying
-        # crypto/parsing logic is already covered by tamga-rust's own test
-        # suite. This layer is marshalling/lifecycle glue over that -- see
-        # CLAUDE.md's "Coverage gate: 70%, not 80%" section for the full
-        # rationale, not just this comment.
-        run: cargo llvm-cov --fail-under-lines 70
-
-      - name: cargo deny check
-        # Enforces the `rsa` crate ban (RUSTSEC-2023-0071) inherited from
-        # tamga-rust's house policy -- see CLAUDE.md.
-        run: cargo deny check
+          FILES=$(python3 -c "
+          import json
+          with open('build/compile_commands.json') as f:
+              print('\n'.join(entry['file'] for entry in json.load(f)))
+          " | grep '/src/')
+          echo "$FILES"
+          clang-tidy -p build $FILES
 
   build-and-test:
-    name: build + ctest (${{ matrix.os }})
-    needs: lint-and-coverage
+    name: build + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-14, windows-latest]
-    runs-on: ${{ matrix.os }}
-    # windows-latest is the long pole at 5m55s worst observed (macOS peaks at
-    # 2m08s, Linux at 1m49s); 30 is ~5x that and the usual bound for a
-    # cross-platform matrix leg.
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        timeout-minutes: 10
+      - name: Install libcurl (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
 
-      - name: Configure (CMake + corrosion)
-        # Not an ordinary configure: cmake/FetchCorrosion.cmake pulls
-        # corrosion in over the network (FetchContent git clone of
-        # corrosion-rs/corrosion), so this step can stall silently the way
-        # the pure-compile Build step below cannot.
-        timeout-minutes: 10
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTAMGA_WARNINGS_AS_ERRORS=ON
 
-      - name: Build (native cdylib/staticlib + C test harness)
+      - name: Build
         run: cmake --build build --config Release
 
-      - name: ctest
+      - name: Test
         run: ctest --test-dir build --output-on-failure -C Release
+
+      # A consumer's first experience is find_package, so it is worth proving
+      # the install tree works rather than only the build tree.
+      - name: Install and consume
+        if: runner.os != 'Windows'
+        run: |
+          cmake --install build --prefix "$PWD/staging"
+          test -f staging/include/tamga.h
+          test -f staging/lib/cmake/tamga/tamga-config.cmake
+
+  sanitizers:
+    name: AddressSanitizer + UndefinedBehaviorSanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - name: Configure
+        run: >
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug
+          -DTAMGA_C_ENABLE_ASAN=ON -DTAMGA_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build-asan
+      - name: Test
+        run: ctest --test-dir build-asan --output-on-failure
+
+  no-dependencies:
+    name: zero-dependency build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # This job is the evidence behind the claim on the tin. libcurl is
+      # deliberately NOT installed here: with TAMGA_HTTP=none the library must
+      # build, pass its whole suite, and link against libc alone. If this job
+      # ever needs a package installed, the claim has stopped being true.
+      - name: Configure without a transport
+        run: >
+          cmake -S . -B build-none -DCMAKE_BUILD_TYPE=Release
+          -DTAMGA_HTTP=none -DTAMGA_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build-none
+
+      - name: Test
+        run: ctest --test-dir build-none --output-on-failure
+
+      - name: Assert the library links against libc and nothing else
+        run: |
+          echo "--- ldd output ---"
+          ldd build-none/libtamga.so
+          UNEXPECTED=$(ldd build-none/libtamga.so \
+            | grep -oE '=> /[^ ]+' \
+            | grep -vE 'libc\.so|libm\.so|ld-linux|linux-vdso' || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "unexpected shared-library dependencies:" >&2
+            echo "$UNEXPECTED" >&2
+            exit 1
+          fi
+          echo "ok: no dependencies beyond libc"
+
+  coverage:
+    name: line coverage (80%)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev llvm
+      - name: Configure with coverage instrumentation
+        run: >
+          cmake -S . -B build-cov -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=clang -DTAMGA_C_ENABLE_COVERAGE=ON
+      - name: Build
+        run: cmake --build build-cov
+      - name: Test
+        run: |
+          cd build-cov
+          LLVM_PROFILE_FILE="$PWD/%p.profraw" ctest --output-on-failure
+      - name: Gate
+        run: sh Scripts/check-coverage.sh 80 build-cov
+
+  fuzz:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev clang
+
+      # A short run on every pull request, not a fuzzing campaign. The point
+      # is that a change which makes a parser trivially crashable fails before
+      # it merges; finding deep bugs is what longer scheduled runs are for.
+      - name: Configure fuzzers
+        run: >
+          cmake -S . -B build-fuzz -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=clang -DTAMGA_C_ENABLE_FUZZ=ON
+
+      - name: Build
+        run: cmake --build build-fuzz
+
+      - name: Run each target for 60 seconds
+        run: |
+          for f in build-fuzz/tests/fuzz/fuzz_*; do
+            echo "--- $(basename "$f") ---"
+            "$f" -max_total_time=60 -print_final_stats=1
+          done

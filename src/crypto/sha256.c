@@ -23,7 +23,7 @@ static uint32_t tamga_rotr32(uint32_t value, unsigned int bits) {
 static void tamga_sha256_compress(TamgaSha256 *ctx, const unsigned char block[64]) {
     uint32_t w[64];
     uint32_t a, b, c, d, e, f, g, h;
-    unsigned int i;
+    size_t i;
 
     for (i = 0u; i < 16u; i++) {
         w[i] = ((uint32_t)block[i * 4u] << 24) | ((uint32_t)block[(i * 4u) + 1u] << 16) |
@@ -127,7 +127,7 @@ void tamga_sha256_update(TamgaSha256 *ctx, const void *data, size_t len) {
 
 void tamga_sha256_final(TamgaSha256 *ctx, unsigned char out[TAMGA_SHA256_DIGEST_LEN]) {
     uint64_t bit_len;
-    unsigned int i;
+    size_t i;
 
     if (ctx == NULL || out == NULL) {
         return;
@@ -148,10 +148,11 @@ void tamga_sha256_final(TamgaSha256 *ctx, unsigned char out[TAMGA_SHA256_DIGEST_
     tamga_sha256_compress(ctx, ctx->block);
 
     for (i = 0u; i < 8u; i++) {
-        out[i * 4u] = (unsigned char)(ctx->state[i] >> 24);
-        out[(i * 4u) + 1u] = (unsigned char)(ctx->state[i] >> 16);
-        out[(i * 4u) + 2u] = (unsigned char)(ctx->state[i] >> 8);
-        out[(i * 4u) + 3u] = (unsigned char)ctx->state[i];
+        size_t base = i * 4u;
+        out[base] = (unsigned char)(ctx->state[i] >> 24);
+        out[base + 1u] = (unsigned char)(ctx->state[i] >> 16);
+        out[base + 2u] = (unsigned char)(ctx->state[i] >> 8);
+        out[base + 3u] = (unsigned char)ctx->state[i];
     }
 
     /* The context holds a partial block of the message plus the chaining

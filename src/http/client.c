@@ -616,14 +616,16 @@ static char *tamga_client_compose_base_url(const char *host, const char *account
     }
 
     tamga_buf_init(&buf);
-    if (len > 7u && strncmp(trimmed, "http://", 7u) == 0) {
-        tamga_buf_append(&buf, trimmed, len);
-    } else if (len > 8u && strncmp(trimmed, "https://", 8u) == 0) {
-        tamga_buf_append(&buf, trimmed, len);
-    } else {
+    /* A scheme the caller supplied is kept as-is; a bare host gets https.
+     * An explicit http:// is honoured rather than upgraded -- production is
+     * always HTTPS, but silently rewriting a URL is worse than obeying it,
+     * and it is what makes a local mock server usable without a test-only
+     * code path. */
+    if (!((len > 7u && strncmp(trimmed, "http://", 7u) == 0) ||
+          (len > 8u && strncmp(trimmed, "https://", 8u) == 0))) {
         tamga_buf_append_str(&buf, "https://");
-        tamga_buf_append(&buf, trimmed, len);
     }
+    tamga_buf_append(&buf, trimmed, len);
     tamga_buf_append_str(&buf, "/v1/accounts/");
     tamga_buf_append_str(&buf, account_id);
 

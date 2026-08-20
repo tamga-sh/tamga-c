@@ -25,7 +25,7 @@ bool tamga_hkdf_sha256(const unsigned char *salt, size_t salt_len, const unsigne
         return false;
     }
     /* RFC 5869: at most 255 blocks of HashLen. */
-    if (out_len > (255u * TAMGA_SHA256_DIGEST_LEN)) {
+    if (out_len > ((size_t)255u * (size_t)TAMGA_SHA256_DIGEST_LEN)) {
         return false;
     }
 

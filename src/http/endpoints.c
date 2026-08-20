@@ -470,9 +470,16 @@ TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *li
     }
 
     status = tamga_client_create_machine(client, license_id, fingerprint, options_json, &created);
-    if (status != TAMGA_OK) {
+    if (status != TAMGA_OK || created == NULL) {
+        /* A successful send always yields a response, but the machine id is
+         * read out of it below, and a null there would be a crash rather than
+         * an error -- so the invariant is checked, not assumed. */
         tamga_response_free(created);
-        return status;
+        return (status != TAMGA_OK)
+                   ? status
+                   : tamga_error_set(TAMGA_ERR_UNKNOWN,
+                                     "the machine was created but the server returned no "
+                                     "resource");
     }
 
     /*
@@ -857,9 +864,12 @@ TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const char *lic
      * first page while looking exhaustive would be worse than saying so. */
     status = tamga_client_list_entitlements(client, license_id, (limit > 0u) ? limit : 100u, NULL,
                                             &response);
-    if (status != TAMGA_OK) {
+    if (status != TAMGA_OK || response == NULL) {
         tamga_response_free(response);
-        return status;
+        return (status != TAMGA_OK) ? status
+                                    : tamga_error_set(TAMGA_ERR_UNKNOWN,
+                                                      "the entitlement listing returned no "
+                                                      "response");
     }
 
     data = tamga_json_object_get(response->json, "data");

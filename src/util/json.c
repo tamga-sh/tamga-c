@@ -69,14 +69,14 @@ void tamga_json_free(TamgaJson *value) {
         for (i = 0u; i < value->as.array.count; i++) {
             tamga_json_free(value->as.array.items[i]);
         }
-        tamga_free(value->as.array.items);
+        tamga_free((void *)value->as.array.items);
         break;
     case TAMGA_JSON_OBJECT:
         for (i = 0u; i < value->as.object.count; i++) {
             tamga_secure_free(value->as.object.members[i].key, value->as.object.members[i].key_len);
             tamga_json_free(value->as.object.members[i].value);
         }
-        tamga_free(value->as.object.members);
+        tamga_free((void *)value->as.object.members);
         break;
     case TAMGA_JSON_NULL:
     case TAMGA_JSON_BOOL:
