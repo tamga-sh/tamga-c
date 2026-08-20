@@ -25,7 +25,9 @@
 - [ ] A `security-reviewer` pass was requested for **each** area separately, and
       every CRITICAL and HIGH finding is addressed
 - [ ] Any new protocol behaviour has a **negative** test, not only a positive one
-- [ ] The fuzz targets still run clean (`-DTAMGA_C_ENABLE_FUZZ=ON`, clang)
+- [ ] The fuzz targets still run clean (`-DTAMGA_C_ENABLE_FUZZ=ON`, clang),
+      started from `tests/fuzz/corpus/` — copy it aside first, libFuzzer
+      writes into the directory it is given
 
 ## Test plan
 

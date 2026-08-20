@@ -65,7 +65,22 @@ implementations:
   only against material this code also generated proves self-consistency, not
   interoperability.
 - **Every parser that reads untrusted bytes is fuzzed** under ASan and UBSan:
-  PEM, base64, JSON, DER, and both offline file formats end to end.
+  PEM, base64, JSON, DER, and both offline file formats end to end. Three
+  things have to be true for that sentence to mean anything, and all three
+  are now checked rather than assumed: the harnesses are linked against an
+  instrumented build (they were not, once, and sat at a coverage counter of 3
+  for 43 million executions), each harness reaches the code it claims to
+  (one passed a single key length for four signature schemes and never
+  reached Ed25519 at all), and the runs start from the committed seed corpus
+  in `tests/fuzz/corpus/` rather than from empty input.
+- **Allocation failures are exercised, not assumed.** An allocator that can
+  be made to fail walks every allocation on the offline path and in the
+  request builders, failing them one at a time, and asserts that each run
+  either produces the real answer or reports running out of memory — never a
+  third thing, and never with memory left outstanding. That distinction is a
+  security property here and not only a hygiene one: before this walk existed,
+  an allocation failure while decoding a proof's signature was reported as a
+  proof that did not verify.
 
 ## Guarantees the code keeps
 

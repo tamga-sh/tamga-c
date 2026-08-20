@@ -246,9 +246,46 @@ jobs:
       - name: Build
         run: cmake --build build-fuzz
 
+      # libFuzzer writes new inputs into the first directory it is given, so
+      # the committed corpus is copied aside rather than fuzzed in place.
+      - name: Stage the seed corpora
+        run: |
+          for d in tests/fuzz/corpus/*/; do
+            name=$(basename "$d")
+            mkdir -p "/tmp/corpus/$name"
+            cp "$d"* "/tmp/corpus/$name/" 2>/dev/null || true
+          done
+
+      # The coverage floor is the guard that matters. These harnesses were
+      # once linked against an uninstrumented library and ran blind -- 43
+      # million executions at a coverage counter of 3 -- and every run
+      # "passed", because a fuzzer that explores nothing also crashes on
+      # nothing. A floor turns that silent regression into a failure. It is
+      # set far below what any target actually reaches, so it fires on
+      # "instrumentation is gone", not on normal run-to-run variation.
+      #
+      # Verified by rebuilding the harnesses in the broken shape: every
+      # target came back between cov 1 and cov 5 and the gate failed all six.
+      # Seeded and instrumented, the same targets reach 137 to 1664 in eight
+      # seconds.
       - name: Run each target for 60 seconds
         run: |
+          FLOOR=40
+          status=0
           for f in build-fuzz/tests/fuzz/fuzz_*; do
-            echo "--- $(basename "$f") ---"
-            "$f" -max_total_time=60 -print_final_stats=1
+            name=$(basename "$f")
+            corpus="/tmp/corpus/${name#fuzz_}"
+            echo "--- $name ---"
+            if ! "$f" "$corpus" -max_total_time=60 -print_final_stats=1 2>&1 | tee "/tmp/$name.log"; then
+              echo "::error::$name crashed"
+              status=1
+              continue
+            fi
+            cov=$(grep -oE 'cov: [0-9]+' "/tmp/$name.log" | tail -1 | grep -oE '[0-9]+')
+            echo "$name reached coverage ${cov:-0}"
+            if [ -z "$cov" ] || [ "$cov" -lt "$FLOOR" ]; then
+              echo "::error::$name reached coverage ${cov:-0}, below the floor of $FLOOR -- the harness is probably not instrumented, or is not reaching the code it names"
+              status=1
+            fi
           done
+          exit $status
