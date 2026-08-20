@@ -49,6 +49,13 @@ void tamga_buf_append_fmt(TamgaBuf *buf, const char *fmt, ...) TAMGA_PRINTF(2, 3
 bool tamga_buf_ok(const TamgaBuf *buf);
 
 /**
+ * Marks the buffer as failed, for a producer that detects a problem of its
+ * own rather than an allocation failure. The detach helpers then refuse it,
+ * so partial output can never escape.
+ */
+void tamga_buf_mark_failed(TamgaBuf *buf);
+
+/**
  * Transfers ownership of the bytes as a NUL-terminated C string, resetting
  * the buffer. `out_len` (optional) receives the length excluding the NUL.
  *

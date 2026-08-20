@@ -16,6 +16,9 @@ set(TAMGA_SOURCES
     src/util/hex.c
     src/util/uuid.c
     src/util/rfc3339.c
+    src/util/json.c
+    src/util/json_parse.c
+    src/util/json_write.c
 )
 
 list(TRANSFORM TAMGA_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")

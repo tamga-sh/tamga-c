@@ -154,6 +154,13 @@ bool tamga_buf_ok(const TamgaBuf *buf)
     return buf != NULL && !buf->failed;
 }
 
+void tamga_buf_mark_failed(TamgaBuf *buf)
+{
+    if (buf != NULL) {
+        buf->failed = true;
+    }
+}
+
 char *tamga_buf_detach_string(TamgaBuf *buf, size_t *out_len)
 {
     char *out;
