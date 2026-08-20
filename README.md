@@ -1,269 +1,251 @@
 # tamga-c
 
-[![CI](https://github.com/tamga-sh/tamga-c/actions/workflows/ci.yml/badge.svg)](https://github.com/tamga-sh/tamga-c/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+The official C/C++ SDK for [Tamga](https://tamga.sh) — licence activation,
+offline verification, and machine management.
 
-Official C/C++ SDK for Tamga. Integrate license activation, offline verification, and machine
-management into your C/C++ applications.
+**No dependencies.** The offline-verification half of this library links
+against the C standard library and nothing else: no OpenSSL, no libsodium, no
+JSON library, no build-time toolchain beyond a C11 compiler and CMake. The
+HTTP half needs a transport, which is either an operating-system component
+(WinHTTP on Windows, libcurl elsewhere) or one you supply.
 
-> **Scope of this package.** `tamga-c` is the fleet's shared offline-verification core, not an
-> HTTP client. It has no auth transport, no `validate`/`check-in`, and no machine-management
-> surface — no `Authorization` headers, no JSON:API request handling, no policy or entitlement
-> logic. Its entire surface is four offline, deterministic crypto operations: verify a `.lic`
-> license file, verify a machine file across four signing schemes, verify a machine offline
-> proof, and derive the two AES keys those file formats depend on. It is built from the Rust
-> reference implementation ([`tamga-rust`](https://github.com/tamga-sh/tamga-rust)) and is the
-> foundation the [Java](https://github.com/tamga-sh/tamga-java) (JNI) and
-> [Swift](https://github.com/tamga-sh/tamga-swift) (Swift/ObjC bridge) SDKs link against
-> instead of re-implementing signature verification per language.
->
-> For activation over HTTP, machine registration, heartbeats, and entitlements, use one of the
-> full SDKs: `tamga-rust`, `tamga-python`, `tamga-go`, `tamga-dotnet`, or `tamga-js`.
+---
+
+## What it does
+
+**Offline, with no network access at all:**
+
+- verify and decode a `.lic` licence file (Ed25519, optionally AES-256-GCM encrypted)
+- verify and decode a machine file across all four signing schemes
+- verify a machine offline proof
+- derive the two AES keys those formats use
+
+**Over HTTP:**
+
+- validate a licence by key or by id, with or without a scope
+- check in, and check out `.lic` and machine files
+- register, activate, heartbeat and delete machines
+- generate an offline proof
+- register components and processes
+- list and query entitlements
+
+Everything the [Rust reference SDK](https://github.com/tamga-sh/tamga-rust)
+exposes is here.
+
+---
 
 ## Install
 
-`tamga-c` ships as a prebuilt static/shared library plus a header via
-[GitHub Releases](https://github.com/tamga-sh/tamga-c/releases) (`.a`/`.so`/`.dylib`/`.dll` +
-`tamga.h`, one archive per platform). Every release is cross-compiled for eight platform/arch
-targets: Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64, iOS device arm64, and both
-iOS Simulator architectures (see [`.github/workflows/build-native.yml`](.github/workflows/build-native.yml)).
-
-**CMake (FetchContent):**
+### CMake FetchContent
 
 ```cmake
 include(FetchContent)
-FetchContent_Declare(
-    tamga_c
-    GIT_REPOSITORY https://github.com/tamga-sh/tamga-c.git
-    GIT_TAG v1.2.0  # see the Releases page for the latest
-)
-FetchContent_MakeAvailable(tamga_c)
+FetchContent_Declare(tamga
+    GIT_REPOSITORY https://github.com/tamga-sh/tamga-c
+    GIT_TAG        v1.3.0)
+FetchContent_MakeAvailable(tamga)
 
-target_link_libraries(your_target PRIVATE tamga_c::tamga_c)
+target_link_libraries(your_app PRIVATE tamga::tamga)
 ```
 
-Building from source requires a Rust toolchain on `PATH` — the CMake build drives Cargo through
-[corrosion](https://github.com/corrosion-rs/corrosion), vendored via `FetchContent` in
-[`cmake/FetchCorrosion.cmake`](cmake/FetchCorrosion.cmake).
-
-**Manual link:** download the archive matching your platform, extract `include/tamga.h` and the
-library, and link against `libtamga.a`/`libtamga.so`/`libtamga.dylib`/`tamga.dll` directly. The
-library name is `libtamga`, not `libtamga_c` — `[lib] name` in `Cargo.toml` is `tamga` so the
-built artifact matches the C-facing product name.
-
-**vcpkg: overlay port only.** A port lives in [`vcpkg-port/`](vcpkg-port/), pinned at `v1.2.1` —
-the first tag whose `CMakeLists.txt` installs the compiled library alongside `include/tamga.h`.
-Consume it as an overlay:
+### find_package
 
 ```sh
-vcpkg install tamga-c --overlay-ports=<path-to-this-repo>/vcpkg-port
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+cmake --install build --prefix /usr/local
 ```
 
-Like every other build-from-source path here, the port needs `cargo`/`rustc` on `PATH` — vcpkg
-does not provision a Rust toolchain. Submission to the central vcpkg registry is separately
-blocked: the
-[Maintainer Guide](https://learn.microsoft.com/en-us/vcpkg/contributing/maintainer-guide) requires
-a release at least 6 months old or 6 months of active public development, and the first public
-release here was 2026-08-11.
+```cmake
+find_package(tamga 1.3 REQUIRED)
+target_link_libraries(your_app PRIVATE tamga::tamga)
+```
 
-## Quickstart
+### Release archives
 
-Verify a `.lic` file offline and print the decoded license resource. Every function returns a
-`TamgaErrorCode`; `TAMGA_OK` (0) is success, and any other value has a thread-local detail
-message behind `tamga_last_error_message()`.
+Each release attaches a per-platform archive containing the built library, the
+header, and the CMake package files. Linux x86_64 and aarch64, macOS
+universal, Windows x86_64.
+
+### vcpkg
+
+`vcpkg-port/` holds a portfile for registry submission.
+
+---
+
+## Quick start
+
+Validate a licence at startup:
 
 ```c
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
+#include <tamga.h>
 
-#include "tamga.h"
+TamgaClient *client = NULL;
+TamgaResponse *response = NULL;
 
-int main(void) {
-    /* The raw bytes of a .lic file, PEM markers included. Read this from disk
-       in a real application -- see examples/verify_license.c. */
-    const char *pem = "-----BEGIN LICENSE FILE-----\n"
-                      "<base64 body>\n"
-                      "-----END LICENSE FILE-----\n";
+tamga_client_new("<account-id>", "api.tamga.sh", &client);
+tamga_client_set_auth(client, TAMGA_AUTH_LICENSE, "<licence-key>", NULL);
 
-    /* Your account's Ed25519 public key: 32 raw bytes, embedded at build time. */
-    static const uint8_t ed25519_pubkey[32] = {
-        /* 32 bytes of public key go here */
-        0};
-
-    /* Required only for an encrypted file (alg "aes-256-gcm+ed25519+v2").
-       Pass NULL for a plain "base64+ed25519+v2" file. */
-    const char *license_key = NULL;
-
-    TamgaLicenseFile *license = NULL;
-    TamgaErrorCode err =
-        tamga_license_file_verify(pem, strlen(pem), ed25519_pubkey, license_key, &license);
-    if (err != TAMGA_OK) {
-        const char *detail = tamga_last_error_message();
-        fprintf(stderr, "verify failed (code=%d): %s\n", (int)err, detail ? detail : "(no detail)");
-        return 1;
+if (tamga_client_validate_by_key(client, "<licence-key>", NULL, &response) == TAMGA_OK) {
+    if (tamga_response_validation_is_valid(response)) {
+        /* good to go */
+    } else {
+        printf("not valid: %s\n", tamga_response_validation_code(response));
     }
-
-    char *json = NULL;
-    uintptr_t json_len = 0;
-    if (tamga_license_file_get_json(license, &json, &json_len) == TAMGA_OK) {
-        printf("%.*s\n", (int)json_len, json);
-        tamga_string_free(json); /* never libc free() on a string this library returned */
-    }
-
-    tamga_license_file_free(license);
-    return 0;
+} else {
+    /* The check could not be made -- a network failure, not a verdict.
+       Treating this as "invalid" is how a licensing system locks out a
+       paying customer on an aeroplane. */
 }
+
+tamga_response_free(response);
+tamga_client_free(client);
 ```
 
-Runnable versions of all three verification flows live in
-[`examples/`](examples/) — `verify_license.c`, `verify_machine.c`, and `verify_offline_proof.c`
-are real CLIs, not stubs. Build them with `-DTAMGA_C_BUILD_EXAMPLES=ON`.
+Verify a licence file with no network access:
 
-## Offline verification
+```c
+TamgaLicenseFile *file = NULL;
 
-### License files
+/* pubkey is your account's 32-byte Ed25519 public key, embedded in your
+   binary. licence_key is needed only for an encrypted file. */
+TamgaErrorCode code = tamga_license_file_verify(pem, pem_len, pubkey, licence_key, &file);
 
-`tamga_license_file_verify(pem, pem_len, ed25519_pubkey, license_key, &handle)` strips the PEM
-markers, Ed25519-verifies the signature over `enc`'s base64 **string**, decrypts if the file is
-encrypted, and enforces the signed expiry — all without network access. The decoded resource is
-read back as JSON with `tamga_license_file_get_json` and released with
-`tamga_license_file_free`.
+if (code == TAMGA_OK) {
+    char *json = NULL;
+    uintptr_t len = 0;
+    tamga_license_file_get_json(file, &json, &len);
+    puts(json);
+    tamga_string_free(json);
+} else if (code == TAMGA_ERR_EXPIRED) {
+    /* Authentic, but out of time. Distinct from a forgery on purpose. */
+}
 
-License-file checkout signatures are always Ed25519, independent of the license's own `scheme`.
+tamga_license_file_free(file);
+```
 
-> ⚠️ **Compatibility warning: offline license files must be format v2.** The file's `alg` must
-> end in `+v2` (`base64+ed25519+v2` or `aes-256-gcm+ed25519+v2`), and its signed `meta` claims
-> (`iat`, `exp`, `jti`, `kid`) are covered by the signature. **v1 files are rejected outright
-> with no fallback path** — `TAMGA_ERR_UNSUPPORTED_SCHEME`. If you hold `.lic` files issued
-> before v2, they will stop verifying and must be checked out again. This is a real behavioral
-> break, not a deprecation.
->
-> `exp` is enforced with a 60-second clock-skew tolerance and reported as its own
-> `TAMGA_ERR_EXPIRED` code, so an authentic-but-expired file is distinguishable from a forged
-> one.
+More in [`examples/`](examples/), including the full activation flow.
 
-### Machine files
+---
 
-`tamga_machine_file_verify(pem, pem_len, scheme, pubkey, pubkey_len, license_key, fingerprint, &handle)`
-dispatches on the **license's** `scheme`, not on the file's self-declared `alg`:
+## Build options
 
-| `scheme` (pass as `uint32_t`) | Public key format |
-| --- | --- |
-| `TAMGA_SCHEME_ED25519_SIGN` | 32 raw bytes |
-| `TAMGA_SCHEME_RSA_2048_PKCS1_SIGN` | `SubjectPublicKeyInfo` DER |
-| `TAMGA_SCHEME_RSA_2048_PKCS1_PSS_SIGN` | `SubjectPublicKeyInfo` DER |
-| `TAMGA_SCHEME_ECDSA_P256_SIGN` | 65-byte uncompressed point |
+| Option | Default | What it does |
+|---|---|---|
+| `TAMGA_HTTP` | `auto` | Transport backend: `auto`, `winhttp`, `curl`, `none` |
+| `TAMGA_BUILD_SHARED` | `ON` | Build the shared library alongside the static one |
+| `TAMGA_C_BUILD_TESTS` | `ON` | Build the test suites |
+| `TAMGA_C_BUILD_EXAMPLES` | `OFF` | Build `examples/` |
+| `TAMGA_WARNINGS_AS_ERRORS` | `OFF` | Promote compiler warnings to errors |
+| `TAMGA_C_ENABLE_ASAN` | `OFF` | AddressSanitizer + UndefinedBehaviorSanitizer |
+| `TAMGA_C_ENABLE_COVERAGE` | `OFF` | Source-based coverage instrumentation |
+| `TAMGA_C_ENABLE_FUZZ` | `OFF` | Build the libFuzzer targets (clang) |
 
-`TAMGA_SCHEME_RSA_2048_JWT_RS256` and `TAMGA_SCHEME_NONE` are rejected with
-`TAMGA_ERR_UNSUPPORTED_SCHEME`. The `scheme` parameter is declared `uint32_t` rather than
-`enum TamgaScheme` on purpose — see "Security notes".
+`auto` picks WinHTTP on Windows and libcurl elsewhere when it is found, and
+falls back to no backend with a message rather than failing the build.
 
-An encrypted machine file needs **both** the license key and the target machine's fingerprint to
-decrypt; a license file needs only the license key.
+### An offline-only build
 
-### Offline proofs
+```sh
+cmake -S . -B build -DTAMGA_HTTP=none
+```
 
-`tamga_offline_proof_verify(proof_str, rsa_pubkey, rsa_pubkey_len, account_id, machine_id, fingerprint, dataset_json, &out_valid)`
-checks a `"v1x0.<base64 signature>"` proof. Proofs are always signed RSA-2048 PKCS#1 v1.5 /
-SHA-256, regardless of the license's `scheme`.
+The whole offline surface works; the client entry points return
+`TAMGA_ERR_NO_TRANSPORT` until you register a transport. The resulting library
+links against libc alone — CI asserts it.
 
-Check both results: a non-`TAMGA_OK` return means the *call* failed (bad UUID, malformed JSON,
-null pointer), while `TAMGA_OK` with `out_valid == false` means the call succeeded and the proof
-did not verify.
+### Your own transport
 
-### Key derivation
+For an application that already has an HTTP stack, or one that must route
+requests through its own proxy or audit layer:
 
-`tamga_hkdf_derive_license_file_key(license_key, out_32_bytes)` and
-`tamga_hkdf_derive_machine_file_key(license_key, fingerprint, out_32_bytes)` expose the two
-AES-256-GCM key derivations directly, for callers that need the raw key without a full
-verify round-trip. Both are HKDF-SHA256 — see "Security notes" for the parameters.
+```c
+static bool perform(void *user_data, const char *method, const char *url,
+                    const char *const *names, const char *const *values,
+                    uintptr_t header_count, const char *body, uintptr_t body_len,
+                    unsigned int timeout_ms, TamgaHttpResult *result) {
+    /* Make the request however you like, then: */
+    tamga_http_result_set_status(result, status);
+    tamga_http_result_set_body(result, response_body, response_len);
+    tamga_http_result_add_header(result, "Retry-After", "5");
+    return true;   /* false only if the request could not be made at all */
+}
 
-## Security notes
+tamga_client_set_transport(client, perform, my_state, NULL);
+```
 
-Every claim below names the function that implements it. Cryptographic work is delegated to
-`tamga-rust`; this crate is a marshalling layer, not a second implementation.
+Whatever you build on must verify TLS certificates and hostnames. This library
+offers no way to disable that in its own backends and assumes the same of
+yours.
 
-- **Both offline file formats derive their AES key with HKDF-SHA256** (RFC 5869).
-  License file: `salt = "tamga:license-file-key-v1"`, `ikm = <license key>`,
-  `info = "license-file"` (`src/kdf.rs::tamga_hkdf_derive_license_file_key` →
-  `tamga-rust`'s `src/crypto/hkdf.rs::derive_license_file_key`). Machine file:
-  `salt = "tamga:machine-file-key-v1"`, `ikm = <license key>`, `info = <machine fingerprint>`
-  (`src/kdf.rs::tamga_hkdf_derive_machine_file_key` →
-  `tamga-rust`'s `src/crypto/hkdf.rs::derive_machine_file_key`).
-  The pre-v2 license-file transform — the licence key's raw bytes zero-padded or truncated to 32
-  — was **removed, not deprecated**: its source module and the exported
-  `tamga_naive_derive_license_file_key` symbol are both gone, so no caller can silently fall back
-  to a key whose real strength was the licence key's own entropy.
-- **Format v2 is required and `exp` is enforced** with a 60-second skew tolerance
-  (`tamga-rust`'s `src/checkout/license_file.rs::verify_license_file_at`, tolerance constant
-  `CLOCK_SKEW_TOLERANCE_SECS`), surfaced as `TAMGA_ERR_EXPIRED` by
-  `src/license_file.rs::map_checkout_error`.
-- **Signatures are verified over `enc`'s base64 string, before decoding it**
-  (`tamga-rust`'s `src/checkout/license_file.rs::verify_license_file_at`). Verifying over the
-  decoded bytes is the most common way to get this format wrong.
-- **Machine-file algorithm selection comes from the license's `scheme`, cross-checked against the
-  file's `alg` suffix** (`tamga-rust`'s `src/checkout/machine_file.rs::scheme_alg_suffix`); a
-  self-declared string never selects the verifying primitive.
-  `src/machine_file.rs::map_scheme` rejects `TAMGA_SCHEME_NONE`.
-- **No Rust panic can unwind into C.** Every exported function runs through
-  `src/lib.rs::ffi_guard` or `src/lib.rs::ffi_guard_void`, which convert a caught panic into
-  `TAMGA_ERR_PANIC`.
-- **`#[repr(C)]` enums are never parameters by value.** A C `enum` has no validity range, so an
-  out-of-range value would be undefined behavior the moment it reached a typed Rust parameter.
-  Scheme arguments arrive as `uint32_t` and go through `src/lib.rs::TamgaScheme::from_raw`.
-- **Length arguments are range-checked** against a 16 MiB bound before any
-  `slice::from_raw_parts`, returning `TAMGA_ERR_LENGTH_INVALID`
-  (`src/lib.rs::MAX_REASONABLE_LEN`).
-- **Derived keys are zeroized on drop.** `tamga-rust`'s derivations return
-  `Zeroizing<[u8; 32]>`; note that a key you copy out through `out_32_bytes` is yours to wipe.
-- **The `rsa` crate is banned** (RUSTSEC-2023-0071, the unpatched Marvin timing attack).
-  [`deny.toml`](deny.toml) enforces this and CI runs `cargo deny check`; RSA work uses
-  `aws-lc-rs`.
+---
 
-Memory ownership: every `tamga_*_verify` handle is freed exactly once with its matching
-`tamga_*_free`, and every owned `char *` this library returns goes through `tamga_string_free` —
-never libc `free()`. `tamga_last_error_message()` returns a **borrowed** pointer valid only until
-the next `tamga_*` call on the same thread; copy it out if you need it longer. Double-free is
-documented undefined behavior and intentionally unguarded.
+## Things worth knowing
 
-Full policy and reporting instructions: [`SECURITY.md`](SECURITY.md).
+**Ownership.** Every function returning an owned `char *` pairs with
+`tamga_string_free`; every handle pairs with its own `_free`. Never call
+`free()` on something this library returned. `tamga_last_error_message()`
+returns a *borrowed* pointer valid until the next `tamga_*` call on that
+thread — copy it if you need it longer.
 
-## Known gaps
+**Errors.** `TAMGA_OK` always means `tamga_last_error_message()` returns
+`NULL` on that thread. A failing call always sets one. No error message ever
+contains a licence key, token or password.
 
-- **`tamga_offline_proof_generate` is not implemented** and always returns
-  `TAMGA_ERR_UNKNOWN` (`src/offline_proof.rs::tamga_offline_proof_generate`). This is deliberate:
-  `tamga-rust`'s RSA module is verify-only, and re-deriving the byte-exact canonical JSON payload
-  a second time in this crate would reintroduce exactly the field-order risk the shared
-  implementation exists to avoid. Proof generation is a server-side operation, reachable through
-  the HTTP-capable SDKs.
-- **No HTTP surface at all.** Activation, validation, check-in/check-out, heartbeats, machine
-  registration and entitlements are not in this package. Rate limiting is likewise out of scope
-  here — the server does return HTTP `429`, and the transport SDKs handle it (parsed and capped
-  `Retry-After`, jittered exponential backoff, auto-retry on `GET` plus the five safe `POST`
-  actions `validate`, `validate-key`, `check-in`, `check-out`, `ping`, with creates deliberately
-  excluded — `tamga-rust`'s `src/client.rs::is_retryable`).
-- **Expiry is checked against the host clock**, which the end user controls. `tamga-rust` exposes
-  `verify_license_file_at` for applications that keep a server-supplied timestamp; the C ABI does
-  not surface that parameter yet.
-- **No central package registry.** GitHub Releases is the artifact store; crates.io publishing is
-  disabled (`publish = false`), and the vcpkg port is overlay-only for now (see "Install").
-- **`examples/verify_machine.c` only parses Ed25519 public keys.** RSA and ECDSA keys are
-  variable-length and would need a length argument; the FFI entry point supports them, the
-  example does not.
-- **C-side test coverage is not measured.** `cargo llvm-cov` gates the Rust layer at 70% lines;
-  the `tests/c/` CTest suite is pass/fail only.
+**Offline files expire.** A `.lic` file carries a signed expiry, enforced with
+sixty seconds of clock skew and reported as `TAMGA_ERR_EXPIRED` rather than as
+a signature failure — a caller that cannot tell "expired" from "forged" either
+accuses the user of tampering when their trial ends, or treats a forgery as a
+renewal prompt. A file checked out with no `ttl` never expires.
 
-## Documentation
+**The client's clock is the user's clock.** For a stricter offline grace
+period, keep a server-supplied timestamp and check the file's expiry against
+that instead of the system clock.
 
-- [tamga.sh](https://tamga.sh) — product documentation, including the protocol reference for the
-  license-file, machine-file, and offline-proof formats this package implements.
-- [`include/tamga.h`](include/tamga.h) — the generated C ABI reference. Every function, error
-  code, and ownership contract is documented inline.
-- [`examples/`](examples/) — runnable programs for all three verification flows.
-- [`SECURITY.md`](SECURITY.md) — security properties, supported versions, and reporting.
-- [`CHANGELOG.md`](CHANGELOG.md) — release history.
+**Machine files need the fingerprint.** An encrypted machine file's key is
+derived from the licence key *and* the machine's fingerprint, so a file issued
+for one machine cannot be decrypted on another even by someone holding the
+licence key.
 
-## License
+**Registering a machine does not check seat limits.** Creation succeeds even
+when a licence is at its maximum; the limit surfaces on the next validation.
+Use `tamga_client_activate_machine()`, which composes the two and can undo an
+over-limit activation.
 
-MIT — see [`LICENSE`](LICENSE).
+**Threading.** Every function is safe to call concurrently on distinct
+handles, and the last-error slot is per-thread. A single `TamgaClient` or
+handle must not be used from two threads at once without your own
+synchronisation.
+
+---
+
+## Compatibility
+
+Version 1.3 replaced the implementation entirely — through 1.2 this was a Rust
+crate exposed through a generated C header — while keeping the ABI. **A binary
+built against 1.2.x links and runs against 1.3 unchanged.** All twelve entry
+points keep byte-identical signatures and no enum value was renumbered; the
+v1.2.2 test harness runs against the new library untouched, which is how that
+is verified rather than asserted.
+
+What changed for you: building no longer needs a Rust toolchain, corrosion or
+cbindgen, and there is now an HTTP client.
+
+`tamga_offline_proof_generate()` remains a deliberate non-implementation.
+Proofs are issued by the server; this SDK holds no signing keys. Use
+`tamga_client_generate_offline_proof()`.
+
+---
+
+## Security
+
+Every cryptographic primitive is implemented in this repository and pinned to
+the published test vectors for its specification. The reasoning behind that,
+the threat model, and how to report a vulnerability are in
+[SECURITY.md](SECURITY.md).
+
+---
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
