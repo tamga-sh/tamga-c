@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Only the curl backend pulls in a link-time dependency a consumer has to
+# resolve; winhttp is a Windows system library and the `none` backend has no
+# dependency at all.
+if("@TAMGA_HTTP_BACKEND@" STREQUAL "curl")
+    find_dependency(CURL)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/tamga-targets.cmake")
+
+check_required_components(tamga)

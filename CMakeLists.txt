@@ -1,81 +1,133 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(tamga_c
-    VERSION 0.1.0
+project(tamga
+    VERSION 1.3.0
     # CMake's DESCRIPTION is a single line; this is the fleet-wide SDK
-    # description, matching Cargo.toml and vcpkg.json.
+    # description, matching vcpkg.json.
     DESCRIPTION "Official C/C++ SDK for Tamga. Integrate license activation, offline verification, and machine management into your C/C++ applications."
-    LANGUAGES C CXX
+    HOMEPAGE_URL "https://github.com/tamga-sh/tamga-c"
+    LANGUAGES C
 )
 
-# --- corrosion (Rust <-> CMake bridge) ------------------------------------
-# Vendored via FetchContent rather than requiring a system-wide corrosion
-# install; see cmake/FetchCorrosion.cmake for the pinned version.
-include(cmake/FetchCorrosion.cmake)
+# C11 for _Thread_local, _Static_assert, and stdint/stdbool without dialect
+# extensions. No compiler extensions: the library must build identically
+# under gcc, clang and MSVC.
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 
-# --- Rust crate ------------------------------------------------------------
-# Builds this repo's Cargo.toml ([lib] name = "tamga", crate-type =
-# ["cdylib", "staticlib", "rlib"]). corrosion registers a CMake target per
-# Cargo lib target, named after `[lib].name` -- i.e. plain `tamga`, NOT this
-# crate's `[package].name` (`tamga-c`).
-corrosion_import_crate(MANIFEST_PATH ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml)
-
-# Namespaced ALIAS so downstream consumers always link via
-# `tamga_c::tamga_c`, regardless of the underlying Cargo target name --
-# matches the CMake package::target convention (e.g. `fmt::fmt`,
-# `nlohmann_json::nlohmann_json`) and insulates consumers from a rename of
-# [lib].name.
-if(TARGET tamga)
-    add_library(tamga_c::tamga_c ALIAS tamga)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# --- Installation ------------------------------------------------------
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)
+include(TamgaWarnings)
+include(TamgaSanitizers)
+include(TamgaHttpBackend)
+include(${CMAKE_CURRENT_SOURCE_DIR}/src/sources.cmake)
 
+option(TAMGA_BUILD_SHARED   "Build the shared library in addition to the static one" ON)
+option(TAMGA_C_BUILD_TESTS  "Build the test suites"  ON)
+option(TAMGA_C_BUILD_EXAMPLES "Build examples/"      OFF)
+
+# --- library targets -------------------------------------------------------
+#
+# Static and shared are compiled separately rather than sharing an OBJECT
+# library: the shared build needs TAMGA_BUILD_SHARED_LIB defined (it drives
+# __declspec(dllexport) on Windows and default-visibility elsewhere) while the
+# static build must not have it, and sanitizer/coverage instrumentation
+# differs between the two on some toolchains. For a project this size the
+# duplicate compile is cheaper than the edge cases an OBJECT library
+# introduces.
+function(tamga_configure_library TARGET)
+    target_sources(${TARGET} PRIVATE ${TAMGA_SOURCES})
+    target_include_directories(${TARGET}
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    set_target_properties(${TARGET} PROPERTIES
+        OUTPUT_NAME tamga
+        POSITION_INDEPENDENT_CODE ON
+        C_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
+    )
+    tamga_set_warnings(${TARGET})
+    tamga_apply_sanitizers(${TARGET})
+    tamga_configure_http(${TARGET})
+endfunction()
+
+add_library(tamga_static STATIC)
+tamga_configure_library(tamga_static)
+target_compile_definitions(tamga_static PUBLIC TAMGA_STATIC_LIB=1)
+
+if(TAMGA_BUILD_SHARED)
+    add_library(tamga_shared SHARED)
+    tamga_configure_library(tamga_shared)
+    target_compile_definitions(tamga_shared PRIVATE TAMGA_BUILD_SHARED_LIB=1)
+    set_target_properties(tamga_shared PROPERTIES
+        VERSION   ${PROJECT_VERSION}
+        SOVERSION ${PROJECT_VERSION_MAJOR}
+    )
+endif()
+
+# Consumers link `tamga::tamga`. `tamga_c::tamga_c` is the pre-1.3 alias and
+# is kept permanently -- tests/c/ and examples/ still use it, and so may any
+# downstream CMake project written against 1.0-1.2.
+if(TAMGA_BUILD_SHARED)
+    add_library(tamga::tamga     ALIAS tamga_shared)
+    add_library(tamga_c::tamga_c ALIAS tamga_shared)
+else()
+    add_library(tamga::tamga     ALIAS tamga_static)
+    add_library(tamga_c::tamga_c ALIAS tamga_static)
+endif()
+add_library(tamga::tamga_static ALIAS tamga_static)
+
+# --- installation ----------------------------------------------------------
+set(TAMGA_INSTALL_TARGETS tamga_static)
+if(TAMGA_BUILD_SHARED)
+    list(APPEND TAMGA_INSTALL_TARGETS tamga_shared)
+endif()
+
+install(TARGETS ${TAMGA_INSTALL_TARGETS}
+    EXPORT tamga-targets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/tamga.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-# Plain `install(TARGETS tamga_c::tamga_c ...)` does NOT work here -- the
-# targets corrosion_import_crate() exports are an INTERFACE library wrapping
-# internal IMPORTED SHARED/STATIC targets, and CMake's own install(TARGETS)
-# does not know how to install an IMPORTED target's artifacts.
-#
-# corrosion's own corrosion_install() looks like the documented answer (see
-# https://corrosion-rs.github.io/corrosion/usage.html) but is genuinely
-# broken for library crates in the pinned version -- read its actual
-# implementation (cmake/FetchCorrosion.cmake pins the version; see
-# Corrosion.cmake's corrosion_install() body) and it only ever installs
-# targets where `get_property(... PROPERTY TYPE)` equals EXECUTABLE; there
-# is no branch for STATIC_LIBRARY/SHARED_LIBRARY at all, so
-# corrosion_install(TARGETS tamga) silently installs nothing for a
-# cdylib/staticlib crate -- confirmed empirically (built libtamga.a and
-# libtamga.dylib existed in the build dir, cmake --install copied neither)
-# before reading the source and finding why. EXPORT is separately listed as
-# "not yet implemented" and hard-errors if used.
-#
-# Installing the real underlying IMPORTED targets directly instead --
-# corrosion names these <crate>-static / <crate>-shared internally (see
-# Corrosion.cmake's add_library(${target_name}-static STATIC IMPORTED ...)
-# and the -shared equivalent), which DO support $<TARGET_FILE:...> like any
-# normal IMPORTED library target.
-if(TARGET tamga-static)
-    install(FILES $<TARGET_FILE:tamga-static> DESTINATION ${CMAKE_INSTALL_LIBDIR})
-endif()
-if(TARGET tamga-shared)
-    install(FILES $<TARGET_FILE:tamga-shared> DESTINATION ${CMAKE_INSTALL_LIBDIR})
-    if(WIN32)
-        install(FILES $<TARGET_LINKER_FILE:tamga-shared> DESTINATION ${CMAKE_INSTALL_LIBDIR})
-    endif()
-endif()
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/tamga-config-version.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tamga-config.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/tamga-config.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/tamga
+)
+install(EXPORT tamga-targets
+    FILE tamga-targets.cmake
+    NAMESPACE tamga::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/tamga
+)
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/tamga-config.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/tamga-config-version.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/tamga
+)
 
-# --- Subprojects -------------------------------------------------------
-option(TAMGA_C_BUILD_TESTS "Build the tests/c/ CTest harness" ON)
-option(TAMGA_C_BUILD_EXAMPLES "Build examples/" OFF)
-
+# --- subprojects -----------------------------------------------------------
 if(TAMGA_C_BUILD_TESTS)
     enable_testing()
-    add_subdirectory(tests/c)
+    add_subdirectory(tests)
 endif()
 
 if(TAMGA_C_BUILD_EXAMPLES)

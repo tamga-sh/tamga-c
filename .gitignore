@@ -19,3 +19,7 @@ examples/build/
 
 # macOS
 .DS_Store
+
+# CMake build trees
+build/
+build-*/
