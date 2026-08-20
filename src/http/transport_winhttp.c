@@ -273,7 +273,10 @@ static bool tamga_winhttp_perform(void *user_data, const TamgaHttpRequest *reque
         }
     }
 
-    response->body = tamga_buf_detach_string(&body, &response->body_len);
+    /* Terminated but length-authoritative: a body containing a NUL byte is
+     * still a well-formed response, and reporting it as a transport failure
+     * would be a much less useful answer than handing over the bytes. */
+    response->body = tamga_buf_detach_terminated(&body, &response->body_len);
     if (response->body == NULL) {
         goto done;
     }

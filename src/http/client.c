@@ -64,6 +64,20 @@ char *tamga_sanitize_api_version(const char *version) {
     }
 }
 
+bool tamga_header_value_is_safe(const char *value) {
+    size_t i;
+
+    if (value == NULL) {
+        return false;
+    }
+    for (i = 0u; value[i] != '\0'; i++) {
+        if (value[i] == '\r' || value[i] == '\n') {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool tamga_request_is_retryable(const char *method, const char *path) {
     static const char *const retryable_suffixes[] = {
         "/actions/validate",  "/actions/validate-key", "/actions/check-in",
@@ -277,7 +291,10 @@ static bool tamga_client_auth_header(const TamgaClient *client, char **out_name,
         tamga_buf_init(&buf);
         tamga_buf_append_str(&buf, "Basic ");
         tamga_buf_append_str(&buf, encoded);
-        tamga_free(encoded);
+        /* base64 of "email:password" or "license:<key>" is a reversible
+         * encoding of the credential, not a digest of it -- erased, not just
+         * released, like every other copy of it. */
+        tamga_string_free(encoded);
         *out_value = tamga_buf_detach_string(&buf, NULL);
         tamga_buf_free(&buf);
         break;
@@ -461,8 +478,12 @@ static TamgaResponse *tamga_response_from_http(TamgaHttpResponse *http) {
 TamgaErrorCode tamga_client_send(TamgaClient *client, const char *method, const char *path,
                                  const char *query, const char *body, const char *otp,
                                  bool json_api_body, TamgaResponse **out_response) {
+    /* Authorization, Tamga-Version, Accept, Content-Type, Tamga-OTP: five at
+     * most. The assertion is here so adding a sixth fails to compile rather
+     * than overrunning -- re-counting branches is not a bound. */
     TamgaHttpRequestHeader headers[6];
     size_t header_count = 0u;
+    _Static_assert(TAMGA_MAX_REQUEST_HEADERS <= 6, "the request header array is too small");
     char *auth_name = NULL;
     char *auth_value = NULL;
     char *url = NULL;
@@ -484,6 +505,16 @@ TamgaErrorCode tamga_client_send(TamgaClient *client, const char *method, const 
         return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT,
                                "no credentials configured; call tamga_client_set_auth() "
                                "before making a request");
+    }
+    /* The OTP is caller-supplied and goes verbatim into a header. An embedded
+     * CRLF would let whoever supplies it append arbitrary headers to a
+     * request this library authenticates -- so it is refused here rather than
+     * left to each transport to notice. The value is not echoed in the
+     * message: it is a one-time credential. */
+    if (otp != NULL && !tamga_header_value_is_safe(otp)) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT,
+                               "the OTP contains a line break and cannot be sent as a "
+                               "header");
     }
 
     if (!tamga_client_auth_header(client, &auth_name, &auth_value)) {
@@ -719,6 +750,16 @@ TamgaErrorCode tamga_client_set_auth(TamgaClient *client, TamgaAuthKind kind, co
         /* Reached via a raw value from a stale header or a binding; a C enum
          * has no validity range at the ABI level. */
         return tamga_error_set(TAMGA_ERR_UNSUPPORTED_SCHEME, "unknown auth kind");
+    }
+
+    /* Bearer and License place the credential directly into a header value;
+     * Basic base64-encodes it and the query transport percent-encodes it, so
+     * only the first two can carry a line break through. Checked for all of
+     * them anyway -- a credential containing CR or LF is a caller mistake in
+     * every form. */
+    if (!tamga_header_value_is_safe(primary) ||
+        (secondary != NULL && !tamga_header_value_is_safe(secondary))) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "the credential contains a line break");
     }
 
     primary_copy = tamga_strdup(primary);

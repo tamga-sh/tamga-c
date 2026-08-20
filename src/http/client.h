@@ -32,6 +32,9 @@
  */
 #define TAMGA_DEFAULT_MAX_RETRIES 3u
 
+/* Authorization, Tamga-Version, Accept, Content-Type, Tamga-OTP. */
+#define TAMGA_MAX_REQUEST_HEADERS 5u
+
 struct TamgaClient {
     char *account_id;
     char *host;
@@ -67,6 +70,21 @@ struct TamgaResponse {
  * one.
  */
 TAMGA_NODISCARD char *tamga_sanitize_api_version(const char *version);
+
+/**
+ * Is a value safe to place in an HTTP header?
+ *
+ * Rejects CR, LF and NUL. A header value carrying CRLF is header injection:
+ * the transports serialise headers as "name: value\r\n" into one block, and
+ * an embedded CRLF appends attacker-chosen headers -- an overridden
+ * Content-Length, a header a front-end proxy trusts, or a smuggled request.
+ *
+ * Applied to every header value built from caller input. The two auth forms
+ * that were already safe are safe by construction, not by check: Basic is
+ * base64, which has no CR or LF in its alphabet, and the query transport is
+ * percent-encoded.
+ */
+bool tamga_header_value_is_safe(const char *value);
 
 /**
  * Is this request safe to repeat after a 429?

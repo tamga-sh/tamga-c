@@ -266,6 +266,34 @@ TT_TEST(gcm_round_trips_a_licence_sized_payload) {
     TT_ASSERT_EQ_MEM(opened, plaintext, sizeof(plaintext));
 }
 
+/* A null pointer with a non-zero length is a caller bug that would otherwise
+ * reach memcpy inside GHASH. Guarded for the associated data the same way it
+ * already was for the plaintext. */
+TT_TEST(gcm_rejects_a_null_pointer_with_a_nonzero_length) {
+    unsigned char key[32];
+    unsigned char nonce[12];
+    unsigned char sealed[64];
+    unsigned char opened[64];
+    size_t len = 99u;
+
+    memset(key, 0x2a, sizeof(key));
+    memset(nonce, 0x3b, sizeof(nonce));
+
+    TT_ASSERT_FALSE(
+        tamga_gcm_seal(key, nonce, NULL, 8u, (const unsigned char *)"x", 1u, sealed, &len));
+    TT_ASSERT_EQ_SIZE(len, 0u);
+    len = 99u;
+    TT_ASSERT_FALSE(tamga_gcm_open(key, nonce, NULL, 8u, sealed, 32u, opened, &len));
+    TT_ASSERT_EQ_SIZE(len, 0u);
+
+    /* And the output length is cleared before any other validation, so a
+     * caller reading it after a bad-argument failure cannot see a stale
+     * value. */
+    len = 99u;
+    TT_ASSERT_FALSE(tamga_gcm_open(NULL, nonce, NULL, 0u, sealed, 32u, opened, &len));
+    TT_ASSERT_EQ_SIZE(len, 0u);
+}
+
 int main(void) {
     TT_RUN(aes256_matches_fips197);
     TT_RUN(aes256_tolerates_aliased_input_and_output);
@@ -276,6 +304,7 @@ int main(void) {
     TT_RUN(gcm_rejects_a_wrong_key_or_nonce);
     TT_RUN(gcm_authenticates_the_associated_data);
     TT_RUN(gcm_rejects_input_shorter_than_the_tag);
+    TT_RUN(gcm_rejects_a_null_pointer_with_a_nonzero_length);
     TT_RUN(gcm_opens_an_empty_payload);
     TT_RUN(gcm_round_trips_a_licence_sized_payload);
     return TT_SUMMARY();

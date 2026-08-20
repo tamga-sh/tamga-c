@@ -116,7 +116,12 @@ void tamga_sha512_update(TamgaSha512 *ctx, const void *data, size_t len) {
     if (ctx->block_len > 0u) {
         size_t needed = TAMGA_SHA512_BLOCK_LEN - ctx->block_len;
         size_t take = (len < needed) ? len : needed;
-        memcpy(&ctx->block[ctx->block_len], bytes, take);
+        /* memcpy with a null source is undefined even for a zero count, and
+         * update(ctx, NULL, 0) on a context holding a partial block reaches
+         * here with bytes == NULL. */
+        if (take > 0u) {
+            memcpy(&ctx->block[ctx->block_len], bytes, take);
+        }
         ctx->block_len += take;
         offset = take;
         if (ctx->block_len < TAMGA_SHA512_BLOCK_LEN) {

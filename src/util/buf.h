@@ -69,6 +69,16 @@ void tamga_buf_mark_failed(TamgaBuf *buf);
 TAMGA_NODISCARD char *tamga_buf_detach_string(TamgaBuf *buf, size_t *out_len);
 
 /**
+ * As tamga_buf_detach_string, but permits an interior NUL byte.
+ *
+ * For content where the length is authoritative and the terminator is only a
+ * convenience -- an HTTP response body, say. Rejecting an interior NUL there
+ * would turn a well-formed response into a transport failure, which is a
+ * different and much less useful answer than "here are the bytes".
+ */
+TAMGA_NODISCARD char *tamga_buf_detach_terminated(TamgaBuf *buf, size_t *out_len);
+
+/**
  * Transfers ownership of the raw bytes, resetting the buffer. Returns NULL
  * if the buffer has failed. `out_len` receives the length; it is required.
  * The returned pointer is released with tamga_free() (or tamga_secure_free()

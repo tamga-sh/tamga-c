@@ -322,6 +322,45 @@ TT_TEST(constant_time_compare_agrees_with_memcmp) {
     TT_ASSERT_FALSE(tamga_ct_memeq(a, NULL, sizeof(a)));
 }
 
+/* update(ctx, NULL, 0) on a context already holding a partial block used to
+ * reach memcpy with a null source -- undefined even for a zero count. */
+TT_TEST(a_zero_length_update_with_a_null_pointer_is_a_no_op) {
+    TamgaSha256 ctx256;
+    TamgaSha512 ctx512;
+    unsigned char streamed[TAMGA_SHA512_DIGEST_LEN];
+    unsigned char expected256[TAMGA_SHA256_DIGEST_LEN];
+    unsigned char expected512[TAMGA_SHA512_DIGEST_LEN];
+
+    tamga_sha256("abc", 3u, expected256);
+    tamga_sha256_init(&ctx256);
+    tamga_sha256_update(&ctx256, "ab", 2u); /* leaves a partial block */
+    tamga_sha256_update(&ctx256, NULL, 0u);
+    tamga_sha256_update(&ctx256, "c", 1u);
+    tamga_sha256_final(&ctx256, streamed);
+    TT_ASSERT_EQ_MEM(streamed, expected256, TAMGA_SHA256_DIGEST_LEN);
+
+    tamga_sha512("abc", 3u, expected512);
+    tamga_sha512_init(&ctx512);
+    tamga_sha512_update(&ctx512, "ab", 2u);
+    tamga_sha512_update(&ctx512, NULL, 0u);
+    tamga_sha512_update(&ctx512, "c", 1u);
+    tamga_sha512_final(&ctx512, streamed);
+    TT_ASSERT_EQ_MEM(streamed, expected512, TAMGA_SHA512_DIGEST_LEN);
+}
+
+/* A null pointer with a non-zero length would otherwise derive a key from
+ * different material than the caller believes -- a failure that looks
+ * perfectly well-formed. */
+TT_TEST(hkdf_rejects_a_mismatched_pointer_and_length) {
+    unsigned char ikm[4] = {1u, 2u, 3u, 4u};
+    unsigned char out[32];
+
+    TT_ASSERT_FALSE(tamga_hkdf_sha256(NULL, 8u, ikm, sizeof(ikm), NULL, 0u, out, sizeof(out)));
+    TT_ASSERT_FALSE(tamga_hkdf_sha256(NULL, 0u, ikm, sizeof(ikm), NULL, 8u, out, sizeof(out)));
+    /* Both genuinely absent is still fine -- an absent salt is defined. */
+    TT_ASSERT(tamga_hkdf_sha256(NULL, 0u, ikm, sizeof(ikm), NULL, 0u, out, sizeof(out)));
+}
+
 int main(void) {
     TT_RUN(sha256_matches_fips_vectors);
     TT_RUN(sha256_matches_the_long_message_vector);
@@ -331,6 +370,8 @@ int main(void) {
     TT_RUN(hmac_sha256_matches_rfc4231);
     TT_RUN(hkdf_matches_rfc5869);
     TT_RUN(hkdf_rejects_an_oversized_request);
+    TT_RUN(hkdf_rejects_a_mismatched_pointer_and_length);
+    TT_RUN(a_zero_length_update_with_a_null_pointer_is_a_no_op);
     TT_RUN(file_key_derivations_match_tamga_rust);
     TT_RUN(the_two_derivations_are_distinct);
     TT_RUN(the_machine_key_depends_on_the_fingerprint);

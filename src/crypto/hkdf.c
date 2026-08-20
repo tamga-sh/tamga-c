@@ -24,6 +24,13 @@ bool tamga_hkdf_sha256(const unsigned char *salt, size_t salt_len, const unsigne
     if (out == NULL || out_len == 0u) {
         return false;
     }
+    /* A null pointer with a non-zero length is a caller bug. Treating it as
+     * "absent" would silently derive a key from different material than the
+     * caller believes -- the worst way to fail, since the result looks
+     * well-formed. */
+    if ((salt == NULL && salt_len > 0u) || (info == NULL && info_len > 0u)) {
+        return false;
+    }
     /* RFC 5869: at most 255 blocks of HashLen. */
     if (out_len > ((size_t)255u * (size_t)TAMGA_SHA256_DIGEST_LEN)) {
         return false;

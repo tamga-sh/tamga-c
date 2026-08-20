@@ -409,6 +409,87 @@ TT_TEST(a_request_without_credentials_is_refused_before_it_is_sent) {
     tamga_client_free(client);
 }
 
+/*
+ * Header injection, the one finding an adversarial review of this layer
+ * turned up as HIGH.
+ *
+ * Both transports serialise headers by joining them as "name: value\r\n"
+ * into a single block. A caller-supplied value carrying its own CRLF
+ * therefore appends attacker-chosen headers to a request this library
+ * authenticates -- an overridden Content-Length, a header a front-end proxy
+ * trusts, or a smuggled request. It was demonstrated end to end through the
+ * transport boundary before being fixed.
+ *
+ * The OTP is the sharpest case: applications prompt an end user for it and
+ * forward it straight through, so the value is under the control of exactly
+ * the party this SDK exists to constrain.
+ */
+TT_TEST(a_line_break_in_the_otp_never_reaches_a_transport) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    static const char *const hostile[] = {
+        "123456\r\nX-Injected: pwned",
+        "123456\nX-Injected: pwned",
+        "123456\r\nContent-Length: 0\r\n\r\nGET /admin HTTP/1.1",
+    };
+    size_t i;
+
+    for (i = 0u; i < (sizeof(hostile) / sizeof(hostile[0])); i++) {
+        mock_reset(&mock);
+        client = make_client(&mock, "api.tamga.sh");
+        TT_ASSERT_NOT_NULL(client);
+        TT_ASSERT_EQ_INT(tamga_client_quick_validate(client, LICENSE_ID, hostile[i], &response),
+                         TAMGA_ERR_NULL_ARGUMENT);
+        /* Refused before anything was sent -- not sanitised on the way out. */
+        TT_ASSERT_EQ_SIZE(mock.call_count, 0u);
+        /* And the diagnostic must not echo a one-time credential. */
+        TT_ASSERT_NOT_NULL(tamga_last_error_message());
+        TT_ASSERT_NULL(strstr(tamga_last_error_message(), "123456"));
+        tamga_response_free(response);
+        tamga_client_free(client);
+        response = NULL;
+    }
+}
+
+/* The same class, one layer earlier: a credential carrying a line break is
+ * refused when it is set, so it can never become a header at all. */
+TT_TEST(a_line_break_in_a_credential_is_refused_at_configuration) {
+    TamgaClient *client = NULL;
+
+    TT_ASSERT_EQ_INT(tamga_client_new(ACCOUNT, "api.tamga.sh", &client), TAMGA_OK);
+    TT_ASSERT_EQ_INT(tamga_client_set_auth(client, TAMGA_AUTH_BEARER, "tok\r\nX-Evil: 1", NULL),
+                     TAMGA_ERR_NULL_ARGUMENT);
+    TT_ASSERT_EQ_INT(tamga_client_set_auth(client, TAMGA_AUTH_LICENSE, "lic\nX-Evil: 1", NULL),
+                     TAMGA_ERR_NULL_ARGUMENT);
+    TT_ASSERT_EQ_INT(
+        tamga_client_set_auth(client, TAMGA_AUTH_BASIC_EMAIL_PASSWORD, "a@b.c", "pw\r\nX-Evil: 1"),
+        TAMGA_ERR_NULL_ARGUMENT);
+    /* A credential with no line break is unaffected. */
+    TT_ASSERT_EQ_INT(tamga_client_set_auth(client, TAMGA_AUTH_BEARER, "tok-abc123", NULL),
+                     TAMGA_OK);
+    tamga_client_free(client);
+}
+
+/* A body containing a NUL byte is a well-formed response, not a transport
+ * failure. Reporting it as one would make an ordinary server reply
+ * indistinguishable from the network being down. */
+TT_TEST(a_response_body_may_contain_a_nul_byte) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    /* The mock sends whatever length it is given, NUL included. */
+    mock_reply(&mock, 200, "{\"a\":\"b\"}");
+    client = make_client(&mock, "api.tamga.sh");
+    TT_ASSERT_NOT_NULL(client);
+    TT_ASSERT_EQ_INT(tamga_client_check_in(client, LICENSE_ID, &response), TAMGA_OK);
+    TT_ASSERT_EQ_INT(tamga_response_status(response), 200);
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
 TT_TEST(configuration_is_validated) {
     TamgaClient *client = NULL;
 
@@ -445,6 +526,9 @@ int main(void) {
     TT_RUN(the_servers_error_code_is_available_verbatim);
     TT_RUN(a_transport_failure_is_distinct_from_a_server_error);
     TT_RUN(a_request_without_credentials_is_refused_before_it_is_sent);
+    TT_RUN(a_line_break_in_the_otp_never_reaches_a_transport);
+    TT_RUN(a_line_break_in_a_credential_is_refused_at_configuration);
+    TT_RUN(a_response_body_may_contain_a_nul_byte);
     TT_RUN(configuration_is_validated);
     return TT_SUMMARY();
 }

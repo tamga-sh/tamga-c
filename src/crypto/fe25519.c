@@ -36,6 +36,38 @@ static void tamga_fe_conditional_sub_p(uint32_t v[8]) {
     }
 }
 
+/*
+ * Adds carry * 2^256 back into v, repeating until nothing is left over.
+ *
+ * ONE PASS IS NOT ENOUGH, and assuming it is was a real defect here: v at
+ * this point is an arbitrary residue mod 2^256, so it can land within a few
+ * hundred of 2^256, and adding 38*carry then carries out again. Discarding
+ * that second carry leaves the result wrong by a multiple of 2^256 == 38.
+ *
+ * It is not a rare corner either. (p-38) * (p-1) must be 38, and with a
+ * single fold it came out as 0 -- for two ordinary, fully reduced operands,
+ * one of which is just the encoding of -1 that fe_sub and fe_neg produce
+ * constantly. Random inputs almost never land in the window, which is exactly
+ * why the RFC 8032 vectors passed: known-answer tests over realistic values
+ * cannot find this, and only a direct extremal-operand test can. See
+ * tests/unit/fe25519_test.c.
+ */
+static void tamga_fe_fold_carry(uint32_t v[8], uint64_t carry) {
+    while (carry != 0u) {
+        uint64_t c = 38ull * carry;
+        int i;
+        for (i = 0; i < 8; i++) {
+            uint64_t t = (uint64_t)v[i] + c;
+            v[i] = (uint32_t)t;
+            c = t >> 32;
+            if (c == 0u) {
+                break;
+            }
+        }
+        carry = c;
+    }
+}
+
 /* Folds any content at or above 2^255 back down (2^255 == 19 mod p) and then
  * normalises into [0, p). */
 static void tamga_fe_reduce(uint32_t v[8]) {
@@ -83,14 +115,7 @@ void tamga_fe_add(TamgaFe *r, const TamgaFe *a, const TamgaFe *b) {
     /* a and b are both < p < 2^255, so the sum cannot reach 2^256 and the
      * carry out is always zero; folding it in anyway keeps this correct if a
      * caller ever passes a partially reduced value. */
-    if (carry != 0u) {
-        uint64_t c = 38ull * carry;
-        for (i = 0; i < 8 && c != 0u; i++) {
-            uint64_t t = (uint64_t)r->v[i] + c;
-            r->v[i] = (uint32_t)t;
-            c = t >> 32;
-        }
-    }
+    tamga_fe_fold_carry(r->v, carry);
     tamga_fe_reduce(r->v);
 }
 
@@ -151,15 +176,9 @@ void tamga_fe_mul(TamgaFe *r, const TamgaFe *a, const TamgaFe *b) {
         r->v[i] = (uint32_t)t;
         carry = t >> 32;
     }
-    /* The leftover carry is small (under 2^6) and folds the same way. */
-    if (carry != 0u) {
-        uint64_t c = 38ull * carry;
-        for (i = 0; i < 8 && c != 0u; i++) {
-            uint64_t t = (uint64_t)r->v[i] + c;
-            r->v[i] = (uint32_t)t;
-            c = t >> 32;
-        }
-    }
+    /* The leftover carry is small, but folding it can carry out again -- see
+     * tamga_fe_fold_carry, which is why this is a loop and not an if. */
+    tamga_fe_fold_carry(r->v, carry);
     tamga_fe_reduce(r->v);
 }
 

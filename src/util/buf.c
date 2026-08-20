@@ -154,14 +154,16 @@ void tamga_buf_mark_failed(TamgaBuf *buf) {
     }
 }
 
-char *tamga_buf_detach_string(TamgaBuf *buf, size_t *out_len) {
+/* Shared body: NUL-terminates and hands over ownership. `allow_interior_nul`
+ * is what separates a C string from a length-carrying byte sequence. */
+static char *tamga_buf_detach_impl(TamgaBuf *buf, size_t *out_len, bool allow_interior_nul) {
     char *out;
     size_t len;
 
     if (buf == NULL || buf->failed) {
         return NULL;
     }
-    if (buf->data != NULL && memchr(buf->data, 0, buf->len) != NULL) {
+    if (!allow_interior_nul && buf->data != NULL && memchr(buf->data, 0, buf->len) != NULL) {
         return NULL;
     }
     if (!tamga_buf_reserve(buf, 1u)) {
@@ -175,6 +177,14 @@ char *tamga_buf_detach_string(TamgaBuf *buf, size_t *out_len) {
         *out_len = len;
     }
     return out;
+}
+
+char *tamga_buf_detach_terminated(TamgaBuf *buf, size_t *out_len) {
+    return tamga_buf_detach_impl(buf, out_len, true);
+}
+
+char *tamga_buf_detach_string(TamgaBuf *buf, size_t *out_len) {
+    return tamga_buf_detach_impl(buf, out_len, false);
 }
 
 unsigned char *tamga_buf_detach(TamgaBuf *buf, size_t *out_len) {

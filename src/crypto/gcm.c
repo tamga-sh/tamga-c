@@ -178,7 +178,20 @@ bool tamga_gcm_open(const unsigned char key[TAMGA_AES256_KEY_LEN],
     const unsigned char *tag;
     bool authentic;
 
-    if (key == NULL || nonce == NULL || ciphertext_and_tag == NULL || out_len == NULL) {
+    if (out_len == NULL) {
+        return false;
+    }
+    /* Cleared before any other validation, so a caller that inspects the
+     * length instead of the return value cannot read a stale one on any
+     * failure path. */
+    *out_len = 0u;
+    if (key == NULL || nonce == NULL || ciphertext_and_tag == NULL) {
+        return false;
+    }
+    /* A null pointer with a non-zero length is a caller bug that would reach
+     * memcpy inside GHASH; the plaintext pair below is already guarded and
+     * this one should be too. */
+    if (aad == NULL && aad_len > 0u) {
         return false;
     }
     if (ct_and_tag_len < TAMGA_GCM_TAG_LEN) {
@@ -220,10 +233,17 @@ bool tamga_gcm_seal(const unsigned char key[TAMGA_AES256_KEY_LEN],
                     const unsigned char nonce[TAMGA_GCM_NONCE_LEN], const unsigned char *aad,
                     size_t aad_len, const unsigned char *plaintext, size_t plaintext_len,
                     unsigned char *out, size_t *out_len) {
-    if (key == NULL || nonce == NULL || out == NULL || out_len == NULL) {
+    if (out_len == NULL) {
+        return false;
+    }
+    *out_len = 0u;
+    if (key == NULL || nonce == NULL || out == NULL) {
         return false;
     }
     if (plaintext_len > 0u && plaintext == NULL) {
+        return false;
+    }
+    if (aad == NULL && aad_len > 0u) {
         return false;
     }
 

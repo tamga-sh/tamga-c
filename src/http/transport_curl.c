@@ -172,7 +172,10 @@ static bool tamga_curl_perform(void *user_data, const TamgaHttpRequest *request,
     (void)curl_easy_getinfo(state->handle, CURLINFO_RESPONSE_CODE, &status);
 
     response->status = (int)status;
-    response->body = tamga_buf_detach_string(&body, &response->body_len);
+    /* Terminated but length-authoritative: a body containing a NUL byte is
+     * still a well-formed response, and reporting it as a transport failure
+     * would be a much less useful answer than handing over the bytes. */
+    response->body = tamga_buf_detach_terminated(&body, &response->body_len);
     if (response->body == NULL) {
         goto done;
     }
