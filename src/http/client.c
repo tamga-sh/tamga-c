@@ -233,6 +233,33 @@ const char *tamga_response_validation_code(const TamgaResponse *response) {
     return tamga_json_as_string(tamga_response_meta_field(response, "code"), NULL);
 }
 
+const char *tamga_response_next_cursor(const TamgaResponse *response, uint32_t limit) {
+    const TamgaJson *data;
+    const TamgaJson *last;
+    size_t count;
+
+    tamga_error_clear();
+    if (response == NULL || response->json == NULL || limit == 0u) {
+        return NULL;
+    }
+    data = tamga_json_object_get(response->json, "data");
+    if (data == NULL || tamga_json_type(data) != TAMGA_JSON_ARRAY) {
+        return NULL;
+    }
+    count = tamga_json_array_len(data);
+    /* Exactly full, not merely non-empty. A short page is the last page, and
+     * an equally-plausible `count > 0` test would loop forever against a
+     * server that keeps answering the same short tail. */
+    if (count == 0u || count != (size_t)limit) {
+        return NULL;
+    }
+    last = tamga_json_array_at(data, count - 1u);
+    if (last == NULL || tamga_json_type(last) != TAMGA_JSON_OBJECT) {
+        return NULL;
+    }
+    return tamga_json_as_string(tamga_json_object_get(last, "id"), NULL);
+}
+
 const char *tamga_response_validation_detail(const TamgaResponse *response) {
     return tamga_json_as_string(tamga_response_meta_field(response, "detail"), NULL);
 }

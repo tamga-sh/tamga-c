@@ -121,6 +121,34 @@ TT_TEST(quick_validate) {
     });
 }
 
+/*
+ * Alone among the validation endpoints, quick-validate answers with a FLAT
+ * body -- `{ts, valid, detail, code}` with no `data` envelope. A decoder that
+ * assumes the envelope reads nothing out of it and reports every licence as
+ * invalid, which looks like a licensing problem rather than a parsing one.
+ */
+TT_TEST(quick_validate_decodes_a_flat_body) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200,
+               "{\"ts\":\"2026-08-20T00:00:00Z\",\"valid\":true,"
+               "\"detail\":\"is valid\",\"code\":\"VALID\"}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_quick_validate(client, LICENSE_ID, NULL, &response), TAMGA_OK);
+    TT_ASSERT(tamga_response_validation_is_valid(response));
+    TT_ASSERT_EQ_STR(tamga_response_validation_code(response), "VALID");
+    TT_ASSERT_EQ_STR(tamga_response_validation_detail(response), "is valid");
+    TT_ASSERT_EQ_INT(tamga_response_validation_code_enum(response), TAMGA_VALIDATION_VALID);
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
 TT_TEST(check_in) {
     WITH_CLIENT({
         TT_ASSERT_EQ_INT(tamga_client_check_in(client, LICENSE_ID, &response), TAMGA_OK);
@@ -307,6 +335,67 @@ TT_TEST(listings_are_keyset_paginated) {
     });
 }
 
+/*
+ * The next-page cursor is derived, not read: the server sends no cursor
+ * metadata and no links, so it is the last item's id and ONLY when the page
+ * came back exactly full.
+ *
+ * Both halves matter. Treating a non-empty short page as "there may be more"
+ * loops forever against the same tail; treating a full page as the end drops
+ * every record after the first page. The rule is easy to state and easy to
+ * get subtly wrong, which is why it lives in the SDK rather than in each
+ * caller.
+ */
+TT_TEST(the_next_page_cursor_is_derived_from_a_full_page_only) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    /* A full page: limit 2, two items -> the last item's id. */
+    mock_reset(&mock);
+    mock_reply(&mock, 200,
+               "{\"data\":[{\"id\":\"comp-1\",\"type\":\"components\"},"
+               "{\"id\":\"comp-2\",\"type\":\"components\"}]}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+    TT_ASSERT_EQ_INT(tamga_client_list_components(client, MACHINE_ID, 2u, NULL, &response),
+                     TAMGA_OK);
+    TT_ASSERT_EQ_STR(tamga_response_next_cursor(response, 2u), "comp-2");
+    tamga_response_free(response);
+    response = NULL;
+    tamga_client_free(client);
+
+    /* A short page is the last page, even though it is not empty. */
+    mock_reset(&mock);
+    mock_reply(&mock, 200, "{\"data\":[{\"id\":\"comp-1\",\"type\":\"components\"}]}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+    TT_ASSERT_EQ_INT(tamga_client_list_components(client, MACHINE_ID, 2u, NULL, &response),
+                     TAMGA_OK);
+    TT_ASSERT_NULL(tamga_response_next_cursor(response, 2u));
+    tamga_response_free(response);
+    response = NULL;
+    tamga_client_free(client);
+
+    /* An empty page, and a listing made with no limit at all -- with no limit
+     * there is no "full" to compare against, so there is no cursor. */
+    mock_reset(&mock);
+    mock_reply(&mock, 200, "{\"data\":[]}");
+    mock_reply(&mock, 200, "{\"data\":[{\"id\":\"ent-1\",\"type\":\"entitlements\"}]}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+    TT_ASSERT_EQ_INT(tamga_client_list_components(client, MACHINE_ID, 2u, NULL, &response),
+                     TAMGA_OK);
+    TT_ASSERT_NULL(tamga_response_next_cursor(response, 2u));
+    tamga_response_free(response);
+    response = NULL;
+    TT_ASSERT_EQ_INT(tamga_client_list_entitlements(client, LICENSE_ID, 0u, NULL, &response),
+                     TAMGA_OK);
+    TT_ASSERT_NULL(tamga_response_next_cursor(response, 0u));
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
 /* Matched on `code`, the stable identifier -- never on `name`, which is a
  * display label and may be reworded. */
 TT_TEST(has_entitlement_matches_on_code_not_name) {
@@ -464,6 +553,7 @@ int main(void) {
     TT_RUN(validate_by_key);
     TT_RUN(validate_by_id_with_and_without_scope);
     TT_RUN(quick_validate);
+    TT_RUN(quick_validate_decodes_a_flat_body);
     TT_RUN(check_in);
     TT_RUN(licence_checkout_both_forms);
     TT_RUN(machine_checkout_both_forms);
@@ -474,6 +564,7 @@ int main(void) {
     TT_RUN(generate_offline_proof_defaults_the_dataset_to_an_object);
     TT_RUN(components_and_processes_use_flat_bodies);
     TT_RUN(listings_are_keyset_paginated);
+    TT_RUN(the_next_page_cursor_is_derived_from_a_full_page_only);
     TT_RUN(has_entitlement_matches_on_code_not_name);
     TT_RUN(activate_machine_creates_then_validates);
     TT_RUN(activate_machine_undoes_an_over_limit_activation);

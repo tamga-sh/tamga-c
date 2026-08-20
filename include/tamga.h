@@ -625,6 +625,24 @@ TAMGA_API const char *tamga_response_header(const TamgaResponse *response, const
 TAMGA_API const char *tamga_response_error_code(const TamgaResponse *response);
 
 /** Whether a validation response reports the licence as valid. */
+/**
+ * The cursor for the next page of a listing, or NULL when this was the last
+ * page — pass it back as `after` to tamga_client_list_components() or
+ * tamga_client_list_entitlements().
+ *
+ * `limit` must be the same limit that produced this response.
+ *
+ * The server sends no cursor metadata and no links, so this is derived rather
+ * than read: it is the last item's `id`, and only when the page came back
+ * exactly full. A short page is the last page. Deriving it here rather than
+ * leaving it to each caller is deliberate — the rule is easy to get subtly
+ * wrong (a `< limit` test, or treating a non-empty page as "there may be
+ * more"), and getting it wrong either drops records or loops forever.
+ *
+ * Borrowed, like the other accessors: valid until the response is freed.
+ */
+TAMGA_API const char *tamga_response_next_cursor(const TamgaResponse *response, uint32_t limit);
+
 TAMGA_API bool tamga_response_validation_is_valid(const TamgaResponse *response);
 
 /**

@@ -226,6 +226,18 @@ TT_TEST(only_safe_requests_are_retryable) {
     TT_ASSERT(tamga_request_is_retryable("POST", "/machines/x/actions/check-out"));
     TT_ASSERT(tamga_request_is_retryable("POST", "/processes/x/actions/ping"));
 
+    /*
+     * The two the shared contract calls out by name, because a substring match
+     * gets them wrong: `/actions/ping-heartbeat` and `/actions/reset-heartbeat`
+     * each carry a retryable suffix as a prefix of their own, and neither is
+     * idempotent. Only `POST /processes/{id}/actions/ping` is meant to match
+     * `/actions/ping`.
+     */
+    TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/machines/x/actions/ping-heartbeat"));
+    TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/machines/x/actions/reset-heartbeat"));
+    /* A suffix appearing mid-path is not a match either. */
+    TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/actions/check-out/extra"));
+
     TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/machines"));
     TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/components"));
     TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/processes"));
@@ -315,6 +327,68 @@ TT_TEST(a_create_is_never_retried_even_when_rate_limited) {
     TT_ASSERT_EQ_INT(tamga_client_create_machine(client, LICENSE_ID, "fp", NULL, &response),
                      TAMGA_ERR_RATE_LIMITED);
     TT_ASSERT_EQ_SIZE(mock.call_count, 1u);
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * maxRetries = 0 turns retry off entirely: the 429 reaches the caller on the
+ * first attempt, with exactly one request made. A budget of zero that still
+ * retried once is an off-by-one nobody notices until a rate limit does.
+ */
+TT_TEST(a_zero_retry_budget_surfaces_the_rate_limit_immediately) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 429, "{\"errors\":[{\"code\":\"RATE_LIMITED\"}]}");
+    mock_reply(&mock, 200, "{\"meta\":{\"valid\":true}}");
+
+    client = make_client(&mock, "api.tamga.sh");
+    TT_ASSERT_NOT_NULL(client);
+    TT_ASSERT_EQ_INT(tamga_client_set_max_retries(client, 0u), TAMGA_OK);
+
+    TT_ASSERT_EQ_INT(tamga_client_validate_by_key(client, "KEY", NULL, &response),
+                     TAMGA_ERR_RATE_LIMITED);
+    /* One attempt, not two: the scripted 200 behind it is never reached. */
+    TT_ASSERT_EQ_SIZE(mock.call_count, 1u);
+    /* The response still comes back, as it does on any rate limit -- what a
+     * zero budget changes is the number of attempts, not the shape of the
+     * answer. */
+    TT_ASSERT_NOT_NULL(response);
+    TT_ASSERT_EQ_INT(tamga_response_status(response), 429);
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * A retried request sends the same body again.
+ *
+ * The failure this guards is specific: a transport that consumes the body on
+ * the first attempt leaves the retry sending an empty one, which the server
+ * answers with a validation error rather than the throttle the caller was
+ * waiting out -- so the retry looks like it worked and returns a wrong answer.
+ */
+TT_TEST(a_retried_request_replays_the_same_body) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply_with_header(&mock, 429, "{\"errors\":[{\"code\":\"RATE_LIMITED\"}]}", "Retry-After",
+                           "0");
+    mock_reply(&mock, 200, "{\"meta\":{\"valid\":true}}");
+
+    client = make_client(&mock, "api.tamga.sh");
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_validate_by_key(client, "KEY-1234", NULL, &response), TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 2u);
+    TT_ASSERT_EQ_STR(mock.calls[0].body, "{\"key\":\"KEY-1234\"}");
+    TT_ASSERT_EQ_STR(mock.calls[1].body, mock.calls[0].body);
 
     tamga_response_free(response);
     tamga_client_free(client);
@@ -595,6 +669,8 @@ int main(void) {
     TT_RUN(a_rate_limited_request_is_retried_then_succeeds);
     TT_RUN(a_sustained_rate_limit_gives_up_with_its_own_code);
     TT_RUN(a_create_is_never_retried_even_when_rate_limited);
+    TT_RUN(a_zero_retry_budget_surfaces_the_rate_limit_immediately);
+    TT_RUN(a_retried_request_replays_the_same_body);
     TT_RUN(json_api_error_codes_map_to_typed_results);
     TT_RUN(the_servers_error_code_is_available_verbatim);
     TT_RUN(a_transport_failure_is_distinct_from_a_server_error);
