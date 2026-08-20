@@ -13,14 +13,13 @@
 #include "crypto/sha512.h"
 #include "tamga_mem.h"
 
-static void expect_digest_hex(const unsigned char *actual, size_t len, const char *expected_hex)
-{
+static void expect_digest_hex(const unsigned char *actual, size_t len, const char *expected_hex) {
     unsigned char expected[128];
     size_t n = tt_hex2bin(expected_hex, expected, sizeof(expected));
     if (n != len) {
         tt_failures_++;
-        (void)fprintf(stderr, "FAIL %s: expected-hex length %zu, digest length %zu\n",
-                      tt_current_, n, len);
+        (void)fprintf(stderr, "FAIL %s: expected-hex length %zu, digest length %zu\n", tt_current_,
+                      n, len);
         return;
     }
     if (memcmp(actual, expected, len) != 0) {
@@ -31,22 +30,19 @@ static void expect_digest_hex(const unsigned char *actual, size_t len, const cha
     }
 }
 
-static void sha256_is(const char *message, const char *expected_hex)
-{
+static void sha256_is(const char *message, const char *expected_hex) {
     unsigned char digest[TAMGA_SHA256_DIGEST_LEN];
     tamga_sha256(message, strlen(message), digest);
     expect_digest_hex(digest, sizeof(digest), expected_hex);
 }
 
-static void sha512_is(const char *message, const char *expected_hex)
-{
+static void sha512_is(const char *message, const char *expected_hex) {
     unsigned char digest[TAMGA_SHA512_DIGEST_LEN];
     tamga_sha512(message, strlen(message), digest);
     expect_digest_hex(digest, sizeof(digest), expected_hex);
 }
 
-TT_TEST(sha256_matches_fips_vectors)
-{
+TT_TEST(sha256_matches_fips_vectors) {
     sha256_is("", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     sha256_is("abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     /* 448-bit message: the padding case that needs one extra block. */
@@ -60,8 +56,7 @@ TT_TEST(sha256_matches_fips_vectors)
 
 /* One million 'a' -- the FIPS long-message vector. Catches a broken length
  * counter or a mishandled block boundary, which short vectors do not. */
-TT_TEST(sha256_matches_the_long_message_vector)
-{
+TT_TEST(sha256_matches_the_long_message_vector) {
     TamgaSha256 ctx;
     unsigned char digest[TAMGA_SHA256_DIGEST_LEN];
     unsigned char chunk[1000];
@@ -79,8 +74,7 @@ TT_TEST(sha256_matches_the_long_message_vector)
 
 /* Feeding a message one byte at a time must produce the same digest as one
  * call -- the buffering path is where streaming hash implementations break. */
-TT_TEST(sha256_streams_identically_to_one_shot)
-{
+TT_TEST(sha256_streams_identically_to_one_shot) {
     static const char message[] =
         "the quick brown fox jumps over the lazy dog, repeatedly, until it "
         "crosses several block boundaries and then some more for good measure";
@@ -98,8 +92,7 @@ TT_TEST(sha256_streams_identically_to_one_shot)
     TT_ASSERT_EQ_MEM(streamed, one_shot, sizeof(one_shot));
 }
 
-TT_TEST(sha512_matches_fips_vectors)
-{
+TT_TEST(sha512_matches_fips_vectors) {
     sha512_is("", "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce"
                   "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e");
     sha512_is("abc", "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
@@ -110,8 +103,7 @@ TT_TEST(sha512_matches_fips_vectors)
               "501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909");
 }
 
-TT_TEST(sha512_streams_identically_to_one_shot)
-{
+TT_TEST(sha512_streams_identically_to_one_shot) {
     unsigned char one_shot[TAMGA_SHA512_DIGEST_LEN];
     unsigned char streamed[TAMGA_SHA512_DIGEST_LEN];
     unsigned char message[300];
@@ -130,8 +122,7 @@ TT_TEST(sha512_streams_identically_to_one_shot)
     TT_ASSERT_EQ_MEM(streamed, one_shot, sizeof(one_shot));
 }
 
-TT_TEST(hmac_sha256_matches_rfc4231)
-{
+TT_TEST(hmac_sha256_matches_rfc4231) {
     unsigned char key[131];
     unsigned char data[50];
     unsigned char mac[TAMGA_SHA256_DIGEST_LEN];
@@ -158,8 +149,8 @@ TT_TEST(hmac_sha256_matches_rfc4231)
     /* Case 6: a 131-byte key, longer than the 64-byte block, so RFC 2104
      * requires hashing it first rather than truncating or padding. */
     memset(key, 0xaa, sizeof(key));
-    tamga_hmac_sha256(key, sizeof(key),
-                      "Test Using Larger Than Block-Size Key - Hash Key First", 54u, mac);
+    tamga_hmac_sha256(key, sizeof(key), "Test Using Larger Than Block-Size Key - Hash Key First",
+                      54u, mac);
     expect_digest_hex(mac, sizeof(mac),
                       "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
 
@@ -175,8 +166,7 @@ TT_TEST(hmac_sha256_matches_rfc4231)
     (void)i;
 }
 
-TT_TEST(hkdf_matches_rfc5869)
-{
+TT_TEST(hkdf_matches_rfc5869) {
     unsigned char salt[80];
     unsigned char ikm[80];
     unsigned char info[80];
@@ -214,8 +204,7 @@ TT_TEST(hkdf_matches_rfc5869)
                       "9d201395faa4b61a96c8");
 }
 
-TT_TEST(hkdf_rejects_an_oversized_request)
-{
+TT_TEST(hkdf_rejects_an_oversized_request) {
     unsigned char ikm[4] = {1u, 2u, 3u, 4u};
     unsigned char out[8161];
     /* RFC 5869 caps output at 255 * HashLen = 8160 bytes. */
@@ -231,8 +220,7 @@ TT_TEST(hkdf_rejects_an_oversized_request)
  * cannot decrypt a file any other SDK can.
  */
 static void derivations_are(const char *license_key, const char *fingerprint,
-                            const char *expected_license_hex, const char *expected_machine_hex)
-{
+                            const char *expected_license_hex, const char *expected_machine_hex) {
     unsigned char key[TAMGA_FILE_KEY_LEN];
 
     if (!tamga_derive_license_file_key(license_key, key)) {
@@ -250,16 +238,13 @@ static void derivations_are(const char *license_key, const char *fingerprint,
     expect_digest_hex(key, sizeof(key), expected_machine_hex);
 }
 
-TT_TEST(file_key_derivations_match_tamga_rust)
-{
-    derivations_are("", "",
-                    "10d1cfeb54588d72f6762e5a3a9ff3194a2e306862dc28058260c2992751d8ee",
+TT_TEST(file_key_derivations_match_tamga_rust) {
+    derivations_are("", "", "10d1cfeb54588d72f6762e5a3a9ff3194a2e306862dc28058260c2992751d8ee",
                     "c366b09c04a88dad31330a0bd46c83d3de074acb53c5c8e9c5b5171e271535d0");
     derivations_are("LICENSE-KEY-123", "fp-abc",
                     "9f026c11f182780e383ba9bc9107c3c2f46461d6f9bba1095cc98f3f267709c0",
                     "020ab9be017707762fb1002e3beea7e8fc0d34b71e0be09b530b8a1a8450d477");
-    derivations_are("a", "b",
-                    "1ab644e42c29b0a9a2ca46346f93aefe90b94b4daf6095ea8d6e523606361bbd",
+    derivations_are("a", "b", "1ab644e42c29b0a9a2ca46346f93aefe90b94b4daf6095ea8d6e523606361bbd",
                     "70abe2c1eb5d4632d58083b05ff641f767702653dfabafb3b41b671237a5d799");
     derivations_are("MUP7-2TQK-7FBF-4Q6H-Y7ZR-9C3V", "9f8e7d6c5b4a39281706",
                     "ce9b22c217476b6ee5cb816333d090c24dae14e45566468baf47b4f9383ca688",
@@ -284,8 +269,7 @@ TT_TEST(file_key_derivations_match_tamga_rust)
  * compiles, looks plausible, and silently decrypts nothing -- so the property
  * is asserted directly rather than left implied by the vectors above.
  */
-TT_TEST(the_two_derivations_are_distinct)
-{
+TT_TEST(the_two_derivations_are_distinct) {
     unsigned char license_key[TAMGA_FILE_KEY_LEN];
     unsigned char machine_key[TAMGA_FILE_KEY_LEN];
 
@@ -296,8 +280,7 @@ TT_TEST(the_two_derivations_are_distinct)
 
 /* The fingerprint is bound into the machine-file key, which is what makes a
  * machine file undecryptable on a machine it was not issued for. */
-TT_TEST(the_machine_key_depends_on_the_fingerprint)
-{
+TT_TEST(the_machine_key_depends_on_the_fingerprint) {
     unsigned char a[TAMGA_FILE_KEY_LEN];
     unsigned char b[TAMGA_FILE_KEY_LEN];
 
@@ -308,8 +291,7 @@ TT_TEST(the_machine_key_depends_on_the_fingerprint)
 
 /* Concatenation must not be ambiguous: ("ab","c") and ("a","bc") are
  * different inputs and must produce different keys. */
-TT_TEST(key_and_fingerprint_boundaries_do_not_collide)
-{
+TT_TEST(key_and_fingerprint_boundaries_do_not_collide) {
     unsigned char a[TAMGA_FILE_KEY_LEN];
     unsigned char b[TAMGA_FILE_KEY_LEN];
 
@@ -318,16 +300,14 @@ TT_TEST(key_and_fingerprint_boundaries_do_not_collide)
     TT_ASSERT_FALSE(tamga_ct_memeq(a, b, TAMGA_FILE_KEY_LEN));
 }
 
-TT_TEST(derivations_reject_null_arguments)
-{
+TT_TEST(derivations_reject_null_arguments) {
     unsigned char key[TAMGA_FILE_KEY_LEN];
     TT_ASSERT_FALSE(tamga_derive_license_file_key(NULL, key));
     TT_ASSERT_FALSE(tamga_derive_machine_file_key(NULL, "f", key));
     TT_ASSERT_FALSE(tamga_derive_machine_file_key("k", NULL, key));
 }
 
-TT_TEST(constant_time_compare_agrees_with_memcmp)
-{
+TT_TEST(constant_time_compare_agrees_with_memcmp) {
     const unsigned char a[4] = {1u, 2u, 3u, 4u};
     const unsigned char b[4] = {1u, 2u, 3u, 4u};
     const unsigned char c[4] = {1u, 2u, 3u, 5u};
@@ -342,8 +322,7 @@ TT_TEST(constant_time_compare_agrees_with_memcmp)
     TT_ASSERT_FALSE(tamga_ct_memeq(a, NULL, sizeof(a)));
 }
 
-int main(void)
-{
+int main(void) {
     TT_RUN(sha256_matches_fips_vectors);
     TT_RUN(sha256_matches_the_long_message_vector);
     TT_RUN(sha256_streams_identically_to_one_shot);

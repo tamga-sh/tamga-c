@@ -39,9 +39,8 @@
  * have its top bit set (both true of any real RSA modulus and required by the
  * Montgomery setup), or `base` is not less than `modulus`.
  */
-TAMGA_NODISCARD bool tamga_bn_modexp(const unsigned char *base,
-                                     const unsigned char *modulus, size_t mod_len,
-                                     const unsigned char *exponent, size_t exp_len,
+TAMGA_NODISCARD bool tamga_bn_modexp(const unsigned char *base, const unsigned char *modulus,
+                                     size_t mod_len, const unsigned char *exponent, size_t exp_len,
                                      unsigned char *out);
 
 #endif /* TAMGA_CRYPTO_BN_H */

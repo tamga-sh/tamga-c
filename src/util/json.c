@@ -44,8 +44,7 @@ struct TamgaJson {
 
 /* --- lifecycle -------------------------------------------------------- */
 
-static TamgaJson *tamga_json_new(TamgaJsonType type)
-{
+static TamgaJson *tamga_json_new(TamgaJsonType type) {
     TamgaJson *value = (TamgaJson *)tamga_calloc(1u, sizeof(TamgaJson));
     if (value == NULL) {
         return NULL;
@@ -54,8 +53,7 @@ static TamgaJson *tamga_json_new(TamgaJsonType type)
     return value;
 }
 
-void tamga_json_free(TamgaJson *value)
-{
+void tamga_json_free(TamgaJson *value) {
     size_t i;
 
     if (value == NULL) {
@@ -75,8 +73,7 @@ void tamga_json_free(TamgaJson *value)
         break;
     case TAMGA_JSON_OBJECT:
         for (i = 0u; i < value->as.object.count; i++) {
-            tamga_secure_free(value->as.object.members[i].key,
-                              value->as.object.members[i].key_len);
+            tamga_secure_free(value->as.object.members[i].key, value->as.object.members[i].key_len);
             tamga_json_free(value->as.object.members[i].value);
         }
         tamga_free(value->as.object.members);
@@ -92,13 +89,11 @@ void tamga_json_free(TamgaJson *value)
 
 /* --- construction ----------------------------------------------------- */
 
-TamgaJson *tamga_json_new_null(void)
-{
+TamgaJson *tamga_json_new_null(void) {
     return tamga_json_new(TAMGA_JSON_NULL);
 }
 
-TamgaJson *tamga_json_new_bool(bool value)
-{
+TamgaJson *tamga_json_new_bool(bool value) {
     TamgaJson *node = tamga_json_new(TAMGA_JSON_BOOL);
     if (node != NULL) {
         node->as.boolean = value;
@@ -106,8 +101,7 @@ TamgaJson *tamga_json_new_bool(bool value)
     return node;
 }
 
-TamgaJson *tamga_json_new_int(int64_t value)
-{
+TamgaJson *tamga_json_new_int(int64_t value) {
     TamgaJson *node = tamga_json_new(TAMGA_JSON_NUMBER);
     if (node != NULL) {
         node->as.number.is_int = true;
@@ -116,8 +110,7 @@ TamgaJson *tamga_json_new_int(int64_t value)
     return node;
 }
 
-TamgaJson *tamga_json_new_double(double value)
-{
+TamgaJson *tamga_json_new_double(double value) {
     TamgaJson *node = tamga_json_new(TAMGA_JSON_NUMBER);
     if (node != NULL) {
         node->as.number.is_int = false;
@@ -126,8 +119,7 @@ TamgaJson *tamga_json_new_double(double value)
     return node;
 }
 
-TamgaJson *tamga_json_new_string(const char *utf8, size_t len)
-{
+TamgaJson *tamga_json_new_string(const char *utf8, size_t len) {
     TamgaJson *node;
     char *copy;
 
@@ -153,18 +145,15 @@ TamgaJson *tamga_json_new_string(const char *utf8, size_t len)
     return node;
 }
 
-TamgaJson *tamga_json_new_array(void)
-{
+TamgaJson *tamga_json_new_array(void) {
     return tamga_json_new(TAMGA_JSON_ARRAY);
 }
 
-TamgaJson *tamga_json_new_object(void)
-{
+TamgaJson *tamga_json_new_object(void) {
     return tamga_json_new(TAMGA_JSON_OBJECT);
 }
 
-static bool tamga_json_grow(void **items, size_t *cap, size_t count, size_t elem_size)
-{
+static bool tamga_json_grow(void **items, size_t *cap, size_t count, size_t elem_size) {
     size_t new_cap;
     size_t bytes;
     void *grown;
@@ -188,8 +177,7 @@ static bool tamga_json_grow(void **items, size_t *cap, size_t count, size_t elem
     return true;
 }
 
-bool tamga_json_array_append(TamgaJson *array, TamgaJson *item)
-{
+bool tamga_json_array_append(TamgaJson *array, TamgaJson *item) {
     /* Ownership is taken unconditionally: a caller that had to free `item`
      * only on failure would eventually get one of those paths wrong. */
     if (array == NULL || array->type != TAMGA_JSON_ARRAY || item == NULL) {
@@ -206,8 +194,7 @@ bool tamga_json_array_append(TamgaJson *array, TamgaJson *item)
     return true;
 }
 
-bool tamga_json_object_set(TamgaJson *object, const char *key, TamgaJson *item)
-{
+bool tamga_json_object_set(TamgaJson *object, const char *key, TamgaJson *item) {
     size_t i;
     size_t key_len;
     char *key_copy;
@@ -244,8 +231,7 @@ bool tamga_json_object_set(TamgaJson *object, const char *key, TamgaJson *item)
     return true;
 }
 
-TamgaJson *tamga_json_clone(const TamgaJson *value)
-{
+TamgaJson *tamga_json_clone(const TamgaJson *value) {
     size_t i;
     TamgaJson *copy;
 
@@ -296,26 +282,22 @@ TamgaJson *tamga_json_clone(const TamgaJson *value)
 
 /* --- inspection ------------------------------------------------------- */
 
-TamgaJsonType tamga_json_type(const TamgaJson *value)
-{
+TamgaJsonType tamga_json_type(const TamgaJson *value) {
     return (value == NULL) ? TAMGA_JSON_NULL : value->type;
 }
 
-bool tamga_json_is_null(const TamgaJson *value)
-{
+bool tamga_json_is_null(const TamgaJson *value) {
     return value == NULL || value->type == TAMGA_JSON_NULL;
 }
 
-bool tamga_json_bool_or(const TamgaJson *value, bool fallback)
-{
+bool tamga_json_bool_or(const TamgaJson *value, bool fallback) {
     if (value == NULL || value->type != TAMGA_JSON_BOOL) {
         return fallback;
     }
     return value->as.boolean;
 }
 
-bool tamga_json_as_int(const TamgaJson *value, int64_t *out)
-{
+bool tamga_json_as_int(const TamgaJson *value, int64_t *out) {
     if (value == NULL || out == NULL || value->type != TAMGA_JSON_NUMBER) {
         return false;
     }
@@ -329,8 +311,9 @@ bool tamga_json_as_int(const TamgaJson *value, int64_t *out)
      * integers. */
     if (value->as.number.real >= -9007199254740992.0 &&
         value->as.number.real <= 9007199254740992.0) {
-        double truncated = (value->as.number.real < 0.0) ? -(double)(int64_t)(-value->as.number.real)
-                                                         : (double)(int64_t)value->as.number.real;
+        double truncated = (value->as.number.real < 0.0)
+                               ? -(double)(int64_t)(-value->as.number.real)
+                               : (double)(int64_t)value->as.number.real;
         if (truncated == value->as.number.real) {
             *out = (int64_t)value->as.number.real;
             return true;
@@ -339,8 +322,7 @@ bool tamga_json_as_int(const TamgaJson *value, int64_t *out)
     return false;
 }
 
-bool tamga_json_int_literal(const TamgaJson *value, int64_t *out)
-{
+bool tamga_json_int_literal(const TamgaJson *value, int64_t *out) {
     if (value == NULL || out == NULL || value->type != TAMGA_JSON_NUMBER) {
         return false;
     }
@@ -351,8 +333,7 @@ bool tamga_json_int_literal(const TamgaJson *value, int64_t *out)
     return true;
 }
 
-bool tamga_json_as_double(const TamgaJson *value, double *out)
-{
+bool tamga_json_as_double(const TamgaJson *value, double *out) {
     if (value == NULL || out == NULL || value->type != TAMGA_JSON_NUMBER) {
         return false;
     }
@@ -360,8 +341,7 @@ bool tamga_json_as_double(const TamgaJson *value, double *out)
     return true;
 }
 
-const char *tamga_json_as_string(const TamgaJson *value, size_t *out_len)
-{
+const char *tamga_json_as_string(const TamgaJson *value, size_t *out_len) {
     if (value == NULL || value->type != TAMGA_JSON_STRING) {
         return NULL;
     }
@@ -371,48 +351,42 @@ const char *tamga_json_as_string(const TamgaJson *value, size_t *out_len)
     return value->as.string.bytes;
 }
 
-size_t tamga_json_array_len(const TamgaJson *value)
-{
+size_t tamga_json_array_len(const TamgaJson *value) {
     if (value == NULL || value->type != TAMGA_JSON_ARRAY) {
         return 0u;
     }
     return value->as.array.count;
 }
 
-const TamgaJson *tamga_json_array_at(const TamgaJson *value, size_t index)
-{
+const TamgaJson *tamga_json_array_at(const TamgaJson *value, size_t index) {
     if (value == NULL || value->type != TAMGA_JSON_ARRAY || index >= value->as.array.count) {
         return NULL;
     }
     return value->as.array.items[index];
 }
 
-size_t tamga_json_object_len(const TamgaJson *value)
-{
+size_t tamga_json_object_len(const TamgaJson *value) {
     if (value == NULL || value->type != TAMGA_JSON_OBJECT) {
         return 0u;
     }
     return value->as.object.count;
 }
 
-const char *tamga_json_object_key_at(const TamgaJson *value, size_t index)
-{
+const char *tamga_json_object_key_at(const TamgaJson *value, size_t index) {
     if (value == NULL || value->type != TAMGA_JSON_OBJECT || index >= value->as.object.count) {
         return NULL;
     }
     return value->as.object.members[index].key;
 }
 
-const TamgaJson *tamga_json_object_value_at(const TamgaJson *value, size_t index)
-{
+const TamgaJson *tamga_json_object_value_at(const TamgaJson *value, size_t index) {
     if (value == NULL || value->type != TAMGA_JSON_OBJECT || index >= value->as.object.count) {
         return NULL;
     }
     return value->as.object.members[index].value;
 }
 
-const TamgaJson *tamga_json_object_get(const TamgaJson *value, const char *key)
-{
+const TamgaJson *tamga_json_object_get(const TamgaJson *value, const char *key) {
     size_t i;
     size_t key_len;
 

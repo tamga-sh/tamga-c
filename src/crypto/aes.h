@@ -34,8 +34,7 @@ typedef struct TamgaAes256 {
 void tamga_aes256_init(TamgaAes256 *ctx, const unsigned char key[TAMGA_AES256_KEY_LEN]);
 
 /** Encrypts one 16-byte block. `in` and `out` may alias. */
-void tamga_aes256_encrypt_block(const TamgaAes256 *ctx,
-                                const unsigned char in[TAMGA_AES_BLOCK_LEN],
+void tamga_aes256_encrypt_block(const TamgaAes256 *ctx, const unsigned char in[TAMGA_AES_BLOCK_LEN],
                                 unsigned char out[TAMGA_AES_BLOCK_LEN]);
 
 /** Erases the round-key schedule. */

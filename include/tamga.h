@@ -44,15 +44,15 @@
  * definition); consumers of the DLL must not.
  */
 #if defined(_WIN32) && !defined(TAMGA_STATIC_LIB)
-#  if defined(TAMGA_BUILD_SHARED_LIB)
-#    define TAMGA_API __declspec(dllexport)
-#  else
-#    define TAMGA_API __declspec(dllimport)
-#  endif
-#elif defined(__GNUC__) || defined(__clang__)
-#  define TAMGA_API __attribute__((visibility("default")))
+#if defined(TAMGA_BUILD_SHARED_LIB)
+#define TAMGA_API __declspec(dllexport)
 #else
-#  define TAMGA_API
+#define TAMGA_API __declspec(dllimport)
+#endif
+#elif defined(__GNUC__) || defined(__clang__)
+#define TAMGA_API __attribute__((visibility("default")))
+#else
+#define TAMGA_API
 #endif
 
 /* Library version, matching the git tag and CMake project version. */
@@ -284,8 +284,7 @@ TAMGA_API enum TamgaErrorCode tamga_hkdf_derive_license_file_key(const char *lic
  * - `out_handle`: on `TAMGA_OK`, receives an owned handle; free it with
  *   tamga_license_file_free() exactly once.
  */
-TAMGA_API enum TamgaErrorCode tamga_license_file_verify(const char *pem,
-                                                        uintptr_t pem_len,
+TAMGA_API enum TamgaErrorCode tamga_license_file_verify(const char *pem, uintptr_t pem_len,
                                                         const uint8_t *ed25519_pubkey,
                                                         const char *license_key,
                                                         struct TamgaLicenseFile **out_handle);
@@ -298,8 +297,7 @@ TAMGA_API enum TamgaErrorCode tamga_license_file_verify(const char *pem,
  * terminating NUL.
  */
 TAMGA_API enum TamgaErrorCode tamga_license_file_get_json(const struct TamgaLicenseFile *handle,
-                                                          char **out_ptr,
-                                                          uintptr_t *out_len);
+                                                          char **out_ptr, uintptr_t *out_len);
 
 /**
  * Frees a handle obtained from tamga_license_file_verify().
@@ -332,31 +330,27 @@ TAMGA_API void tamga_license_file_free(struct TamgaLicenseFile *handle);
  *   validated before use rather than trusted. Any value outside the declared
  *   range, plus `TAMGA_SCHEME_RSA_2048_JWT_RS256` and `TAMGA_SCHEME_NONE`,
  *   is rejected with `TAMGA_ERR_UNSUPPORTED_SCHEME`.
- * - `pubkey` / `pubkey_len`: the public key matching `scheme` (Ed25519: 32
- *   raw bytes; RSA-2048: a SubjectPublicKeyInfo DER blob for either RSA
- *   variant; ECDSA P-256: a 65-byte uncompressed point, or a
- *   SubjectPublicKeyInfo DER blob).
+ * - `pubkey` / `pubkey_len`: the public key matching `scheme`. Ed25519: 32
+ *   raw bytes. RSA (either variant): DER, in either the PKCS#1 RSAPublicKey
+ *   encoding the Tamga server uses or the SubjectPublicKeyInfo encoding
+ *   OpenSSL-based tooling produces -- both are accepted. ECDSA P-256: a
+ *   65-byte uncompressed point, or a SubjectPublicKeyInfo.
  * - `license_key` / `fingerprint`: required only to decrypt an encrypted
  *   (`aes-256-gcm`) machine file; ignored for plain files.
  * - `out_handle`: on `TAMGA_OK`, receives an owned handle; free it with
  *   tamga_machine_file_free() exactly once.
  */
-TAMGA_API enum TamgaErrorCode tamga_machine_file_verify(const char *pem,
-                                                        uintptr_t pem_len,
-                                                        uint32_t scheme,
-                                                        const uint8_t *pubkey,
-                                                        uintptr_t pubkey_len,
-                                                        const char *license_key,
-                                                        const char *fingerprint,
-                                                        struct TamgaMachineFile **out_handle);
+TAMGA_API enum TamgaErrorCode
+tamga_machine_file_verify(const char *pem, uintptr_t pem_len, uint32_t scheme,
+                          const uint8_t *pubkey, uintptr_t pubkey_len, const char *license_key,
+                          const char *fingerprint, struct TamgaMachineFile **out_handle);
 
 /**
  * Exposes the decoded machine resource as an owned JSON C string. Same
  * ownership contract as tamga_license_file_get_json().
  */
 TAMGA_API enum TamgaErrorCode tamga_machine_file_get_json(const struct TamgaMachineFile *handle,
-                                                          char **out_ptr,
-                                                          uintptr_t *out_len);
+                                                          char **out_ptr, uintptr_t *out_len);
 
 /**
  * Frees a handle obtained from tamga_machine_file_verify(). Same contract as
@@ -377,8 +371,9 @@ TAMGA_API void tamga_machine_file_free(struct TamgaMachineFile *handle);
  *
  * Parameters:
  * - `proof_str`: the full `"v1x0.<base64 signature>"` string.
- * - `rsa_pubkey` / `rsa_pubkey_len`: the account's RSA-2048 public key as a
- *   raw SubjectPublicKeyInfo DER blob.
+ * - `rsa_pubkey` / `rsa_pubkey_len`: the account's RSA-2048 public key as
+ *   DER, in either the PKCS#1 RSAPublicKey or the SubjectPublicKeyInfo
+ *   encoding.
  * - `account_id`, `machine_id`: UUID strings.
  * - `fingerprint`: the machine's fingerprint.
  * - `dataset_json`: the client dataset as a JSON string. It is re-serialized
@@ -389,14 +384,10 @@ TAMGA_API void tamga_machine_file_free(struct TamgaMachineFile *handle);
  *   succeeded but the proof is invalid" (`TAMGA_OK` + `*out_valid == false`)
  *   -- callers must check both.
  */
-TAMGA_API enum TamgaErrorCode tamga_offline_proof_verify(const char *proof_str,
-                                                         const uint8_t *rsa_pubkey,
-                                                         uintptr_t rsa_pubkey_len,
-                                                         const char *account_id,
-                                                         const char *machine_id,
-                                                         const char *fingerprint,
-                                                         const char *dataset_json,
-                                                         bool *out_valid);
+TAMGA_API enum TamgaErrorCode
+tamga_offline_proof_verify(const char *proof_str, const uint8_t *rsa_pubkey,
+                           uintptr_t rsa_pubkey_len, const char *account_id, const char *machine_id,
+                           const char *fingerprint, const char *dataset_json, bool *out_valid);
 
 /**
  * Generates a `"v1x0.<base64 signature>"` offline proof locally.
@@ -412,12 +403,10 @@ TAMGA_API enum TamgaErrorCode tamga_offline_proof_verify(const char *proof_str,
  * explanatory last-error message, and exists only to keep the v1.x ABI
  * intact.
  */
-TAMGA_API enum TamgaErrorCode tamga_offline_proof_generate(const char *rsa_privkey,
-                                                           const char *account_id,
-                                                           const char *machine_id,
-                                                           const char *fingerprint,
-                                                           const char *dataset_json,
-                                                           char **out_proof_str);
+TAMGA_API enum TamgaErrorCode
+tamga_offline_proof_generate(const char *rsa_privkey, const char *account_id,
+                             const char *machine_id, const char *fingerprint,
+                             const char *dataset_json, char **out_proof_str);
 
 #ifdef __cplusplus
 } /* extern "C" */

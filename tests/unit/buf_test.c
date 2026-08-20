@@ -3,8 +3,7 @@
 #include "tamga_mem.h"
 #include "util/buf.h"
 
-TT_TEST(appends_accumulate_in_order)
-{
+TT_TEST(appends_accumulate_in_order) {
     TamgaBuf buf;
     char *out;
     size_t len = 0u;
@@ -22,8 +21,7 @@ TT_TEST(appends_accumulate_in_order)
     tamga_buf_free(&buf);
 }
 
-TT_TEST(growth_survives_many_small_appends)
-{
+TT_TEST(growth_survives_many_small_appends) {
     TamgaBuf buf;
     char *out;
     size_t len = 0u;
@@ -41,8 +39,7 @@ TT_TEST(growth_survives_many_small_appends)
     tamga_buf_free(&buf);
 }
 
-TT_TEST(formatted_append_matches_snprintf)
-{
+TT_TEST(formatted_append_matches_snprintf) {
     TamgaBuf buf;
     char *out;
 
@@ -57,8 +54,7 @@ TT_TEST(formatted_append_matches_snprintf)
 
 /* The sticky-failure design is only safe because a failed buffer cannot hand
  * its bytes back -- otherwise a caller would silently ship truncated output. */
-TT_TEST(a_failed_buffer_refuses_to_detach)
-{
+TT_TEST(a_failed_buffer_refuses_to_detach) {
     TamgaBuf buf;
     tamga_buf_init(&buf);
     tamga_buf_append_str(&buf, "partial");
@@ -68,8 +64,7 @@ TT_TEST(a_failed_buffer_refuses_to_detach)
     tamga_buf_free(&buf);
 }
 
-TT_TEST(appends_after_failure_are_no_ops)
-{
+TT_TEST(appends_after_failure_are_no_ops) {
     TamgaBuf buf;
     tamga_buf_init(&buf);
     tamga_buf_append_str(&buf, NULL);
@@ -79,8 +74,7 @@ TT_TEST(appends_after_failure_are_no_ops)
     tamga_buf_free(&buf);
 }
 
-TT_TEST(detach_string_rejects_an_interior_nul)
-{
+TT_TEST(detach_string_rejects_an_interior_nul) {
     TamgaBuf buf;
     tamga_buf_init(&buf);
     tamga_buf_append(&buf, "ab\0cd", 5u);
@@ -88,8 +82,7 @@ TT_TEST(detach_string_rejects_an_interior_nul)
     tamga_buf_free(&buf);
 }
 
-TT_TEST(detach_of_an_empty_buffer_is_non_null)
-{
+TT_TEST(detach_of_an_empty_buffer_is_non_null) {
     TamgaBuf buf;
     size_t len = 99u;
     unsigned char *raw;
@@ -102,8 +95,7 @@ TT_TEST(detach_of_an_empty_buffer_is_non_null)
     tamga_buf_free(&buf);
 }
 
-TT_TEST(free_is_idempotent_and_null_safe)
-{
+TT_TEST(free_is_idempotent_and_null_safe) {
     TamgaBuf buf;
     tamga_buf_init(&buf);
     tamga_buf_append_str(&buf, "x");
@@ -113,8 +105,7 @@ TT_TEST(free_is_idempotent_and_null_safe)
     TT_ASSERT(tamga_buf_ok(&buf));
 }
 
-int main(void)
-{
+int main(void) {
     TT_RUN(appends_accumulate_in_order);
     TT_RUN(growth_survives_many_small_appends);
     TT_RUN(formatted_append_matches_snprintf);

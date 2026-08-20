@@ -4,8 +4,7 @@
 #include "util/base64.h"
 
 /* RFC 4648 section 10 test vectors. */
-static void roundtrip(const char *plain, const char *encoded)
-{
+static void roundtrip(const char *plain, const char *encoded) {
     char enc[64];
     unsigned char dec[64];
     size_t dec_len = 0u;
@@ -14,8 +13,8 @@ static void roundtrip(const char *plain, const char *encoded)
     tamga_base64_encode((const unsigned char *)plain, plain_len, enc);
     if (strcmp(enc, encoded) != 0) {
         tt_failures_++;
-        (void)fprintf(stderr, "FAIL %s: encode(\"%s\") = \"%s\", expected \"%s\"\n",
-                      tt_current_, plain, enc, encoded);
+        (void)fprintf(stderr, "FAIL %s: encode(\"%s\") = \"%s\", expected \"%s\"\n", tt_current_,
+                      plain, enc, encoded);
         return;
     }
     if (!tamga_base64_decode(encoded, strlen(encoded), dec, &dec_len)) {
@@ -25,13 +24,11 @@ static void roundtrip(const char *plain, const char *encoded)
     }
     if (dec_len != plain_len || memcmp(dec, plain, plain_len) != 0) {
         tt_failures_++;
-        (void)fprintf(stderr, "FAIL %s: decode(\"%s\") did not round-trip\n",
-                      tt_current_, encoded);
+        (void)fprintf(stderr, "FAIL %s: decode(\"%s\") did not round-trip\n", tt_current_, encoded);
     }
 }
 
-TT_TEST(rfc4648_vectors_round_trip)
-{
+TT_TEST(rfc4648_vectors_round_trip) {
     roundtrip("", "");
     roundtrip("f", "Zg==");
     roundtrip("fo", "Zm8=");
@@ -41,8 +38,7 @@ TT_TEST(rfc4648_vectors_round_trip)
     roundtrip("foobar", "Zm9vYmFy");
 }
 
-TT_TEST(rejects_characters_outside_the_alphabet)
-{
+TT_TEST(rejects_characters_outside_the_alphabet) {
     unsigned char out[32];
     size_t len = 0u;
     TT_ASSERT_FALSE(tamga_base64_decode("Zm9v!g==", 8u, out, &len));
@@ -55,8 +51,7 @@ TT_TEST(rejects_characters_outside_the_alphabet)
  * stripped the whitespace. Accepting it here too would put the leniency in
  * two places and make the strict/lenient boundary impossible to reason about.
  */
-TT_TEST(rejects_embedded_whitespace)
-{
+TT_TEST(rejects_embedded_whitespace) {
     unsigned char out[32];
     size_t len = 0u;
     TT_ASSERT_FALSE(tamga_base64_decode("Zm9v\nYmFy", 9u, out, &len));
@@ -64,8 +59,7 @@ TT_TEST(rejects_embedded_whitespace)
     TT_ASSERT_FALSE(tamga_base64_decode("\tZm9v", 5u, out, &len));
 }
 
-TT_TEST(rejects_misplaced_or_excessive_padding)
-{
+TT_TEST(rejects_misplaced_or_excessive_padding) {
     unsigned char out[32];
     size_t len = 0u;
     TT_ASSERT_FALSE(tamga_base64_decode("Zm=9v", 5u, out, &len));
@@ -74,8 +68,7 @@ TT_TEST(rejects_misplaced_or_excessive_padding)
     TT_ASSERT_FALSE(tamga_base64_decode("Zm8==", 5u, out, &len));
 }
 
-TT_TEST(rejects_a_four_n_plus_one_length)
-{
+TT_TEST(rejects_a_four_n_plus_one_length) {
     unsigned char out[32];
     size_t len = 0u;
     TT_ASSERT_FALSE(tamga_base64_decode("Z", 1u, out, &len));
@@ -87,8 +80,7 @@ TT_TEST(rejects_a_four_n_plus_one_length)
  * because the trailing bits are ignored. Canonical-form enforcement means one
  * byte string has exactly one encoding.
  */
-TT_TEST(rejects_non_canonical_trailing_bits)
-{
+TT_TEST(rejects_non_canonical_trailing_bits) {
     unsigned char out[32];
     size_t len = 0u;
     TT_ASSERT(tamga_base64_decode("Zg==", 4u, out, &len));
@@ -97,8 +89,7 @@ TT_TEST(rejects_non_canonical_trailing_bits)
     TT_ASSERT_FALSE(tamga_base64_decode("Zm9=", 4u, out, &len));
 }
 
-TT_TEST(accepts_unpadded_input)
-{
+TT_TEST(accepts_unpadded_input) {
     unsigned char out[32];
     size_t len = 0u;
     TT_ASSERT(tamga_base64_decode("Zm9vYmE", 7u, out, &len));
@@ -106,8 +97,7 @@ TT_TEST(accepts_unpadded_input)
     TT_ASSERT_EQ_MEM(out, "fooba", 5u);
 }
 
-TT_TEST(alloc_helpers_round_trip_binary_data)
-{
+TT_TEST(alloc_helpers_round_trip_binary_data) {
     unsigned char raw[256];
     char *encoded;
     unsigned char *decoded;
@@ -127,14 +117,12 @@ TT_TEST(alloc_helpers_round_trip_binary_data)
     tamga_free(decoded);
 }
 
-TT_TEST(decode_alloc_returns_null_on_bad_input)
-{
+TT_TEST(decode_alloc_returns_null_on_bad_input) {
     size_t len = 0u;
     TT_ASSERT_NULL(tamga_base64_decode_alloc("!!!!", 4u, &len));
 }
 
-int main(void)
-{
+int main(void) {
     TT_RUN(rfc4648_vectors_round_trip);
     TT_RUN(rejects_characters_outside_the_alphabet);
     TT_RUN(rejects_embedded_whitespace);

@@ -11,15 +11,12 @@
  * order subgroup.
  */
 static const unsigned char TAMGA_SC_L[32] = {
-    0xedu, 0xd3u, 0xf5u, 0x5cu, 0x1au, 0x63u, 0x12u, 0x58u,
-    0xd6u, 0x9cu, 0xf7u, 0xa2u, 0xdeu, 0xf9u, 0xdeu, 0x14u,
-    0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
-    0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x10u
-};
+    0xedu, 0xd3u, 0xf5u, 0x5cu, 0x1au, 0x63u, 0x12u, 0x58u, 0xd6u, 0x9cu, 0xf7u,
+    0xa2u, 0xdeu, 0xf9u, 0xdeu, 0x14u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+    0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x10u};
 
 /* True when the little-endian 32-byte scalar is strictly below L. */
-static bool tamga_sc_is_canonical(const unsigned char s[32])
-{
+static bool tamga_sc_is_canonical(const unsigned char s[32]) {
     int i;
     for (i = 31; i >= 0; i--) {
         if (s[i] < TAMGA_SC_L[i]) {
@@ -32,8 +29,7 @@ static bool tamga_sc_is_canonical(const unsigned char s[32])
     return false; /* exactly L is not canonical either */
 }
 
-static void tamga_sc_load_l(uint32_t out[8])
-{
+static void tamga_sc_load_l(uint32_t out[8]) {
     int i;
     for (i = 0; i < 8; i++) {
         out[i] = (uint32_t)TAMGA_SC_L[i * 4] | ((uint32_t)TAMGA_SC_L[(i * 4) + 1] << 8) |
@@ -54,8 +50,7 @@ static void tamga_sc_load_l(uint32_t out[8])
  * to be constant-time. A subtly wrong Barrett constant is a bug that only
  * shows up on a fraction of inputs.
  */
-static void tamga_sc_reduce512(const unsigned char in[64], unsigned char out[32])
-{
+static void tamga_sc_reduce512(const unsigned char in[64], unsigned char out[32]) {
     uint32_t remainder[8];
     uint32_t l[8];
     int bit;
@@ -112,30 +107,25 @@ typedef struct TamgaGe {
  * verification is immaterial next to the scalar multiplication, and a wrong
  * digit in a hardcoded table is invisible on inspection. */
 static const unsigned char TAMGA_GE_BASE[32] = {
-    0x58u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u,
-    0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u,
-    0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u,
-    0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u
-};
+    0x58u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u,
+    0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u,
+    0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u, 0x66u};
 
-static void tamga_ge_identity(TamgaGe *r)
-{
+static void tamga_ge_identity(TamgaGe *r) {
     tamga_fe_zero(&r->x);
     tamga_fe_one(&r->y);
     tamga_fe_one(&r->z);
     tamga_fe_zero(&r->t);
 }
 
-static void tamga_ge_copy(TamgaGe *r, const TamgaGe *a)
-{
+static void tamga_ge_copy(TamgaGe *r, const TamgaGe *a) {
     tamga_fe_copy(&r->x, &a->x);
     tamga_fe_copy(&r->y, &a->y);
     tamga_fe_copy(&r->z, &a->z);
     tamga_fe_copy(&r->t, &a->t);
 }
 
-static void tamga_ge_neg(TamgaGe *r, const TamgaGe *a)
-{
+static void tamga_ge_neg(TamgaGe *r, const TamgaGe *a) {
     tamga_fe_neg(&r->x, &a->x);
     tamga_fe_copy(&r->y, &a->y);
     tamga_fe_copy(&r->z, &a->z);
@@ -152,8 +142,7 @@ static void tamga_ge_neg(TamgaGe *r, const TamgaGe *a)
  * instead of using a separate, faster dedicated formula: one code path, no
  * exceptional-input branch to get wrong.
  */
-static void tamga_ge_add(TamgaGe *r, const TamgaGe *p, const TamgaGe *q)
-{
+static void tamga_ge_add(TamgaGe *r, const TamgaGe *p, const TamgaGe *q) {
     TamgaFe a;
     TamgaFe b;
     TamgaFe c;
@@ -193,15 +182,13 @@ static void tamga_ge_add(TamgaGe *r, const TamgaGe *p, const TamgaGe *q)
     tamga_fe_mul(&r->z, &f, &g);
 }
 
-static void tamga_ge_double(TamgaGe *r, const TamgaGe *p)
-{
+static void tamga_ge_double(TamgaGe *r, const TamgaGe *p) {
     tamga_ge_add(r, p, p);
 }
 
 /* Compresses to the 32-byte encoding: y in little-endian, with the top bit
  * carrying x's sign. */
-static void tamga_ge_compress(const TamgaGe *p, unsigned char out[32])
-{
+static void tamga_ge_compress(const TamgaGe *p, unsigned char out[32]) {
     TamgaFe z_inv;
     TamgaFe x;
     TamgaFe y;
@@ -226,8 +213,7 @@ static void tamga_ge_compress(const TamgaGe *p, unsigned char out[32])
  * the check that stops an attacker-supplied "public key" from moving the
  * arithmetic onto a different, weaker curve.
  */
-static bool tamga_ge_decompress(TamgaGe *r, const unsigned char in[32])
-{
+static bool tamga_ge_decompress(TamgaGe *r, const unsigned char in[32]) {
     TamgaFe u;
     TamgaFe v;
     TamgaFe v3;
@@ -293,8 +279,7 @@ static bool tamga_ge_decompress(TamgaGe *r, const unsigned char in[32])
  * verification are public (one is the signature's own S, the other a hash of
  * public inputs). A signing implementation could not reuse this.
  */
-static void tamga_ge_scalarmul(TamgaGe *r, const TamgaGe *p, const unsigned char scalar[32])
-{
+static void tamga_ge_scalarmul(TamgaGe *r, const TamgaGe *p, const unsigned char scalar[32]) {
     TamgaGe accumulator;
     int bit;
 
@@ -310,8 +295,7 @@ static void tamga_ge_scalarmul(TamgaGe *r, const TamgaGe *p, const unsigned char
 
 bool tamga_ed25519_verify(const unsigned char public_key[TAMGA_ED25519_PUBKEY_LEN],
                           const unsigned char *message, size_t message_len,
-                          const unsigned char signature[TAMGA_ED25519_SIG_LEN])
-{
+                          const unsigned char signature[TAMGA_ED25519_SIG_LEN]) {
     TamgaGe a_point;
     TamgaGe base;
     TamgaGe sb;

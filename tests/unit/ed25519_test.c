@@ -11,8 +11,7 @@
 #include "crypto/ed25519.h"
 #include "crypto/fe25519.h"
 
-static void verifies(const char *pubkey_hex, const char *message_hex, const char *sig_hex)
-{
+static void verifies(const char *pubkey_hex, const char *message_hex, const char *sig_hex) {
     unsigned char pubkey[32];
     unsigned char signature[64];
     unsigned char message[256];
@@ -30,8 +29,7 @@ static void verifies(const char *pubkey_hex, const char *message_hex, const char
     }
 }
 
-TT_TEST(accepts_rfc8032_vectors)
-{
+TT_TEST(accepts_rfc8032_vectors) {
     /* Empty message. */
     verifies("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "",
              "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a3"
@@ -60,22 +58,20 @@ TT_TEST(accepts_rfc8032_vectors)
  * and it is worth having a vector at this layer as well as at the checkout
  * layer.
  */
-TT_TEST(accepts_a_signature_over_base64_string_bytes)
-{
+TT_TEST(accepts_a_signature_over_base64_string_bytes) {
     verifies("ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
              "65794a6b59585268496a7037496d6c6b496a6f694d534a3966513d3d",
              "c93a739131b7f8360bb99411c57557f543b9a570d13d2424cf87eac87474c8913c1aa99dcd7d"
              "667520ed432c7704ac9a2c23f4804534affcf2d7df3ecde74407");
 }
 
-TT_TEST(rejects_a_tampered_message)
-{
+TT_TEST(rejects_a_tampered_message) {
     unsigned char pubkey[32];
     unsigned char signature[64];
     unsigned char message[2];
 
-    (void)tt_hex2bin("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
-                     pubkey, sizeof(pubkey));
+    (void)tt_hex2bin("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025", pubkey,
+                     sizeof(pubkey));
     (void)tt_hex2bin("6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff"
                      "9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a",
                      signature, sizeof(signature));
@@ -90,15 +86,14 @@ TT_TEST(rejects_a_tampered_message)
     TT_ASSERT_FALSE(tamga_ed25519_verify(pubkey, message, 1u, signature));
 }
 
-TT_TEST(rejects_a_tampered_signature)
-{
+TT_TEST(rejects_a_tampered_signature) {
     unsigned char pubkey[32];
     unsigned char signature[64];
     unsigned char message[2];
     size_t i;
 
-    (void)tt_hex2bin("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
-                     pubkey, sizeof(pubkey));
+    (void)tt_hex2bin("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025", pubkey,
+                     sizeof(pubkey));
     (void)tt_hex2bin("af82", message, sizeof(message));
 
     /* Flip one bit in each of the R half and the S half. */
@@ -111,15 +106,14 @@ TT_TEST(rejects_a_tampered_signature)
     }
 }
 
-TT_TEST(rejects_a_wrong_public_key)
-{
+TT_TEST(rejects_a_wrong_public_key) {
     unsigned char pubkey[32];
     unsigned char signature[64];
     unsigned char message[2];
 
     /* A different, valid public key from the RFC set. */
-    (void)tt_hex2bin("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
-                     pubkey, sizeof(pubkey));
+    (void)tt_hex2bin("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", pubkey,
+                     sizeof(pubkey));
     (void)tt_hex2bin("6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff"
                      "9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a",
                      signature, sizeof(signature));
@@ -135,21 +129,20 @@ TT_TEST(rejects_a_wrong_public_key)
  * (confirmed directly), so this implementation must too, or the two disagree
  * about whether a given file is authentic.
  */
-TT_TEST(rejects_a_non_canonical_scalar)
-{
+TT_TEST(rejects_a_non_canonical_scalar) {
     unsigned char pubkey[32];
     unsigned char signature[64];
     unsigned char malleable[64];
     unsigned char message[28];
     size_t message_len;
 
-    (void)tt_hex2bin("ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
-                     pubkey, sizeof(pubkey));
+    (void)tt_hex2bin("ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c", pubkey,
+                     sizeof(pubkey));
     (void)tt_hex2bin("c93a739131b7f8360bb99411c57557f543b9a570d13d2424cf87eac87474c8913c1a"
                      "a99dcd7d667520ed432c7704ac9a2c23f4804534affcf2d7df3ecde74407",
                      signature, sizeof(signature));
-    message_len = tt_hex2bin("65794a6b59585268496a7037496d6c6b496a6f694d534a3966513d3d",
-                             message, sizeof(message));
+    message_len = tt_hex2bin("65794a6b59585268496a7037496d6c6b496a6f694d534a3966513d3d", message,
+                             sizeof(message));
     TT_ASSERT_EQ_SIZE(message_len, 28u);
 
     TT_ASSERT(tamga_ed25519_verify(pubkey, message, message_len, signature));
@@ -168,19 +161,17 @@ TT_TEST(rejects_a_non_canonical_scalar)
  * onto a different, weaker curve. y = 2 has no corresponding x on ed25519 --
  * confirmed against ed25519-dalek, which rejects the same encoding.
  */
-TT_TEST(rejects_a_public_key_that_is_not_on_the_curve)
-{
+TT_TEST(rejects_a_public_key_that_is_not_on_the_curve) {
     unsigned char pubkey[32];
     unsigned char signature[64];
 
     memset(signature, 0, sizeof(signature));
-    (void)tt_hex2bin("0200000000000000000000000000000000000000000000000000000000000000",
-                     pubkey, sizeof(pubkey));
+    (void)tt_hex2bin("0200000000000000000000000000000000000000000000000000000000000000", pubkey,
+                     sizeof(pubkey));
     TT_ASSERT_FALSE(tamga_ed25519_verify(pubkey, (const unsigned char *)"x", 1u, signature));
 }
 
-TT_TEST(rejects_null_arguments)
-{
+TT_TEST(rejects_null_arguments) {
     unsigned char pubkey[32];
     unsigned char signature[64];
 
@@ -199,8 +190,7 @@ TT_TEST(rejects_null_arguments)
  * Both are verified by their defining property rather than by inspection.
  */
 
-TT_TEST(sqrt_minus_one_squares_to_minus_one)
-{
+TT_TEST(sqrt_minus_one_squares_to_minus_one) {
     TamgaFe sqrtm1;
     TamgaFe squared;
     TamgaFe one;
@@ -213,8 +203,7 @@ TT_TEST(sqrt_minus_one_squares_to_minus_one)
     TT_ASSERT(tamga_fe_equal(&squared, &minus_one));
 }
 
-TT_TEST(the_curve_constant_d_satisfies_its_definition)
-{
+TT_TEST(the_curve_constant_d_satisfies_its_definition) {
     /* d = -121665 / 121666, i.e. d * 121666 + 121665 == 0. */
     TamgaFe d;
     TamgaFe denominator;
@@ -242,8 +231,7 @@ TT_TEST(the_curve_constant_d_satisfies_its_definition)
     TT_ASSERT(tamga_fe_is_zero(&sum));
 }
 
-TT_TEST(field_inversion_round_trips)
-{
+TT_TEST(field_inversion_round_trips) {
     TamgaFe value;
     TamgaFe inverse;
     TamgaFe product;
@@ -267,8 +255,7 @@ TT_TEST(field_inversion_round_trips)
 /* p - 1 and p + 1 must reduce to p - 1 and 1 respectively; getting the
  * boundary wrong is the classic field-arithmetic bug that only shows up for a
  * vanishing fraction of random inputs. */
-TT_TEST(field_arithmetic_handles_the_modulus_boundary)
-{
+TT_TEST(field_arithmetic_handles_the_modulus_boundary) {
     TamgaFe p_minus_one;
     TamgaFe one;
     TamgaFe sum;
@@ -297,8 +284,7 @@ TT_TEST(field_arithmetic_handles_the_modulus_boundary)
     TT_ASSERT(tamga_fe_is_zero(&sum));
 }
 
-int main(void)
-{
+int main(void) {
     TT_RUN(accepts_rfc8032_vectors);
     TT_RUN(accepts_a_signature_over_base64_string_bytes);
     TT_RUN(rejects_a_tampered_message);

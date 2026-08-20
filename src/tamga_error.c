@@ -13,14 +13,12 @@
 static TAMGA_THREAD_LOCAL char tamga_error_buf[TAMGA_ERROR_MESSAGE_CAP];
 static TAMGA_THREAD_LOCAL bool tamga_error_present = false;
 
-void tamga_error_clear(void)
-{
+void tamga_error_clear(void) {
     tamga_error_present = false;
     tamga_error_buf[0] = '\0';
 }
 
-TamgaErrorCode tamga_error_set(TamgaErrorCode code, const char *fmt, ...)
-{
+TamgaErrorCode tamga_error_set(TamgaErrorCode code, const char *fmt, ...) {
     va_list args;
     int written;
 
@@ -35,8 +33,7 @@ TamgaErrorCode tamga_error_set(TamgaErrorCode code, const char *fmt, ...)
     tamga_error_present = true;
 
     if (fmt == NULL) {
-        (void)snprintf(tamga_error_buf, sizeof(tamga_error_buf), "%s",
-                       tamga_error_name(code));
+        (void)snprintf(tamga_error_buf, sizeof(tamga_error_buf), "%s", tamga_error_name(code));
         return code;
     }
 
@@ -45,8 +42,7 @@ TamgaErrorCode tamga_error_set(TamgaErrorCode code, const char *fmt, ...)
     va_end(args);
 
     if (written < 0) {
-        (void)snprintf(tamga_error_buf, sizeof(tamga_error_buf), "%s",
-                       tamga_error_name(code));
+        (void)snprintf(tamga_error_buf, sizeof(tamga_error_buf), "%s", tamga_error_name(code));
     } else if ((size_t)written >= sizeof(tamga_error_buf)) {
         /* vsnprintf already NUL-terminated at the cap; mark the truncation so
          * a reader does not mistake a cut-off message for a complete one. */
@@ -56,30 +52,42 @@ TamgaErrorCode tamga_error_set(TamgaErrorCode code, const char *fmt, ...)
     return code;
 }
 
-const char *tamga_last_error_message(void)
-{
+const char *tamga_last_error_message(void) {
     if (!tamga_error_present) {
         return NULL;
     }
     return tamga_error_buf;
 }
 
-const char *tamga_error_name(TamgaErrorCode code)
-{
+const char *tamga_error_name(TamgaErrorCode code) {
     switch (code) {
-    case TAMGA_OK:                      return "TAMGA_OK";
-    case TAMGA_ERR_INVALID_PEM:         return "TAMGA_ERR_INVALID_PEM";
-    case TAMGA_ERR_INVALID_BASE64:      return "TAMGA_ERR_INVALID_BASE64";
-    case TAMGA_ERR_INVALID_JSON:        return "TAMGA_ERR_INVALID_JSON";
-    case TAMGA_ERR_SIGNATURE_INVALID:   return "TAMGA_ERR_SIGNATURE_INVALID";
-    case TAMGA_ERR_DECRYPTION_FAILED:   return "TAMGA_ERR_DECRYPTION_FAILED";
-    case TAMGA_ERR_UNSUPPORTED_SCHEME:  return "TAMGA_ERR_UNSUPPORTED_SCHEME";
-    case TAMGA_ERR_NULL_ARGUMENT:       return "TAMGA_ERR_NULL_ARGUMENT";
-    case TAMGA_ERR_PANIC:               return "TAMGA_ERR_PANIC";
-    case TAMGA_ERR_UNKNOWN:             return "TAMGA_ERR_UNKNOWN";
-    case TAMGA_ERR_LENGTH_INVALID:      return "TAMGA_ERR_LENGTH_INVALID";
-    case TAMGA_ERR_EXPIRED:             return "TAMGA_ERR_EXPIRED";
-    case TAMGA_ERR_OUT_OF_MEMORY:       return "TAMGA_ERR_OUT_OF_MEMORY";
-    default:                            return "TAMGA_ERR_UNKNOWN";
+    case TAMGA_OK:
+        return "TAMGA_OK";
+    case TAMGA_ERR_INVALID_PEM:
+        return "TAMGA_ERR_INVALID_PEM";
+    case TAMGA_ERR_INVALID_BASE64:
+        return "TAMGA_ERR_INVALID_BASE64";
+    case TAMGA_ERR_INVALID_JSON:
+        return "TAMGA_ERR_INVALID_JSON";
+    case TAMGA_ERR_SIGNATURE_INVALID:
+        return "TAMGA_ERR_SIGNATURE_INVALID";
+    case TAMGA_ERR_DECRYPTION_FAILED:
+        return "TAMGA_ERR_DECRYPTION_FAILED";
+    case TAMGA_ERR_UNSUPPORTED_SCHEME:
+        return "TAMGA_ERR_UNSUPPORTED_SCHEME";
+    case TAMGA_ERR_NULL_ARGUMENT:
+        return "TAMGA_ERR_NULL_ARGUMENT";
+    case TAMGA_ERR_PANIC:
+        return "TAMGA_ERR_PANIC";
+    case TAMGA_ERR_UNKNOWN:
+        return "TAMGA_ERR_UNKNOWN";
+    case TAMGA_ERR_LENGTH_INVALID:
+        return "TAMGA_ERR_LENGTH_INVALID";
+    case TAMGA_ERR_EXPIRED:
+        return "TAMGA_ERR_EXPIRED";
+    case TAMGA_ERR_OUT_OF_MEMORY:
+        return "TAMGA_ERR_OUT_OF_MEMORY";
+    default:
+        return "TAMGA_ERR_UNKNOWN";
     }
 }

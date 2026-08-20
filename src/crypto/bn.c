@@ -10,23 +10,20 @@
 
 /* Bit `index` of a big-endian byte string, counting 0 as the least
  * significant bit of the last byte. */
-static unsigned int tamga_bn_be_bit(const unsigned char *bytes, size_t byte_len, size_t index)
-{
+static unsigned int tamga_bn_be_bit(const unsigned char *bytes, size_t byte_len, size_t index) {
     size_t byte_from_end = index / 8u;
     unsigned int shift = (unsigned int)(index % 8u);
     return ((unsigned int)bytes[byte_len - 1u - byte_from_end] >> shift) & 1u;
 }
 
-static size_t tamga_bn_limbs_for(size_t byte_len)
-{
+static size_t tamga_bn_limbs_for(size_t byte_len) {
     return (byte_len + 3u) / 4u;
 }
 
 /* Loads a big-endian byte string into little-endian limbs, zero-padding the
  * top. */
-static void tamga_bn_from_be(const unsigned char *bytes, size_t byte_len,
-                             uint32_t *limbs, size_t limb_count)
-{
+static void tamga_bn_from_be(const unsigned char *bytes, size_t byte_len, uint32_t *limbs,
+                             size_t limb_count) {
     size_t i;
 
     memset(limbs, 0, limb_count * sizeof(uint32_t));
@@ -40,9 +37,8 @@ static void tamga_bn_from_be(const unsigned char *bytes, size_t byte_len,
     }
 }
 
-static void tamga_bn_to_be(const uint32_t *limbs, size_t limb_count,
-                           unsigned char *bytes, size_t byte_len)
-{
+static void tamga_bn_to_be(const uint32_t *limbs, size_t limb_count, unsigned char *bytes,
+                           size_t byte_len) {
     size_t i;
 
     for (i = 0u; i < byte_len; i++) {
@@ -54,8 +50,7 @@ static void tamga_bn_to_be(const uint32_t *limbs, size_t limb_count,
 }
 
 /* Returns -1, 0 or 1. */
-static int tamga_bn_cmp(const uint32_t *a, const uint32_t *b, size_t n)
-{
+static int tamga_bn_cmp(const uint32_t *a, const uint32_t *b, size_t n) {
     size_t i = n;
     while (i > 0u) {
         i--;
@@ -67,8 +62,7 @@ static int tamga_bn_cmp(const uint32_t *a, const uint32_t *b, size_t n)
 }
 
 /* r = a - b, returning the final borrow. */
-static uint32_t tamga_bn_sub(uint32_t *r, const uint32_t *a, const uint32_t *b, size_t n)
-{
+static uint32_t tamga_bn_sub(uint32_t *r, const uint32_t *a, const uint32_t *b, size_t n) {
     uint64_t borrow = 0u;
     size_t i;
 
@@ -81,8 +75,7 @@ static uint32_t tamga_bn_sub(uint32_t *r, const uint32_t *a, const uint32_t *b, 
 }
 
 /* value = value * 2 mod modulus, for value < modulus. */
-static void tamga_bn_double_mod(uint32_t *value, const uint32_t *modulus, size_t n)
-{
+static void tamga_bn_double_mod(uint32_t *value, const uint32_t *modulus, size_t n) {
     uint32_t carry = 0u;
     size_t i;
 
@@ -102,8 +95,7 @@ static void tamga_bn_double_mod(uint32_t *value, const uint32_t *modulus, size_t
 
 /* -modulus[0]^-1 mod 2^32, by Newton iteration. Requires an odd modulus,
  * which every RSA modulus is. */
-static uint32_t tamga_bn_n0inv(uint32_t m0)
-{
+static uint32_t tamga_bn_n0inv(uint32_t m0) {
     uint32_t inverse = 1u;
     int i;
 
@@ -119,8 +111,7 @@ static uint32_t tamga_bn_n0inv(uint32_t m0)
  * R = 2^(32n).
  */
 static void tamga_bn_mont_mul(uint32_t *r, const uint32_t *a, const uint32_t *b,
-                              const uint32_t *modulus, size_t n, uint32_t n0inv)
-{
+                              const uint32_t *modulus, size_t n, uint32_t n0inv) {
     uint32_t t[TAMGA_BN_MAX_LIMBS + 2];
     size_t i;
     size_t j;
@@ -173,8 +164,7 @@ static void tamga_bn_mont_mul(uint32_t *r, const uint32_t *a, const uint32_t *b,
 }
 
 bool tamga_bn_modexp(const unsigned char *base, const unsigned char *modulus, size_t mod_len,
-                     const unsigned char *exponent, size_t exp_len, unsigned char *out)
-{
+                     const unsigned char *exponent, size_t exp_len, unsigned char *out) {
     uint32_t m[TAMGA_BN_MAX_LIMBS];
     uint32_t b[TAMGA_BN_MAX_LIMBS];
     uint32_t rr[TAMGA_BN_MAX_LIMBS];

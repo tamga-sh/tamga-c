@@ -7,14 +7,12 @@
 #include "crypto/sha256.h"
 
 /* 1.2.840.10045.2.1 id-ecPublicKey */
-static const unsigned char TAMGA_OID_EC_PUBLIC_KEY[] = {
-    0x2au, 0x86u, 0x48u, 0xceu, 0x3du, 0x02u, 0x01u
-};
+static const unsigned char TAMGA_OID_EC_PUBLIC_KEY[] = {0x2au, 0x86u, 0x48u, 0xceu,
+                                                        0x3du, 0x02u, 0x01u};
 
 /* 1.2.840.10045.3.1.7 prime256v1 (a.k.a. P-256, secp256r1) */
-static const unsigned char TAMGA_OID_PRIME256V1[] = {
-    0x2au, 0x86u, 0x48u, 0xceu, 0x3du, 0x03u, 0x01u, 0x07u
-};
+static const unsigned char TAMGA_OID_PRIME256V1[] = {0x2au, 0x86u, 0x48u, 0xceu,
+                                                     0x3du, 0x03u, 0x01u, 0x07u};
 
 #define TAMGA_P256_POINT_LEN 65u
 
@@ -27,8 +25,7 @@ static const unsigned char TAMGA_OID_PRIME256V1[] = {
  * bytes.
  */
 static bool tamga_ecdsa_extract_point(const unsigned char *public_key, size_t public_key_len,
-                                      const unsigned char **x, const unsigned char **y)
-{
+                                      const unsigned char **x, const unsigned char **y) {
     TamgaDer outer;
     TamgaDer inner;
     TamgaDer algorithm;
@@ -69,8 +66,7 @@ static bool tamga_ecdsa_extract_point(const unsigned char *public_key, size_t pu
                               sizeof(TAMGA_OID_EC_PUBLIC_KEY))) {
         return false;
     }
-    if (!tamga_der_expect_oid(&algorithm, TAMGA_OID_PRIME256V1,
-                              sizeof(TAMGA_OID_PRIME256V1))) {
+    if (!tamga_der_expect_oid(&algorithm, TAMGA_OID_PRIME256V1, sizeof(TAMGA_OID_PRIME256V1))) {
         return false;
     }
     if (!tamga_der_at_end(&algorithm)) {
@@ -95,8 +91,7 @@ static bool tamga_ecdsa_extract_point(const unsigned char *public_key, size_t pu
 /* Copies a DER INTEGER magnitude into a fixed 32-byte big-endian buffer,
  * left-padding with zeros. Rejects anything wider than the curve order. */
 static bool tamga_ecdsa_pad_scalar(const unsigned char *value, size_t value_len,
-                                   unsigned char out[32])
-{
+                                   unsigned char out[32]) {
     if (value_len == 0u || value_len > 32u) {
         return false;
     }
@@ -106,8 +101,7 @@ static bool tamga_ecdsa_pad_scalar(const unsigned char *value, size_t value_len,
 }
 
 static bool tamga_ecdsa_parse_signature(const unsigned char *signature, size_t signature_len,
-                                        unsigned char r[32], unsigned char s[32])
-{
+                                        unsigned char r[32], unsigned char s[32]) {
     TamgaDer outer;
     TamgaDer inner;
     const unsigned char *sequence = NULL;
@@ -139,14 +133,12 @@ static bool tamga_ecdsa_parse_signature(const unsigned char *signature, size_t s
         return false;
     }
 
-    return tamga_ecdsa_pad_scalar(r_value, r_len, r) &&
-           tamga_ecdsa_pad_scalar(s_value, s_len, s);
+    return tamga_ecdsa_pad_scalar(r_value, r_len, r) && tamga_ecdsa_pad_scalar(s_value, s_len, s);
 }
 
 bool tamga_ecdsa_p256_verify(const unsigned char *public_key, size_t public_key_len,
                              const unsigned char *message, size_t message_len,
-                             const unsigned char *signature, size_t signature_len)
-{
+                             const unsigned char *signature, size_t signature_len) {
     const unsigned char *x = NULL;
     const unsigned char *y = NULL;
     unsigned char r[32];

@@ -8,8 +8,7 @@
  * starts at -- 8-4-4-4-12 hex characters, i.e. 4-2-2-2-6 bytes. */
 static const size_t TAMGA_UUID_GROUP_BYTES[5] = {4u, 2u, 2u, 2u, 6u};
 
-static bool tamga_uuid_parse_hyphenated(const char *str, TamgaUuid *out)
-{
+static bool tamga_uuid_parse_hyphenated(const char *str, TamgaUuid *out) {
     size_t group;
     size_t src = 0u;
     size_t dst = 0u;
@@ -31,8 +30,7 @@ static bool tamga_uuid_parse_hyphenated(const char *str, TamgaUuid *out)
     return true;
 }
 
-bool tamga_uuid_parse(const char *str, TamgaUuid *out)
-{
+bool tamga_uuid_parse(const char *str, TamgaUuid *out) {
     size_t len;
 
     if (str == NULL || out == NULL) {
@@ -73,8 +71,7 @@ bool tamga_uuid_parse(const char *str, TamgaUuid *out)
     return false;
 }
 
-void tamga_uuid_format(const TamgaUuid *uuid, char *out)
-{
+void tamga_uuid_format(const TamgaUuid *uuid, char *out) {
     char hex[33];
 
     if (out == NULL) {
@@ -98,8 +95,7 @@ void tamga_uuid_format(const TamgaUuid *uuid, char *out)
     out[36] = '\0';
 }
 
-bool tamga_uuid_normalize(const char *str, char *out)
-{
+bool tamga_uuid_normalize(const char *str, char *out) {
     TamgaUuid uuid;
 
     if (out == NULL) {

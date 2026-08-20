@@ -4,8 +4,7 @@
 
 #include "tamga_mem.h"
 
-void tamga_hmac_sha256_init(TamgaHmacSha256 *ctx, const void *key, size_t key_len)
-{
+void tamga_hmac_sha256_init(TamgaHmacSha256 *ctx, const void *key, size_t key_len) {
     unsigned char block_key[TAMGA_SHA256_BLOCK_LEN];
     unsigned char inner_pad[TAMGA_SHA256_BLOCK_LEN];
     size_t i;
@@ -35,16 +34,14 @@ void tamga_hmac_sha256_init(TamgaHmacSha256 *ctx, const void *key, size_t key_le
     tamga_secure_zero(inner_pad, sizeof(inner_pad));
 }
 
-void tamga_hmac_sha256_update(TamgaHmacSha256 *ctx, const void *data, size_t len)
-{
+void tamga_hmac_sha256_update(TamgaHmacSha256 *ctx, const void *data, size_t len) {
     if (ctx == NULL) {
         return;
     }
     tamga_sha256_update(&ctx->inner, data, len);
 }
 
-void tamga_hmac_sha256_final(TamgaHmacSha256 *ctx, unsigned char out[TAMGA_SHA256_DIGEST_LEN])
-{
+void tamga_hmac_sha256_final(TamgaHmacSha256 *ctx, unsigned char out[TAMGA_SHA256_DIGEST_LEN]) {
     unsigned char inner_digest[TAMGA_SHA256_DIGEST_LEN];
     TamgaSha256 outer;
 
@@ -63,8 +60,7 @@ void tamga_hmac_sha256_final(TamgaHmacSha256 *ctx, unsigned char out[TAMGA_SHA25
 }
 
 void tamga_hmac_sha256(const void *key, size_t key_len, const void *data, size_t data_len,
-                       unsigned char out[TAMGA_SHA256_DIGEST_LEN])
-{
+                       unsigned char out[TAMGA_SHA256_DIGEST_LEN]) {
     TamgaHmacSha256 ctx;
     tamga_hmac_sha256_init(&ctx, key, key_len);
     tamga_hmac_sha256_update(&ctx, data, data_len);

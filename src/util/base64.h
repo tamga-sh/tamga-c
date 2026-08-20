@@ -29,8 +29,8 @@ TAMGA_NODISCARD bool tamga_base64_decoded_cap(size_t encoded_len, size_t *out);
  * alphabet (whitespace included), has misplaced padding, has a length of
  * 4n+1, or carries non-zero bits past the final decoded byte.
  */
-TAMGA_NODISCARD bool tamga_base64_decode(const char *in, size_t in_len,
-                                         unsigned char *out, size_t *out_len);
+TAMGA_NODISCARD bool tamga_base64_decode(const char *in, size_t in_len, unsigned char *out,
+                                         size_t *out_len);
 
 /**
  * Allocates and decodes in one step. Returns NULL on any decode failure or on

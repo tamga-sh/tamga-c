@@ -24,16 +24,13 @@ static const uint64_t TAMGA_SHA512_K[80] = {
     0xca273eceea26619cULL, 0xd186b8c721c0c207ULL, 0xeada7dd6cde0eb1eULL, 0xf57d4f7fee6ed178ULL,
     0x06f067aa72176fbaULL, 0x0a637dc5a2c898a6ULL, 0x113f9804bef90daeULL, 0x1b710b35131c471bULL,
     0x28db77f523047d84ULL, 0x32caab7b40c72493ULL, 0x3c9ebe0a15c9bebcULL, 0x431d67c49c100d4cULL,
-    0x4cc5d4becb3e42b6ULL, 0x597f299cfc657e2aULL, 0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL
-};
+    0x4cc5d4becb3e42b6ULL, 0x597f299cfc657e2aULL, 0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL};
 
-static uint64_t tamga_rotr64(uint64_t value, unsigned int bits)
-{
+static uint64_t tamga_rotr64(uint64_t value, unsigned int bits) {
     return (value >> bits) | (value << (64u - bits));
 }
 
-static void tamga_sha512_compress(TamgaSha512 *ctx, const unsigned char block[128])
-{
+static void tamga_sha512_compress(TamgaSha512 *ctx, const unsigned char block[128]) {
     uint64_t w[80];
     uint64_t a, b, c, d, e, f, g, h;
     unsigned int i;
@@ -46,10 +43,8 @@ static void tamga_sha512_compress(TamgaSha512 *ctx, const unsigned char block[12
                ((uint64_t)block[base + 6u] << 8) | (uint64_t)block[base + 7u];
     }
     for (i = 16u; i < 80u; i++) {
-        uint64_t s0 = tamga_rotr64(w[i - 15u], 1) ^ tamga_rotr64(w[i - 15u], 8) ^
-                      (w[i - 15u] >> 7);
-        uint64_t s1 = tamga_rotr64(w[i - 2u], 19) ^ tamga_rotr64(w[i - 2u], 61) ^
-                      (w[i - 2u] >> 6);
+        uint64_t s0 = tamga_rotr64(w[i - 15u], 1) ^ tamga_rotr64(w[i - 15u], 8) ^ (w[i - 15u] >> 7);
+        uint64_t s1 = tamga_rotr64(w[i - 2u], 19) ^ tamga_rotr64(w[i - 2u], 61) ^ (w[i - 2u] >> 6);
         w[i] = w[i - 16u] + s0 + w[i - 7u] + s1;
     }
 
@@ -92,8 +87,7 @@ static void tamga_sha512_compress(TamgaSha512 *ctx, const unsigned char block[12
     tamga_secure_zero(w, sizeof(w));
 }
 
-void tamga_sha512_init(TamgaSha512 *ctx)
-{
+void tamga_sha512_init(TamgaSha512 *ctx) {
     if (ctx == NULL) {
         return;
     }
@@ -110,8 +104,7 @@ void tamga_sha512_init(TamgaSha512 *ctx)
     memset(ctx->block, 0, sizeof(ctx->block));
 }
 
-void tamga_sha512_update(TamgaSha512 *ctx, const void *data, size_t len)
-{
+void tamga_sha512_update(TamgaSha512 *ctx, const void *data, size_t len) {
     const unsigned char *bytes = (const unsigned char *)data;
     size_t offset = 0u;
 
@@ -144,8 +137,7 @@ void tamga_sha512_update(TamgaSha512 *ctx, const void *data, size_t len)
     }
 }
 
-void tamga_sha512_final(TamgaSha512 *ctx, unsigned char out[TAMGA_SHA512_DIGEST_LEN])
-{
+void tamga_sha512_final(TamgaSha512 *ctx, unsigned char out[TAMGA_SHA512_DIGEST_LEN]) {
     uint64_t bit_len;
     unsigned int i;
 
@@ -181,8 +173,7 @@ void tamga_sha512_final(TamgaSha512 *ctx, unsigned char out[TAMGA_SHA512_DIGEST_
     tamga_secure_zero(ctx, sizeof(*ctx));
 }
 
-void tamga_sha512(const void *data, size_t len, unsigned char out[TAMGA_SHA512_DIGEST_LEN])
-{
+void tamga_sha512(const void *data, size_t len, unsigned char out[TAMGA_SHA512_DIGEST_LEN]) {
     TamgaSha512 ctx;
     tamga_sha512_init(&ctx);
     tamga_sha512_update(&ctx, data, len);

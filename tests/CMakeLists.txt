@@ -26,14 +26,12 @@ function(tamga_add_test NAME SOURCE)
 endfunction()
 
 add_subdirectory(unit)
+add_subdirectory(integration)
 
 # tests/c/ is the pre-1.3 C ABI harness. Its source files are kept
 # byte-for-byte unmodified across the native rewrite on purpose: if they still
-# compile and pass, the ABI genuinely did not break. It is wired in once the
-# public entry points exist.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/c/CMakeLists.txt" AND TAMGA_PUBLIC_API_READY)
-    add_subdirectory(c)
-endif()
+# compile and pass, the ABI genuinely did not break.
+add_subdirectory(c)
 
 if(TAMGA_C_ENABLE_FUZZ)
     add_subdirectory(fuzz)

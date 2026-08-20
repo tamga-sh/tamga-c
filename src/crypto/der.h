@@ -22,12 +22,12 @@
 
 #include "tamga_compat.h"
 
-#define TAMGA_DER_INTEGER      0x02u
-#define TAMGA_DER_BIT_STRING   0x03u
+#define TAMGA_DER_INTEGER 0x02u
+#define TAMGA_DER_BIT_STRING 0x03u
 #define TAMGA_DER_OCTET_STRING 0x04u
-#define TAMGA_DER_NULL         0x05u
-#define TAMGA_DER_OID          0x06u
-#define TAMGA_DER_SEQUENCE     0x30u
+#define TAMGA_DER_NULL 0x05u
+#define TAMGA_DER_OID 0x06u
+#define TAMGA_DER_SEQUENCE 0x30u
 
 typedef struct TamgaDer {
     const unsigned char *data;

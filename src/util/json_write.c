@@ -31,8 +31,7 @@
 
 static void tamga_json_write_value(const TamgaJson *value, TamgaBuf *out, bool canonical);
 
-static void tamga_json_write_escaped(const char *bytes, size_t len, TamgaBuf *out)
-{
+static void tamga_json_write_escaped(const char *bytes, size_t len, TamgaBuf *out) {
     size_t i;
 
     tamga_buf_append_byte(out, '"');
@@ -99,8 +98,7 @@ static void tamga_json_write_escaped(const char *bytes, size_t len, TamgaBuf *ou
  * strings, booleans, null, arrays and objects are exact. json.h documents
  * non-integer floats inside a signed `dataset` as a compatibility hazard.
  */
-static void tamga_json_write_double(double value, TamgaBuf *out)
-{
+static void tamga_json_write_double(double value, TamgaBuf *out) {
     char scratch[64];
     char digits[32];
     int precision;
@@ -220,8 +218,7 @@ static void tamga_json_write_double(double value, TamgaBuf *out)
  * memcmp on char* would be signed-char-dependent on some platforms, so the
  * comparison is done on unsigned char explicitly.
  */
-static int tamga_json_key_cmp(const char *a, const char *b)
-{
+static int tamga_json_key_cmp(const char *a, const char *b) {
     const unsigned char *ua = (const unsigned char *)a;
     const unsigned char *ub = (const unsigned char *)b;
     size_t i = 0u;
@@ -242,8 +239,7 @@ static int tamga_json_key_cmp(const char *a, const char *b)
  * insertion sort because a caller-supplied `dataset` object has no bounded
  * size, and rather than qsort because qsort's comparator cannot portably
  * carry the object it is sorting against. */
-static bool tamga_json_sort_keys(const TamgaJson *object, size_t count, size_t **out_order)
-{
+static bool tamga_json_sort_keys(const TamgaJson *object, size_t count, size_t **out_order) {
     size_t *order;
     size_t *scratch;
     size_t width;
@@ -303,8 +299,7 @@ static bool tamga_json_sort_keys(const TamgaJson *object, size_t count, size_t *
     return true;
 }
 
-static void tamga_json_write_object(const TamgaJson *value, TamgaBuf *out, bool canonical)
-{
+static void tamga_json_write_object(const TamgaJson *value, TamgaBuf *out, bool canonical) {
     size_t count = tamga_json_object_len(value);
     size_t *order = NULL;
     size_t i;
@@ -341,8 +336,7 @@ static void tamga_json_write_object(const TamgaJson *value, TamgaBuf *out, bool 
     tamga_buf_append_byte(out, '}');
 }
 
-static void tamga_json_write_value(const TamgaJson *value, TamgaBuf *out, bool canonical)
-{
+static void tamga_json_write_value(const TamgaJson *value, TamgaBuf *out, bool canonical) {
     size_t i;
 
     if (value == NULL) {
@@ -407,8 +401,7 @@ static void tamga_json_write_value(const TamgaJson *value, TamgaBuf *out, bool c
     }
 }
 
-static char *tamga_json_write_impl(const TamgaJson *value, size_t *out_len, bool canonical)
-{
+static char *tamga_json_write_impl(const TamgaJson *value, size_t *out_len, bool canonical) {
     TamgaBuf buf;
     char *text;
 
@@ -419,12 +412,10 @@ static char *tamga_json_write_impl(const TamgaJson *value, size_t *out_len, bool
     return text;
 }
 
-char *tamga_json_write_canonical(const TamgaJson *value, size_t *out_len)
-{
+char *tamga_json_write_canonical(const TamgaJson *value, size_t *out_len) {
     return tamga_json_write_impl(value, out_len, true);
 }
 
-char *tamga_json_write(const TamgaJson *value, size_t *out_len)
-{
+char *tamga_json_write(const TamgaJson *value, size_t *out_len) {
     return tamga_json_write_impl(value, out_len, false);
 }

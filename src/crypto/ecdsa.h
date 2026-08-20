@@ -32,10 +32,8 @@
  *
  * `signature` is the ASN.1 DER encoding, SEQUENCE { INTEGER r, INTEGER s }.
  */
-TAMGA_NODISCARD bool tamga_ecdsa_p256_verify(const unsigned char *public_key,
-                                             size_t public_key_len,
+TAMGA_NODISCARD bool tamga_ecdsa_p256_verify(const unsigned char *public_key, size_t public_key_len,
                                              const unsigned char *message, size_t message_len,
-                                             const unsigned char *signature,
-                                             size_t signature_len);
+                                             const unsigned char *signature, size_t signature_len);
 
 #endif /* TAMGA_CRYPTO_ECDSA_H */

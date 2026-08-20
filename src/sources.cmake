@@ -9,6 +9,7 @@ set(TAMGA_SOURCES
     # --- core ---------------------------------------------------------
     src/tamga_error.c
     src/tamga_mem.c
+    src/tamga_api.c
 
     # --- utilities ----------------------------------------------------
     src/util/buf.c
@@ -43,6 +44,13 @@ set(TAMGA_SOURCES
     # --- crypto: ECDSA P-256 -------------------------------------------
     src/crypto/p256.c
     src/crypto/ecdsa.c
+
+    # --- offline verification ------------------------------------------
+    src/checkout/pem.c
+    src/checkout/cert.c
+    src/checkout/license_file.c
+    src/checkout/machine_file.c
+    src/proof.c
 )
 
 list(TRANSFORM TAMGA_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")

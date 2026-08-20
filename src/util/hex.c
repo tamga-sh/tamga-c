@@ -3,8 +3,7 @@
 static const char TAMGA_HEX_DIGITS[] = "0123456789abcdef";
 
 /* Returns 0-15, or -1 when `c` is not a hex digit. */
-static int tamga_hex_value(char c)
-{
+static int tamga_hex_value(char c) {
     if (c >= '0' && c <= '9') {
         return c - '0';
     }
@@ -17,8 +16,7 @@ static int tamga_hex_value(char c)
     return -1;
 }
 
-bool tamga_hex_decode(const char *in, size_t in_len, unsigned char *out)
-{
+bool tamga_hex_decode(const char *in, size_t in_len, unsigned char *out) {
     size_t i;
 
     if (in == NULL || out == NULL) {
@@ -38,8 +36,7 @@ bool tamga_hex_decode(const char *in, size_t in_len, unsigned char *out)
     return true;
 }
 
-void tamga_hex_encode(const unsigned char *in, size_t in_len, char *out)
-{
+void tamga_hex_encode(const unsigned char *in, size_t in_len, char *out) {
     size_t i;
 
     if (out == NULL) {

@@ -29,8 +29,7 @@
  */
 TAMGA_NODISCARD bool tamga_p256_verify(const unsigned char public_x[32],
                                        const unsigned char public_y[32],
-                                       const unsigned char digest[32],
-                                       const unsigned char r[32],
+                                       const unsigned char digest[32], const unsigned char r[32],
                                        const unsigned char s[32]);
 
 #endif /* TAMGA_CRYPTO_P256_H */

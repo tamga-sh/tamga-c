@@ -17,8 +17,7 @@
  * The conditional XOR and the conditional reduction are both done with masks
  * rather than branches, for the same reason.
  */
-static void tamga_gcm_gf_mul(unsigned char x[16], const unsigned char y[16])
-{
+static void tamga_gcm_gf_mul(unsigned char x[16], const unsigned char y[16]) {
     unsigned char z[16];
     unsigned char v[16];
     unsigned int bit;
@@ -57,8 +56,7 @@ static void tamga_gcm_gf_mul(unsigned char x[16], const unsigned char y[16])
 /* Absorbs `len` bytes into the running GHASH accumulator, zero-padding the
  * final partial block. */
 static void tamga_ghash_update(unsigned char acc[16], const unsigned char h[16],
-                               const unsigned char *data, size_t len)
-{
+                               const unsigned char *data, size_t len) {
     size_t offset = 0u;
 
     while (offset < len) {
@@ -80,8 +78,7 @@ static void tamga_ghash_update(unsigned char acc[16], const unsigned char h[16],
     }
 }
 
-static void tamga_gcm_put_u64_be(unsigned char out[8], uint64_t value)
-{
+static void tamga_gcm_put_u64_be(unsigned char out[8], uint64_t value) {
     unsigned int i;
     for (i = 0u; i < 8u; i++) {
         out[i] = (unsigned char)(value >> (56u - (8u * i)));
@@ -89,8 +86,7 @@ static void tamga_gcm_put_u64_be(unsigned char out[8], uint64_t value)
 }
 
 /* Increments the rightmost 32 bits of a counter block, per GCM's inc32. */
-static void tamga_gcm_inc32(unsigned char counter[16])
-{
+static void tamga_gcm_inc32(unsigned char counter[16]) {
     unsigned int i;
     for (i = 16u; i > 12u; i--) {
         counter[i - 1u]++;
@@ -106,13 +102,10 @@ static void tamga_gcm_inc32(unsigned char counter[16])
  * both of which are the ciphertext, so the same keystream walk serves both.
  */
 static bool tamga_gcm_core(const unsigned char key[TAMGA_AES256_KEY_LEN],
-                           const unsigned char nonce[TAMGA_GCM_NONCE_LEN],
-                           const unsigned char *aad, size_t aad_len,
-                           const unsigned char *input, size_t input_len,
-                           unsigned char *output,
-                           unsigned char tag_out[TAMGA_GCM_TAG_LEN],
-                           const unsigned char *ciphertext, size_t ciphertext_len)
-{
+                           const unsigned char nonce[TAMGA_GCM_NONCE_LEN], const unsigned char *aad,
+                           size_t aad_len, const unsigned char *input, size_t input_len,
+                           unsigned char *output, unsigned char tag_out[TAMGA_GCM_TAG_LEN],
+                           const unsigned char *ciphertext, size_t ciphertext_len) {
     TamgaAes256 aes;
     unsigned char h[16];
     unsigned char j0[16];
@@ -177,11 +170,9 @@ static bool tamga_gcm_core(const unsigned char key[TAMGA_AES256_KEY_LEN],
 }
 
 bool tamga_gcm_open(const unsigned char key[TAMGA_AES256_KEY_LEN],
-                    const unsigned char nonce[TAMGA_GCM_NONCE_LEN],
-                    const unsigned char *aad, size_t aad_len,
-                    const unsigned char *ciphertext_and_tag, size_t ct_and_tag_len,
-                    unsigned char *out, size_t *out_len)
-{
+                    const unsigned char nonce[TAMGA_GCM_NONCE_LEN], const unsigned char *aad,
+                    size_t aad_len, const unsigned char *ciphertext_and_tag, size_t ct_and_tag_len,
+                    unsigned char *out, size_t *out_len) {
     unsigned char computed_tag[TAMGA_GCM_TAG_LEN];
     size_t ciphertext_len;
     const unsigned char *tag;
@@ -222,11 +213,9 @@ bool tamga_gcm_open(const unsigned char key[TAMGA_AES256_KEY_LEN],
 }
 
 bool tamga_gcm_seal(const unsigned char key[TAMGA_AES256_KEY_LEN],
-                    const unsigned char nonce[TAMGA_GCM_NONCE_LEN],
-                    const unsigned char *aad, size_t aad_len,
-                    const unsigned char *plaintext, size_t plaintext_len,
-                    unsigned char *out, size_t *out_len)
-{
+                    const unsigned char nonce[TAMGA_GCM_NONCE_LEN], const unsigned char *aad,
+                    size_t aad_len, const unsigned char *plaintext, size_t plaintext_len,
+                    unsigned char *out, size_t *out_len) {
     if (key == NULL || nonce == NULL || out == NULL || out_len == NULL) {
         return false;
     }

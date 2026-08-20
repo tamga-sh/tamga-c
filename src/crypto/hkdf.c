@@ -12,11 +12,9 @@ static const char TAMGA_LICENSE_FILE_SALT[] = "tamga:license-file-key-v1";
 static const char TAMGA_LICENSE_FILE_INFO[] = "license-file";
 static const char TAMGA_MACHINE_FILE_SALT[] = "tamga:machine-file-key-v1";
 
-bool tamga_hkdf_sha256(const unsigned char *salt, size_t salt_len,
-                       const unsigned char *ikm, size_t ikm_len,
-                       const unsigned char *info, size_t info_len,
-                       unsigned char *out, size_t out_len)
-{
+bool tamga_hkdf_sha256(const unsigned char *salt, size_t salt_len, const unsigned char *ikm,
+                       size_t ikm_len, const unsigned char *info, size_t info_len,
+                       unsigned char *out, size_t out_len) {
     unsigned char prk[TAMGA_SHA256_DIGEST_LEN];
     unsigned char block[TAMGA_SHA256_DIGEST_LEN];
     unsigned char zero_salt[TAMGA_SHA256_DIGEST_LEN];
@@ -69,8 +67,7 @@ bool tamga_hkdf_sha256(const unsigned char *salt, size_t salt_len,
     return true;
 }
 
-bool tamga_derive_license_file_key(const char *license_key, unsigned char out[TAMGA_FILE_KEY_LEN])
-{
+bool tamga_derive_license_file_key(const char *license_key, unsigned char out[TAMGA_FILE_KEY_LEN]) {
     if (license_key == NULL || out == NULL) {
         return false;
     }
@@ -78,19 +75,16 @@ bool tamga_derive_license_file_key(const char *license_key, unsigned char out[TA
                              sizeof(TAMGA_LICENSE_FILE_SALT) - 1u,
                              (const unsigned char *)license_key, strlen(license_key),
                              (const unsigned char *)TAMGA_LICENSE_FILE_INFO,
-                             sizeof(TAMGA_LICENSE_FILE_INFO) - 1u,
-                             out, TAMGA_FILE_KEY_LEN);
+                             sizeof(TAMGA_LICENSE_FILE_INFO) - 1u, out, TAMGA_FILE_KEY_LEN);
 }
 
 bool tamga_derive_machine_file_key(const char *license_key, const char *fingerprint,
-                                   unsigned char out[TAMGA_FILE_KEY_LEN])
-{
+                                   unsigned char out[TAMGA_FILE_KEY_LEN]) {
     if (license_key == NULL || fingerprint == NULL || out == NULL) {
         return false;
     }
-    return tamga_hkdf_sha256((const unsigned char *)TAMGA_MACHINE_FILE_SALT,
-                             sizeof(TAMGA_MACHINE_FILE_SALT) - 1u,
-                             (const unsigned char *)license_key, strlen(license_key),
-                             (const unsigned char *)fingerprint, strlen(fingerprint),
-                             out, TAMGA_FILE_KEY_LEN);
+    return tamga_hkdf_sha256(
+        (const unsigned char *)TAMGA_MACHINE_FILE_SALT, sizeof(TAMGA_MACHINE_FILE_SALT) - 1u,
+        (const unsigned char *)license_key, strlen(license_key), (const unsigned char *)fingerprint,
+        strlen(fingerprint), out, TAMGA_FILE_KEY_LEN);
 }

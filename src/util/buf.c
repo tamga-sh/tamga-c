@@ -9,8 +9,7 @@
  * building one does not realloc more than once. */
 #define TAMGA_BUF_MIN_CAP ((size_t)64)
 
-void tamga_buf_init(TamgaBuf *buf)
-{
+void tamga_buf_init(TamgaBuf *buf) {
     if (buf == NULL) {
         return;
     }
@@ -20,8 +19,7 @@ void tamga_buf_init(TamgaBuf *buf)
     buf->failed = false;
 }
 
-void tamga_buf_free(TamgaBuf *buf)
-{
+void tamga_buf_free(TamgaBuf *buf) {
     if (buf == NULL) {
         return;
     }
@@ -29,8 +27,7 @@ void tamga_buf_free(TamgaBuf *buf)
     tamga_buf_init(buf);
 }
 
-bool tamga_buf_reserve(TamgaBuf *buf, size_t extra)
-{
+bool tamga_buf_reserve(TamgaBuf *buf, size_t extra) {
     size_t needed;
     size_t new_cap;
     unsigned char *grown;
@@ -76,8 +73,7 @@ bool tamga_buf_reserve(TamgaBuf *buf, size_t extra)
     return true;
 }
 
-void tamga_buf_append(TamgaBuf *buf, const void *data, size_t len)
-{
+void tamga_buf_append(TamgaBuf *buf, const void *data, size_t len) {
     if (buf == NULL || buf->failed) {
         return;
     }
@@ -95,13 +91,11 @@ void tamga_buf_append(TamgaBuf *buf, const void *data, size_t len)
     buf->len += len;
 }
 
-void tamga_buf_append_byte(TamgaBuf *buf, unsigned char byte)
-{
+void tamga_buf_append_byte(TamgaBuf *buf, unsigned char byte) {
     tamga_buf_append(buf, &byte, 1u);
 }
 
-void tamga_buf_append_str(TamgaBuf *buf, const char *str)
-{
+void tamga_buf_append_str(TamgaBuf *buf, const char *str) {
     if (str == NULL) {
         if (buf != NULL) {
             buf->failed = true;
@@ -111,8 +105,7 @@ void tamga_buf_append_str(TamgaBuf *buf, const char *str)
     tamga_buf_append(buf, str, strlen(str));
 }
 
-void tamga_buf_append_fmt(TamgaBuf *buf, const char *fmt, ...)
-{
+void tamga_buf_append_fmt(TamgaBuf *buf, const char *fmt, ...) {
     va_list args;
     va_list probe;
     int needed;
@@ -149,20 +142,17 @@ void tamga_buf_append_fmt(TamgaBuf *buf, const char *fmt, ...)
     buf->len += needed_sz;
 }
 
-bool tamga_buf_ok(const TamgaBuf *buf)
-{
+bool tamga_buf_ok(const TamgaBuf *buf) {
     return buf != NULL && !buf->failed;
 }
 
-void tamga_buf_mark_failed(TamgaBuf *buf)
-{
+void tamga_buf_mark_failed(TamgaBuf *buf) {
     if (buf != NULL) {
         buf->failed = true;
     }
 }
 
-char *tamga_buf_detach_string(TamgaBuf *buf, size_t *out_len)
-{
+char *tamga_buf_detach_string(TamgaBuf *buf, size_t *out_len) {
     char *out;
     size_t len;
 
@@ -185,8 +175,7 @@ char *tamga_buf_detach_string(TamgaBuf *buf, size_t *out_len)
     return out;
 }
 
-unsigned char *tamga_buf_detach(TamgaBuf *buf, size_t *out_len)
-{
+unsigned char *tamga_buf_detach(TamgaBuf *buf, size_t *out_len) {
     unsigned char *out;
 
     if (buf == NULL || buf->failed || out_len == NULL) {

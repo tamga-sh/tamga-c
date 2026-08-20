@@ -4,8 +4,7 @@
 #include "util/json.h"
 
 /* Parses `text`, canonicalises it, and compares against `expected`. */
-static void canonical_is(const char *text, const char *expected)
-{
+static void canonical_is(const char *text, const char *expected) {
     const char *err = NULL;
     TamgaJson *value = tamga_json_parse(text, strlen(text), &err);
     char *out;
@@ -32,8 +31,7 @@ static void canonical_is(const char *text, const char *expected)
     tamga_json_free(value);
 }
 
-static void rejects(const char *text)
-{
+static void rejects(const char *text) {
     const char *err = NULL;
     TamgaJson *value = tamga_json_parse(text, strlen(text), &err);
     if (value != NULL) {
@@ -44,13 +42,12 @@ static void rejects(const char *text)
     }
     if (err == NULL) {
         tt_failures_++;
-        (void)fprintf(stderr, "FAIL %s: rejected without an error message: %s\n",
-                      tt_current_, text);
+        (void)fprintf(stderr, "FAIL %s: rejected without an error message: %s\n", tt_current_,
+                      text);
     }
 }
 
-TT_TEST(scalars_round_trip)
-{
+TT_TEST(scalars_round_trip) {
     canonical_is("null", "null");
     canonical_is("true", "true");
     canonical_is("false", "false");
@@ -66,8 +63,7 @@ TT_TEST(scalars_round_trip)
 
 /* An integer and a float are distinct JSON texts. Writing 8 where the
  * document had 8.0 (or the reverse) changes the bytes that get signed. */
-TT_TEST(integers_and_floats_keep_their_form)
-{
+TT_TEST(integers_and_floats_keep_their_form) {
     canonical_is("8", "8");
     canonical_is("8.0", "8.0");
     canonical_is("0.5", "0.5");
@@ -85,8 +81,7 @@ TT_TEST(integers_and_floats_keep_their_form)
  * Regenerate with the oracle described in CLAUDE.md rather than by reasoning
  * about what the output "should" be.
  */
-TT_TEST(matches_serde_json_verbatim)
-{
+TT_TEST(matches_serde_json_verbatim) {
     /* numbers: notation thresholds and the explicit exponent sign */
     canonical_is("8", "8");
     canonical_is("8.0", "8.0");
@@ -140,29 +135,24 @@ TT_TEST(matches_serde_json_verbatim)
     canonical_is("\"a\\nb\"", "\"a\\nb\"");
 
     /* the offline proof payload, and the UTF-8-vs-UTF-16 ordering pair */
-    canonical_is(
-        "{\"account\":{\"id\":\"a\"},\"machine\":{\"id\":\"m\",\"fingerprint\":\"f\"},"
-        "\"dataset\":{}}",
-        "{\"account\":{\"id\":\"a\"},\"dataset\":{},"
-        "\"machine\":{\"fingerprint\":\"f\",\"id\":\"m\"}}");
+    canonical_is("{\"account\":{\"id\":\"a\"},\"machine\":{\"id\":\"m\",\"fingerprint\":\"f\"},"
+                 "\"dataset\":{}}",
+                 "{\"account\":{\"id\":\"a\"},\"dataset\":{},"
+                 "\"machine\":{\"fingerprint\":\"f\",\"id\":\"m\"}}");
     canonical_is("{\"\\ud83d\\ude00\":1,\"\\ue000\":2}",
                  "{\"\xEE\x80\x80\":2,\"\xF0\x9F\x98\x80\":1}");
 }
 
-TT_TEST(arrays_keep_document_order)
-{
+TT_TEST(arrays_keep_document_order) {
     canonical_is("[3,1,2]", "[3,1,2]");
     canonical_is("[\"b\",\"a\"]", "[\"b\",\"a\"]");
     canonical_is(" [ 1 , 2 ] ", "[1,2]");
 }
 
-TT_TEST(object_keys_sort_at_every_level)
-{
+TT_TEST(object_keys_sort_at_every_level) {
     canonical_is("{\"b\":1,\"a\":2}", "{\"a\":2,\"b\":1}");
-    canonical_is("{\"z\":{\"y\":1,\"x\":2},\"a\":3}",
-                 "{\"a\":3,\"z\":{\"x\":2,\"y\":1}}");
-    canonical_is("{\"b\":[{\"d\":1,\"c\":2}],\"a\":0}",
-                 "{\"a\":0,\"b\":[{\"c\":2,\"d\":1}]}");
+    canonical_is("{\"z\":{\"y\":1,\"x\":2},\"a\":3}", "{\"a\":3,\"z\":{\"x\":2,\"y\":1}}");
+    canonical_is("{\"b\":[{\"d\":1,\"c\":2}],\"a\":0}", "{\"a\":0,\"b\":[{\"c\":2,\"d\":1}]}");
 }
 
 /*
@@ -172,13 +162,11 @@ TT_TEST(object_keys_sort_at_every_level)
  * machine, and fingerprint before id. Reproducing the source order instead of
  * the serialized order is the single most likely way to get this wrong.
  */
-TT_TEST(reproduces_the_offline_proof_payload_ordering)
-{
-    canonical_is(
-        "{\"account\":{\"id\":\"a\"},\"machine\":{\"id\":\"m\",\"fingerprint\":\"f\"},"
-        "\"dataset\":{}}",
-        "{\"account\":{\"id\":\"a\"},\"dataset\":{},"
-        "\"machine\":{\"fingerprint\":\"f\",\"id\":\"m\"}}");
+TT_TEST(reproduces_the_offline_proof_payload_ordering) {
+    canonical_is("{\"account\":{\"id\":\"a\"},\"machine\":{\"id\":\"m\",\"fingerprint\":\"f\"},"
+                 "\"dataset\":{}}",
+                 "{\"account\":{\"id\":\"a\"},\"dataset\":{},"
+                 "\"machine\":{\"fingerprint\":\"f\",\"id\":\"m\"}}");
 }
 
 /*
@@ -193,8 +181,7 @@ TT_TEST(reproduces_the_offline_proof_payload_ordering)
  * answer here. This SDK family has already shipped the UTF-16 answer once, in
  * tamga-js.
  */
-TT_TEST(keys_sort_by_utf8_bytes_not_utf16_code_units)
-{
+TT_TEST(keys_sort_by_utf8_bytes_not_utf16_code_units) {
     canonical_is("{\"\xF0\x90\x80\x80\":1,\"\xEE\x80\x80\":2}",
                  "{\"\xEE\x80\x80\":2,\"\xF0\x90\x80\x80\":1}");
 }
@@ -202,14 +189,12 @@ TT_TEST(keys_sort_by_utf8_bytes_not_utf16_code_units)
 /* A key that is a prefix of another sorts first, matching Rust's Ord for
  * String. Comparing only the shared prefix would make the order depend on
  * whatever byte follows the end of the shorter key. */
-TT_TEST(a_prefix_key_sorts_before_its_extension)
-{
+TT_TEST(a_prefix_key_sorts_before_its_extension) {
     canonical_is("{\"ab\":1,\"a\":2}", "{\"a\":2,\"ab\":1}");
     canonical_is("{\"a\":1,\"\":2}", "{\"\":2,\"a\":1}");
 }
 
-TT_TEST(escaping_matches_serde_json)
-{
+TT_TEST(escaping_matches_serde_json) {
     canonical_is("\"a\\\"b\"", "\"a\\\"b\"");
     canonical_is("\"a\\\\b\"", "\"a\\\\b\"");
     canonical_is("\"a\\nb\"", "\"a\\nb\"");
@@ -230,58 +215,54 @@ TT_TEST(escaping_matches_serde_json)
     canonical_is("\"\\ud83d\\ude00\"", "\"\xF0\x9F\x98\x80\"");
 }
 
-TT_TEST(duplicate_keys_keep_the_last_value)
-{
+TT_TEST(duplicate_keys_keep_the_last_value) {
     /* serde_json's map insert overwrites, so the server reads the same
      * document the same way. */
     canonical_is("{\"a\":1,\"a\":2}", "{\"a\":2}");
 }
 
-TT_TEST(rejects_lenient_extensions)
-{
+TT_TEST(rejects_lenient_extensions) {
     rejects("");
     rejects("   ");
     rejects("{,}");
-    rejects("[1,]");            /* trailing comma */
-    rejects("{\"a\":1,}");      /* trailing comma */
-    rejects("{'a':1}");         /* single quotes */
-    rejects("{a:1}");           /* unquoted key */
-    rejects("// comment\n1");   /* comments */
+    rejects("[1,]");          /* trailing comma */
+    rejects("{\"a\":1,}");    /* trailing comma */
+    rejects("{'a':1}");       /* single quotes */
+    rejects("{a:1}");         /* unquoted key */
+    rejects("// comment\n1"); /* comments */
     rejects("NaN");
     rejects("Infinity");
     rejects("-Infinity");
-    rejects("01");              /* leading zero */
-    rejects("+1");              /* leading plus */
-    rejects(".5");              /* no integer part */
-    rejects("1.");              /* no fraction digits */
-    rejects("1e");              /* no exponent digits */
-    rejects("1 2");             /* trailing content */
+    rejects("01");  /* leading zero */
+    rejects("+1");  /* leading plus */
+    rejects(".5");  /* no integer part */
+    rejects("1.");  /* no fraction digits */
+    rejects("1e");  /* no exponent digits */
+    rejects("1 2"); /* trailing content */
     rejects("{} {}");
     rejects("\"unterminated");
     rejects("[1,2");
-    rejects("{\"a\" 1}");       /* missing colon */
+    rejects("{\"a\" 1}"); /* missing colon */
     rejects("tru");
 }
 
-TT_TEST(rejects_malformed_unicode)
-{
-    rejects("\"\\ud800\"");           /* lone high surrogate */
-    rejects("\"\\udc00\"");           /* lone low surrogate */
-    rejects("\"\\ud800\\ud800\"");    /* high followed by high */
-    rejects("\"\\u00\"");             /* short escape */
-    rejects("\"\\q\"");               /* unknown escape */
-    rejects("\"\xC3\"");              /* truncated UTF-8 sequence */
-    rejects("\"\xC0\xAF\"");          /* overlong encoding of '/' */
-    rejects("\"\xED\xA0\x80\"");      /* surrogate encoded directly in UTF-8 */
-    rejects("\"\xF5\x80\x80\x80\"");  /* above U+10FFFF */
-    rejects("\"\x01\"");              /* unescaped control character */
+TT_TEST(rejects_malformed_unicode) {
+    rejects("\"\\ud800\"");          /* lone high surrogate */
+    rejects("\"\\udc00\"");          /* lone low surrogate */
+    rejects("\"\\ud800\\ud800\"");   /* high followed by high */
+    rejects("\"\\u00\"");            /* short escape */
+    rejects("\"\\q\"");              /* unknown escape */
+    rejects("\"\xC3\"");             /* truncated UTF-8 sequence */
+    rejects("\"\xC0\xAF\"");         /* overlong encoding of '/' */
+    rejects("\"\xED\xA0\x80\"");     /* surrogate encoded directly in UTF-8 */
+    rejects("\"\xF5\x80\x80\x80\""); /* above U+10FFFF */
+    rejects("\"\x01\"");             /* unescaped control character */
 }
 
 /* Without a depth cap, a document made of nothing but opening brackets
  * recurses until the C stack runs out -- a crash, from a file the caller has
  * every reason to treat as untrusted. */
-TT_TEST(rejects_excessive_nesting)
-{
+TT_TEST(rejects_excessive_nesting) {
     char deep[(TAMGA_JSON_MAX_DEPTH * 2) + 8];
     size_t i;
     size_t limit = TAMGA_JSON_MAX_DEPTH + 2u;
@@ -296,8 +277,7 @@ TT_TEST(rejects_excessive_nesting)
     rejects(deep);
 }
 
-TT_TEST(accepts_nesting_up_to_the_limit)
-{
+TT_TEST(accepts_nesting_up_to_the_limit) {
     char deep[(TAMGA_JSON_MAX_DEPTH * 2) + 8];
     const char *err = NULL;
     TamgaJson *value;
@@ -317,8 +297,7 @@ TT_TEST(accepts_nesting_up_to_the_limit)
     tamga_json_free(value);
 }
 
-TT_TEST(accessors_read_the_tree)
-{
+TT_TEST(accessors_read_the_tree) {
     const char *text = "{\"n\":7,\"s\":\"x\",\"b\":true,\"a\":[1,2],\"o\":{\"k\":null}}";
     const char *err = NULL;
     TamgaJson *root = tamga_json_parse(text, strlen(text), &err);
@@ -333,15 +312,13 @@ TT_TEST(accessors_read_the_tree)
     TT_ASSERT_EQ_STR(tamga_json_as_string(tamga_json_object_get(root, "s"), NULL), "x");
     TT_ASSERT(tamga_json_bool_or(tamga_json_object_get(root, "b"), false));
     TT_ASSERT_EQ_SIZE(tamga_json_array_len(tamga_json_object_get(root, "a")), 2u);
-    TT_ASSERT(tamga_json_is_null(
-        tamga_json_object_get(tamga_json_object_get(root, "o"), "k")));
+    TT_ASSERT(tamga_json_is_null(tamga_json_object_get(tamga_json_object_get(root, "o"), "k")));
     TT_ASSERT_NULL(tamga_json_object_get(root, "missing"));
 
     tamga_json_free(root);
 }
 
-TT_TEST(an_integral_double_reads_as_an_int_but_writes_as_a_float)
-{
+TT_TEST(an_integral_double_reads_as_an_int_but_writes_as_a_float) {
     const char *err = NULL;
     TamgaJson *value = tamga_json_parse("8.0", 3u, &err);
     int64_t number = 0;
@@ -357,8 +334,7 @@ TT_TEST(an_integral_double_reads_as_an_int_but_writes_as_a_float)
     tamga_json_free(value);
 }
 
-TT_TEST(builders_produce_the_same_bytes_as_the_parser)
-{
+TT_TEST(builders_produce_the_same_bytes_as_the_parser) {
     TamgaJson *root = tamga_json_new_object();
     TamgaJson *inner = tamga_json_new_object();
     char *out;
@@ -377,8 +353,7 @@ TT_TEST(builders_produce_the_same_bytes_as_the_parser)
     tamga_json_free(root);
 }
 
-TT_TEST(the_compact_writer_preserves_insertion_order)
-{
+TT_TEST(the_compact_writer_preserves_insertion_order) {
     const char *text = "{\"b\":1,\"a\":2}";
     const char *err = NULL;
     TamgaJson *value = tamga_json_parse(text, strlen(text), &err);
@@ -392,8 +367,7 @@ TT_TEST(the_compact_writer_preserves_insertion_order)
     tamga_json_free(value);
 }
 
-TT_TEST(clone_is_independent_of_its_source)
-{
+TT_TEST(clone_is_independent_of_its_source) {
     const char *text = "{\"a\":[1,{\"b\":\"c\"}]}";
     const char *err = NULL;
     TamgaJson *value = tamga_json_parse(text, strlen(text), &err);
@@ -422,8 +396,7 @@ TT_TEST(clone_is_independent_of_its_source)
 
 /* Ownership of the inserted value transfers unconditionally, including on
  * failure -- a caller that had to free it only on some paths would leak. */
-TT_TEST(failed_inserts_still_consume_their_argument)
-{
+TT_TEST(failed_inserts_still_consume_their_argument) {
     TamgaJson *array = tamga_json_new_array();
     TT_ASSERT_NOT_NULL(array);
     TT_ASSERT_FALSE(tamga_json_object_set(array, "k", tamga_json_new_int(1)));
@@ -431,8 +404,7 @@ TT_TEST(failed_inserts_still_consume_their_argument)
     tamga_json_free(array);
 }
 
-int main(void)
-{
+int main(void) {
     TT_RUN(scalars_round_trip);
     TT_RUN(integers_and_floats_keep_their_form);
     TT_RUN(matches_serde_json_verbatim);

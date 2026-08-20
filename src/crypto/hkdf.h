@@ -38,8 +38,7 @@ TAMGA_NODISCARD bool tamga_derive_license_file_key(const char *license_key,
                                                    unsigned char out[TAMGA_FILE_KEY_LEN]);
 
 /** Machine-file AES key. Both arguments are required. */
-TAMGA_NODISCARD bool tamga_derive_machine_file_key(const char *license_key,
-                                                   const char *fingerprint,
+TAMGA_NODISCARD bool tamga_derive_machine_file_key(const char *license_key, const char *fingerprint,
                                                    unsigned char out[TAMGA_FILE_KEY_LEN]);
 
 #endif /* TAMGA_CRYPTO_HKDF_H */

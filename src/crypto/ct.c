@@ -1,7 +1,6 @@
 #include "crypto/ct.h"
 
-bool tamga_ct_memeq(const void *a, const void *b, size_t len)
-{
+bool tamga_ct_memeq(const void *a, const void *b, size_t len) {
     const unsigned char *pa = (const unsigned char *)a;
     const unsigned char *pb = (const unsigned char *)b;
     unsigned char diff = 0u;

@@ -11,7 +11,7 @@
 #include <stdint.h>
 
 #define TAMGA_SHA256_DIGEST_LEN 32u
-#define TAMGA_SHA256_BLOCK_LEN  64u
+#define TAMGA_SHA256_BLOCK_LEN 64u
 
 typedef struct TamgaSha256 {
     uint32_t state[8];

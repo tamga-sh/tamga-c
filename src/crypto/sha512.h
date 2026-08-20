@@ -11,7 +11,7 @@
 #include <stdint.h>
 
 #define TAMGA_SHA512_DIGEST_LEN 64u
-#define TAMGA_SHA512_BLOCK_LEN  128u
+#define TAMGA_SHA512_BLOCK_LEN 128u
 
 typedef struct TamgaSha512 {
     uint64_t state[8];

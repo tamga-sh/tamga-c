@@ -24,7 +24,7 @@
 #include "tamga_compat.h"
 
 #define TAMGA_GCM_NONCE_LEN 12u
-#define TAMGA_GCM_TAG_LEN   16u
+#define TAMGA_GCM_TAG_LEN 16u
 
 /**
  * Decrypts and authenticates. `ciphertext_and_tag` is the ciphertext with the
@@ -41,8 +41,7 @@
 TAMGA_NODISCARD bool tamga_gcm_open(const unsigned char key[TAMGA_AES256_KEY_LEN],
                                     const unsigned char nonce[TAMGA_GCM_NONCE_LEN],
                                     const unsigned char *aad, size_t aad_len,
-                                    const unsigned char *ciphertext_and_tag,
-                                    size_t ct_and_tag_len,
+                                    const unsigned char *ciphertext_and_tag, size_t ct_and_tag_len,
                                     unsigned char *out, size_t *out_len);
 
 /**

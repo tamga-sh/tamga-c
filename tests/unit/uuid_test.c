@@ -4,8 +4,7 @@
 
 static const char CANONICAL[] = "01926b3e-0000-7000-8000-000000000000";
 
-TT_TEST(parses_the_canonical_hyphenated_form)
-{
+TT_TEST(parses_the_canonical_hyphenated_form) {
     TamgaUuid uuid;
     char out[TAMGA_UUID_STRING_SIZE];
     TT_ASSERT(tamga_uuid_parse(CANONICAL, &uuid));
@@ -19,8 +18,7 @@ TT_TEST(parses_the_canonical_hyphenated_form)
  * uppercase input that round-tripped as uppercase would produce different
  * signed bytes than the server's and fail every verification.
  */
-TT_TEST(all_accepted_spellings_normalise_identically)
-{
+TT_TEST(all_accepted_spellings_normalise_identically) {
     char out[TAMGA_UUID_STRING_SIZE];
 
     TT_ASSERT(tamga_uuid_normalize("01926B3E-0000-7000-8000-000000000000", out));
@@ -39,8 +37,7 @@ TT_TEST(all_accepted_spellings_normalise_identically)
     TT_ASSERT_EQ_STR(out, CANONICAL);
 }
 
-TT_TEST(rejects_malformed_input)
-{
+TT_TEST(rejects_malformed_input) {
     TamgaUuid uuid;
     TT_ASSERT_FALSE(tamga_uuid_parse(NULL, &uuid));
     TT_ASSERT_FALSE(tamga_uuid_parse("", &uuid));
@@ -53,8 +50,7 @@ TT_TEST(rejects_malformed_input)
     TT_ASSERT_FALSE(tamga_uuid_parse("{01926b3e-0000-7000-8000-000000000000", &uuid));
 }
 
-TT_TEST(round_trips_every_byte_position)
-{
+TT_TEST(round_trips_every_byte_position) {
     TamgaUuid uuid;
     char out[TAMGA_UUID_STRING_SIZE];
     TT_ASSERT(tamga_uuid_parse("00112233-4455-6677-8899-aabbccddeeff", &uuid));
@@ -67,8 +63,7 @@ TT_TEST(round_trips_every_byte_position)
     TT_ASSERT_EQ_STR(out, "00112233-4455-6677-8899-aabbccddeeff");
 }
 
-int main(void)
-{
+int main(void) {
     TT_RUN(parses_the_canonical_hyphenated_form);
     TT_RUN(all_accepted_spellings_normalise_identically);
     TT_RUN(rejects_malformed_input);

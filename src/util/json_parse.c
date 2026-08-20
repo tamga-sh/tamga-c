@@ -32,27 +32,23 @@ typedef struct TamgaJsonParser {
 
 static TamgaJson *tamga_json_parse_value(TamgaJsonParser *p);
 
-static void tamga_json_fail(TamgaJsonParser *p, const char *message)
-{
+static void tamga_json_fail(TamgaJsonParser *p, const char *message) {
     if (p->error == NULL) {
         p->error = message;
     }
 }
 
-static bool tamga_json_at_end(const TamgaJsonParser *p)
-{
+static bool tamga_json_at_end(const TamgaJsonParser *p) {
     return p->pos >= p->len;
 }
 
-static char tamga_json_peek(const TamgaJsonParser *p)
-{
+static char tamga_json_peek(const TamgaJsonParser *p) {
     return tamga_json_at_end(p) ? '\0' : p->text[p->pos];
 }
 
 /* Only the four characters RFC 8259 calls whitespace. Notably not vertical
  * tab or form feed, which some parsers accept. */
-static void tamga_json_skip_ws(TamgaJsonParser *p)
-{
+static void tamga_json_skip_ws(TamgaJsonParser *p) {
     while (!tamga_json_at_end(p)) {
         char c = p->text[p->pos];
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
@@ -63,8 +59,7 @@ static void tamga_json_skip_ws(TamgaJsonParser *p)
     }
 }
 
-static bool tamga_json_match_literal(TamgaJsonParser *p, const char *literal)
-{
+static bool tamga_json_match_literal(TamgaJsonParser *p, const char *literal) {
     size_t n = strlen(literal);
     if ((p->len - p->pos) < n) {
         return false;
@@ -85,8 +80,7 @@ static bool tamga_json_match_literal(TamgaJsonParser *p, const char *literal)
  * all three let two implementations disagree about the bytes of "the same"
  * string.
  */
-static size_t tamga_utf8_sequence_len(const unsigned char *text, size_t available)
-{
+static size_t tamga_utf8_sequence_len(const unsigned char *text, size_t available) {
     unsigned char b0;
 
     if (available == 0u) {
@@ -133,8 +127,7 @@ static size_t tamga_utf8_sequence_len(const unsigned char *text, size_t availabl
     return 0u;
 }
 
-static void tamga_utf8_encode(uint32_t codepoint, TamgaBuf *out)
-{
+static void tamga_utf8_encode(uint32_t codepoint, TamgaBuf *out) {
     if (codepoint < 0x80u) {
         tamga_buf_append_byte(out, (unsigned char)codepoint);
     } else if (codepoint < 0x800u) {
@@ -152,8 +145,7 @@ static void tamga_utf8_encode(uint32_t codepoint, TamgaBuf *out)
     }
 }
 
-static bool tamga_json_read_hex4(TamgaJsonParser *p, uint32_t *out)
-{
+static bool tamga_json_read_hex4(TamgaJsonParser *p, uint32_t *out) {
     uint32_t value = 0u;
     size_t i;
 
@@ -183,8 +175,7 @@ static bool tamga_json_read_hex4(TamgaJsonParser *p, uint32_t *out)
 
 /* Parses a string token (the opening quote must be the current character)
  * into `out`, leaving the parser just past the closing quote. */
-static bool tamga_json_parse_string_into(TamgaJsonParser *p, TamgaBuf *out)
-{
+static bool tamga_json_parse_string_into(TamgaJsonParser *p, TamgaBuf *out) {
     if (tamga_json_peek(p) != '"') {
         tamga_json_fail(p, "expected a string");
         return false;
@@ -215,14 +206,30 @@ static bool tamga_json_parse_string_into(TamgaJsonParser *p, TamgaBuf *out)
             esc = p->text[p->pos];
             p->pos++;
             switch (esc) {
-            case '"':  tamga_buf_append_byte(out, '"');  break;
-            case '\\': tamga_buf_append_byte(out, '\\'); break;
-            case '/':  tamga_buf_append_byte(out, '/');  break;
-            case 'b':  tamga_buf_append_byte(out, '\b'); break;
-            case 'f':  tamga_buf_append_byte(out, '\f'); break;
-            case 'n':  tamga_buf_append_byte(out, '\n'); break;
-            case 'r':  tamga_buf_append_byte(out, '\r'); break;
-            case 't':  tamga_buf_append_byte(out, '\t'); break;
+            case '"':
+                tamga_buf_append_byte(out, '"');
+                break;
+            case '\\':
+                tamga_buf_append_byte(out, '\\');
+                break;
+            case '/':
+                tamga_buf_append_byte(out, '/');
+                break;
+            case 'b':
+                tamga_buf_append_byte(out, '\b');
+                break;
+            case 'f':
+                tamga_buf_append_byte(out, '\f');
+                break;
+            case 'n':
+                tamga_buf_append_byte(out, '\n');
+                break;
+            case 'r':
+                tamga_buf_append_byte(out, '\r');
+                break;
+            case 't':
+                tamga_buf_append_byte(out, '\t');
+                break;
             case 'u': {
                 uint32_t unit;
                 if (!tamga_json_read_hex4(p, &unit)) {
@@ -270,8 +277,8 @@ static bool tamga_json_parse_string_into(TamgaJsonParser *p, TamgaBuf *out)
         }
 
         {
-            size_t seq = tamga_utf8_sequence_len((const unsigned char *)&p->text[p->pos],
-                                                 p->len - p->pos);
+            size_t seq =
+                tamga_utf8_sequence_len((const unsigned char *)&p->text[p->pos], p->len - p->pos);
             if (seq == 0u) {
                 tamga_json_fail(p, "invalid UTF-8 in string");
                 return false;
@@ -284,8 +291,7 @@ static bool tamga_json_parse_string_into(TamgaJsonParser *p, TamgaBuf *out)
 
 /* --- numbers ------------------------------------------------------------ */
 
-static TamgaJson *tamga_json_parse_number(TamgaJsonParser *p)
-{
+static TamgaJson *tamga_json_parse_number(TamgaJsonParser *p) {
     size_t start = p->pos;
     size_t token_len;
     bool is_integer = true;
@@ -372,8 +378,7 @@ static TamgaJson *tamga_json_parse_number(TamgaJsonParser *p)
 
 /* --- composites --------------------------------------------------------- */
 
-static TamgaJson *tamga_json_parse_array(TamgaJsonParser *p)
-{
+static TamgaJson *tamga_json_parse_array(TamgaJsonParser *p) {
     TamgaJson *array = tamga_json_new_array();
 
     if (array == NULL) {
@@ -417,8 +422,7 @@ static TamgaJson *tamga_json_parse_array(TamgaJsonParser *p)
     }
 }
 
-static TamgaJson *tamga_json_parse_object(TamgaJsonParser *p)
-{
+static TamgaJson *tamga_json_parse_object(TamgaJsonParser *p) {
     TamgaJson *object = tamga_json_new_object();
 
     if (object == NULL) {
@@ -495,8 +499,7 @@ static TamgaJson *tamga_json_parse_object(TamgaJsonParser *p)
     }
 }
 
-static TamgaJson *tamga_json_parse_value(TamgaJsonParser *p)
-{
+static TamgaJson *tamga_json_parse_value(TamgaJsonParser *p) {
     TamgaJson *value = NULL;
     char c;
 
@@ -572,8 +575,7 @@ static TamgaJson *tamga_json_parse_value(TamgaJsonParser *p)
     return value;
 }
 
-TamgaJson *tamga_json_parse(const char *text, size_t len, const char **error_out)
-{
+TamgaJson *tamga_json_parse(const char *text, size_t len, const char **error_out) {
     TamgaJsonParser parser;
     TamgaJson *value;
 

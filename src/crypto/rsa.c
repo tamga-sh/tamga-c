@@ -9,18 +9,16 @@
 #include "tamga_mem.h"
 
 /* 1.2.840.113549.1.1.1 rsaEncryption */
-static const unsigned char TAMGA_OID_RSA_ENCRYPTION[] = {
-    0x2au, 0x86u, 0x48u, 0x86u, 0xf7u, 0x0du, 0x01u, 0x01u, 0x01u
-};
+static const unsigned char TAMGA_OID_RSA_ENCRYPTION[] = {0x2au, 0x86u, 0x48u, 0x86u, 0xf7u,
+                                                         0x0du, 0x01u, 0x01u, 0x01u};
 
 /* The fixed DigestInfo prefix for SHA-256: SEQUENCE { SEQUENCE { OID
  * 2.16.840.1.101.3.4.2.1, NULL }, OCTET STRING (32) }. Kept as literal bytes
  * because it is a constant, and because building it dynamically would mean
  * writing a DER *encoder* for one value. */
 static const unsigned char TAMGA_SHA256_DIGEST_INFO_PREFIX[] = {
-    0x30u, 0x31u, 0x30u, 0x0du, 0x06u, 0x09u, 0x60u, 0x86u, 0x48u,
-    0x01u, 0x65u, 0x03u, 0x04u, 0x02u, 0x01u, 0x05u, 0x00u, 0x04u, 0x20u
-};
+    0x30u, 0x31u, 0x30u, 0x0du, 0x06u, 0x09u, 0x60u, 0x86u, 0x48u, 0x01u,
+    0x65u, 0x03u, 0x04u, 0x02u, 0x01u, 0x05u, 0x00u, 0x04u, 0x20u};
 
 #define TAMGA_RSA_MIN_MODULUS_BYTES 256u  /* 2048 bits */
 #define TAMGA_RSA_MAX_MODULUS_BYTES 1024u /* 8192 bits */
@@ -32,42 +30,101 @@ typedef struct TamgaRsaPublicKey {
     size_t exponent_len;
 } TamgaRsaPublicKey;
 
+/* Reads SEQUENCE { INTEGER n, INTEGER e } and validates the key parameters. */
+static bool tamga_rsa_read_rsa_public_key(const unsigned char *der, size_t der_len,
+                                          TamgaRsaPublicKey *key) {
+    TamgaDer reader;
+    const unsigned char *sequence = NULL;
+    size_t sequence_len = 0u;
+
+    tamga_der_init(&reader, der, der_len);
+    if (!tamga_der_expect(&reader, TAMGA_DER_SEQUENCE, &sequence, &sequence_len)) {
+        return false;
+    }
+    if (!tamga_der_at_end(&reader)) {
+        return false;
+    }
+
+    tamga_der_init(&reader, sequence, sequence_len);
+    if (!tamga_der_read_unsigned(&reader, &key->modulus, &key->modulus_len)) {
+        return false;
+    }
+    if (!tamga_der_read_unsigned(&reader, &key->exponent, &key->exponent_len)) {
+        return false;
+    }
+    if (!tamga_der_at_end(&reader)) {
+        return false;
+    }
+
+    if (key->modulus_len < TAMGA_RSA_MIN_MODULUS_BYTES ||
+        key->modulus_len > TAMGA_RSA_MAX_MODULUS_BYTES) {
+        return false;
+    }
+    /* The top bit of a normalised RSA modulus is set; tamga_bn_modexp
+     * requires it, and a modulus without it is not the size it claims. */
+    if ((key->modulus[0] & 0x80u) == 0u) {
+        return false;
+    }
+    /* e = 1 would make the signature equal to the padded block, so anyone
+     * could "sign". e must also be odd to be a usable RSA exponent. */
+    if (key->exponent_len == 0u || key->exponent_len > 8u) {
+        return false;
+    }
+    if ((key->exponent[key->exponent_len - 1u] & 1u) == 0u) {
+        return false;
+    }
+    if (key->exponent_len == 1u && key->exponent[0] <= 1u) {
+        return false;
+    }
+    return true;
+}
+
 /*
- * Walks a SubjectPublicKeyInfo and extracts (n, e).
+ * Extracts (n, e) from either DER encoding an RSA public key comes in.
  *
- * The algorithm OID is checked, not skipped: a key that declares itself to be
- * something other than rsaEncryption must not be fed to RSA verification just
- * because its bit string happens to parse.
+ * Both are accepted because the fleet uses both. The Tamga server and
+ * tamga-rust exchange PKCS#1 RSAPublicKey -- SEQUENCE { INTEGER n,
+ * INTEGER e } -- which is what aws-lc-rs's RSA verification API takes,
+ * notwithstanding tamga-rust's doc comment describing it as SPKI. Tooling
+ * built around OpenSSL hands out SubjectPublicKeyInfo instead. An integrator
+ * should not have to know which one they have.
+ *
+ * The two are unambiguous to tell apart -- SPKI's first inner element is a
+ * SEQUENCE (the algorithm identifier), RSAPublicKey's is an INTEGER -- so
+ * accepting both adds no leniency about what a given blob means. When it is
+ * SPKI, the algorithm OID is checked rather than skipped, so an EC key cannot
+ * be fed to the RSA verifier just because its bit string parses.
  */
-static bool tamga_rsa_parse_spki(const unsigned char *spki, size_t spki_len,
-                                 TamgaRsaPublicKey *key)
-{
+static bool tamga_rsa_parse_public_key(const unsigned char *der, size_t der_len,
+                                       TamgaRsaPublicKey *key) {
     TamgaDer outer;
     TamgaDer inner;
     TamgaDer algorithm;
-    TamgaDer key_reader;
     const unsigned char *sequence = NULL;
     size_t sequence_len = 0u;
     const unsigned char *algorithm_content = NULL;
     size_t algorithm_len = 0u;
     const unsigned char *bit_string = NULL;
     size_t bit_string_len = 0u;
-    const unsigned char *rsa_key = NULL;
-    size_t rsa_key_len = 0u;
 
-    if (spki == NULL || key == NULL) {
+    if (der == NULL || key == NULL) {
         return false;
     }
 
-    tamga_der_init(&outer, spki, spki_len);
+    tamga_der_init(&outer, der, der_len);
     if (!tamga_der_expect(&outer, TAMGA_DER_SEQUENCE, &sequence, &sequence_len)) {
         return false;
     }
     if (!tamga_der_at_end(&outer)) {
-        return false; /* trailing bytes after the SPKI */
+        return false; /* trailing bytes after the key */
     }
 
+    /* Peek at the first inner element to decide which encoding this is. */
     tamga_der_init(&inner, sequence, sequence_len);
+    if (sequence_len > 0u && sequence[0] == (unsigned char)TAMGA_DER_INTEGER) {
+        return tamga_rsa_read_rsa_public_key(der, der_len, key);
+    }
+
     if (!tamga_der_expect(&inner, TAMGA_DER_SEQUENCE, &algorithm_content, &algorithm_len)) {
         return false;
     }
@@ -96,66 +153,25 @@ static bool tamga_rsa_parse_spki(const unsigned char *spki, size_t spki_len,
         return false;
     }
 
-    tamga_der_init(&key_reader, bit_string, bit_string_len);
-    if (!tamga_der_expect(&key_reader, TAMGA_DER_SEQUENCE, &rsa_key, &rsa_key_len)) {
-        return false;
-    }
-    if (!tamga_der_at_end(&key_reader)) {
-        return false;
-    }
-
-    tamga_der_init(&key_reader, rsa_key, rsa_key_len);
-    if (!tamga_der_read_unsigned(&key_reader, &key->modulus, &key->modulus_len)) {
-        return false;
-    }
-    if (!tamga_der_read_unsigned(&key_reader, &key->exponent, &key->exponent_len)) {
-        return false;
-    }
-    if (!tamga_der_at_end(&key_reader)) {
-        return false;
-    }
-
-    if (key->modulus_len < TAMGA_RSA_MIN_MODULUS_BYTES ||
-        key->modulus_len > TAMGA_RSA_MAX_MODULUS_BYTES) {
-        return false;
-    }
-    /* The top bit of a normalised RSA modulus is set; tamga_bn_modexp
-     * requires it, and a modulus without it is not the size it claims. */
-    if ((key->modulus[0] & 0x80u) == 0u) {
-        return false;
-    }
-    /* e = 1 would make the signature equal to the padded block, so anyone
-     * could "sign". e must also be odd to be a usable RSA exponent. */
-    if (key->exponent_len == 0u || key->exponent_len > 8u) {
-        return false;
-    }
-    if ((key->exponent[key->exponent_len - 1u] & 1u) == 0u) {
-        return false;
-    }
-    if (key->exponent_len == 1u && key->exponent[0] <= 1u) {
-        return false;
-    }
-    return true;
+    return tamga_rsa_read_rsa_public_key(bit_string, bit_string_len, key);
 }
 
 /* s^e mod n, with the result left-padded to the modulus width. */
 static bool tamga_rsa_public_op(const TamgaRsaPublicKey *key, const unsigned char *signature,
-                                size_t signature_len, unsigned char *out)
-{
+                                size_t signature_len, unsigned char *out) {
     /* RFC 8017: the signature must be exactly the modulus width. A shorter
      * one is not "the same number with leading zeros" as far as this check is
      * concerned -- it is a malformed signature. */
     if (signature_len != key->modulus_len) {
         return false;
     }
-    return tamga_bn_modexp(signature, key->modulus, key->modulus_len,
-                           key->exponent, key->exponent_len, out);
+    return tamga_bn_modexp(signature, key->modulus, key->modulus_len, key->exponent,
+                           key->exponent_len, out);
 }
 
 bool tamga_rsa_verify_pkcs1_sha256(const unsigned char *spki, size_t spki_len,
                                    const unsigned char *message, size_t message_len,
-                                   const unsigned char *signature, size_t signature_len)
-{
+                                   const unsigned char *signature, size_t signature_len) {
     TamgaRsaPublicKey key;
     unsigned char recovered[TAMGA_RSA_MAX_MODULUS_BYTES];
     unsigned char expected[TAMGA_RSA_MAX_MODULUS_BYTES];
@@ -168,7 +184,7 @@ bool tamga_rsa_verify_pkcs1_sha256(const unsigned char *spki, size_t spki_len,
     if (message == NULL && message_len > 0u) {
         return false;
     }
-    if (signature == NULL || !tamga_rsa_parse_spki(spki, spki_len, &key)) {
+    if (signature == NULL || !tamga_rsa_parse_public_key(spki, spki_len, &key)) {
         return false;
     }
     if (!tamga_rsa_public_op(&key, signature, signature_len, recovered)) {
@@ -211,9 +227,8 @@ bool tamga_rsa_verify_pkcs1_sha256(const unsigned char *spki, size_t spki_len,
 }
 
 /* MGF1 with SHA-256, per RFC 8017 appendix B.2.1. */
-static void tamga_mgf1_sha256(const unsigned char *seed, size_t seed_len,
-                              unsigned char *mask, size_t mask_len)
-{
+static void tamga_mgf1_sha256(const unsigned char *seed, size_t seed_len, unsigned char *mask,
+                              size_t mask_len) {
     unsigned char counter[4];
     unsigned char block[TAMGA_SHA256_DIGEST_LEN];
     size_t produced = 0u;
@@ -245,8 +260,7 @@ static void tamga_mgf1_sha256(const unsigned char *seed, size_t seed_len,
 
 bool tamga_rsa_verify_pss_sha256(const unsigned char *spki, size_t spki_len,
                                  const unsigned char *message, size_t message_len,
-                                 const unsigned char *signature, size_t signature_len)
-{
+                                 const unsigned char *signature, size_t signature_len) {
     TamgaRsaPublicKey key;
     unsigned char encoded[TAMGA_RSA_MAX_MODULUS_BYTES];
     unsigned char db_mask[TAMGA_RSA_MAX_MODULUS_BYTES];
@@ -268,7 +282,7 @@ bool tamga_rsa_verify_pss_sha256(const unsigned char *spki, size_t spki_len,
     if (message == NULL && message_len > 0u) {
         return false;
     }
-    if (signature == NULL || !tamga_rsa_parse_spki(spki, spki_len, &key)) {
+    if (signature == NULL || !tamga_rsa_parse_public_key(spki, spki_len, &key)) {
         return false;
     }
     if (!tamga_rsa_public_op(&key, signature, signature_len, encoded)) {

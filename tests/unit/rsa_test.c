@@ -29,8 +29,7 @@ typedef struct Fixtures {
     size_t pss_len;
 } Fixtures;
 
-static bool load(Fixtures *f)
-{
+static bool load(Fixtures *f) {
     f->spki_len = tt_read_fixture("keys/rsa2048.spki.der", f->spki, sizeof(f->spki));
     f->message_len = tt_read_fixture("keys/message.txt", f->message, sizeof(f->message));
     f->pkcs1_len = tt_read_fixture("keys/sig_pkcs1.bin", f->pkcs1, sizeof(f->pkcs1));
@@ -39,50 +38,45 @@ static bool load(Fixtures *f)
            f->pkcs1_len != (size_t)-1 && f->pss_len != (size_t)-1;
 }
 
-TT_TEST(accepts_a_real_pkcs1_signature)
-{
+TT_TEST(accepts_a_real_pkcs1_signature) {
     Fixtures f;
     TT_ASSERT(load(&f));
     TT_ASSERT_EQ_SIZE(f.pkcs1_len, 256u);
-    TT_ASSERT(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len, f.message, f.message_len,
-                                            f.pkcs1, f.pkcs1_len));
+    TT_ASSERT(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len, f.message, f.message_len, f.pkcs1,
+                                            f.pkcs1_len));
 }
 
-TT_TEST(accepts_a_real_pss_signature)
-{
+TT_TEST(accepts_a_real_pss_signature) {
     Fixtures f;
     TT_ASSERT(load(&f));
     TT_ASSERT_EQ_SIZE(f.pss_len, 256u);
-    TT_ASSERT(tamga_rsa_verify_pss_sha256(f.spki, f.spki_len, f.message, f.message_len,
-                                          f.pss, f.pss_len));
+    TT_ASSERT(tamga_rsa_verify_pss_sha256(f.spki, f.spki_len, f.message, f.message_len, f.pss,
+                                          f.pss_len));
 }
 
 /* The two padding schemes are not interchangeable, and a verifier that
  * accepts either for the same key would let an attacker pick whichever is
  * easier to forge against. */
-TT_TEST(the_two_padding_schemes_do_not_cross_verify)
-{
+TT_TEST(the_two_padding_schemes_do_not_cross_verify) {
     Fixtures f;
     TT_ASSERT(load(&f));
     TT_ASSERT_FALSE(tamga_rsa_verify_pss_sha256(f.spki, f.spki_len, f.message, f.message_len,
                                                 f.pkcs1, f.pkcs1_len));
-    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len, f.message,
-                                                  f.message_len, f.pss, f.pss_len));
+    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len, f.message, f.message_len,
+                                                  f.pss, f.pss_len));
 }
 
-TT_TEST(rejects_a_tampered_message)
-{
+TT_TEST(rejects_a_tampered_message) {
     Fixtures f;
     TT_ASSERT(load(&f));
     f.message[0] ^= 0x01u;
-    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len, f.message,
-                                                  f.message_len, f.pkcs1, f.pkcs1_len));
-    TT_ASSERT_FALSE(tamga_rsa_verify_pss_sha256(f.spki, f.spki_len, f.message, f.message_len,
-                                                f.pss, f.pss_len));
+    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len, f.message, f.message_len,
+                                                  f.pkcs1, f.pkcs1_len));
+    TT_ASSERT_FALSE(tamga_rsa_verify_pss_sha256(f.spki, f.spki_len, f.message, f.message_len, f.pss,
+                                                f.pss_len));
 }
 
-TT_TEST(rejects_a_tampered_signature)
-{
+TT_TEST(rejects_a_tampered_signature) {
     Fixtures f;
     size_t positions[3];
     size_t i;
@@ -96,39 +90,36 @@ TT_TEST(rejects_a_tampered_signature)
         Fixtures local;
         TT_ASSERT(load(&local));
         local.pkcs1[positions[i]] ^= 0x01u;
-        TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(local.spki, local.spki_len,
-                                                      local.message, local.message_len,
-                                                      local.pkcs1, local.pkcs1_len));
+        TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(local.spki, local.spki_len, local.message,
+                                                      local.message_len, local.pkcs1,
+                                                      local.pkcs1_len));
         local.pss[positions[i]] ^= 0x01u;
-        TT_ASSERT_FALSE(tamga_rsa_verify_pss_sha256(local.spki, local.spki_len,
-                                                    local.message, local.message_len,
-                                                    local.pss, local.pss_len));
+        TT_ASSERT_FALSE(tamga_rsa_verify_pss_sha256(local.spki, local.spki_len, local.message,
+                                                    local.message_len, local.pss, local.pss_len));
     }
 }
 
 /* RFC 8017 requires the signature to be exactly the modulus width. Accepting
  * a shorter one -- "the same number with the leading zeros trimmed" -- would
  * make the encoding ambiguous. */
-TT_TEST(rejects_a_signature_of_the_wrong_length)
-{
+TT_TEST(rejects_a_signature_of_the_wrong_length) {
     Fixtures f;
     TT_ASSERT(load(&f));
-    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len, f.message,
-                                                  f.message_len, f.pkcs1, f.pkcs1_len - 1u));
-    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len, f.message,
-                                                  f.message_len, f.pkcs1, 0u));
+    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len, f.message, f.message_len,
+                                                  f.pkcs1, f.pkcs1_len - 1u));
+    TT_ASSERT_FALSE(
+        tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len, f.message, f.message_len, f.pkcs1, 0u));
 }
 
-TT_TEST(rejects_a_malformed_or_truncated_key)
-{
+TT_TEST(rejects_a_malformed_or_truncated_key) {
     Fixtures f;
     unsigned char corrupted[SPKI_CAP];
 
     TT_ASSERT(load(&f));
 
     /* truncated */
-    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len - 1u, f.message,
-                                                  f.message_len, f.pkcs1, f.pkcs1_len));
+    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(f.spki, f.spki_len - 1u, f.message, f.message_len,
+                                                  f.pkcs1, f.pkcs1_len));
     /* trailing garbage after a complete SPKI */
     memcpy(corrupted, f.spki, f.spki_len);
     corrupted[f.spki_len] = 0x00u;
@@ -137,13 +128,13 @@ TT_TEST(rejects_a_malformed_or_truncated_key)
     /* wrong outer tag */
     memcpy(corrupted, f.spki, f.spki_len);
     corrupted[0] = 0x31u;
-    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(corrupted, f.spki_len, f.message,
-                                                  f.message_len, f.pkcs1, f.pkcs1_len));
+    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(corrupted, f.spki_len, f.message, f.message_len,
+                                                  f.pkcs1, f.pkcs1_len));
     /* empty */
-    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(f.spki, 0u, f.message, f.message_len,
-                                                  f.pkcs1, f.pkcs1_len));
-    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(NULL, 10u, f.message, f.message_len,
-                                                  f.pkcs1, f.pkcs1_len));
+    TT_ASSERT_FALSE(
+        tamga_rsa_verify_pkcs1_sha256(f.spki, 0u, f.message, f.message_len, f.pkcs1, f.pkcs1_len));
+    TT_ASSERT_FALSE(
+        tamga_rsa_verify_pkcs1_sha256(NULL, 10u, f.message, f.message_len, f.pkcs1, f.pkcs1_len));
 }
 
 /*
@@ -151,8 +142,7 @@ TT_TEST(rejects_a_malformed_or_truncated_key)
  * bit string happens to contain parseable bytes. Checking the algorithm OID
  * rather than skipping it is what prevents that.
  */
-TT_TEST(rejects_a_key_that_declares_a_different_algorithm)
-{
+TT_TEST(rejects_a_key_that_declares_a_different_algorithm) {
     Fixtures f;
     unsigned char corrupted[SPKI_CAP];
 
@@ -164,21 +154,20 @@ TT_TEST(rejects_a_key_that_declares_a_different_algorithm)
     {
         size_t i;
         for (i = 0u; i + 9u < f.spki_len; i++) {
-            if (corrupted[i] == 0x2au && corrupted[i + 1u] == 0x86u &&
-                corrupted[i + 2u] == 0x48u && corrupted[i + 3u] == 0x86u) {
+            if (corrupted[i] == 0x2au && corrupted[i + 1u] == 0x86u && corrupted[i + 2u] == 0x48u &&
+                corrupted[i + 3u] == 0x86u) {
                 corrupted[i + 8u] ^= 0x01u;
                 break;
             }
         }
     }
-    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(corrupted, f.spki_len, f.message,
-                                                  f.message_len, f.pkcs1, f.pkcs1_len));
+    TT_ASSERT_FALSE(tamga_rsa_verify_pkcs1_sha256(corrupted, f.spki_len, f.message, f.message_len,
+                                                  f.pkcs1, f.pkcs1_len));
 }
 
 /* --- DER reader --------------------------------------------------------- */
 
-TT_TEST(der_rejects_non_minimal_lengths)
-{
+TT_TEST(der_rejects_non_minimal_lengths) {
     /* SEQUENCE with a long-form length that would fit in the short form. */
     static const unsigned char padded[] = {0x30u, 0x81u, 0x01u, 0x05u};
     /* Long-form length with a leading zero byte. */
@@ -200,8 +189,7 @@ TT_TEST(der_rejects_non_minimal_lengths)
     TT_ASSERT_FALSE(tamga_der_read(&reader, &tag, &content, &content_len));
 }
 
-TT_TEST(der_rejects_a_length_past_the_buffer)
-{
+TT_TEST(der_rejects_a_length_past_the_buffer) {
     static const unsigned char overlong[] = {0x30u, 0x7fu, 0x01u, 0x02u};
     TamgaDer reader;
     const unsigned char *content = NULL;
@@ -212,8 +200,7 @@ TT_TEST(der_rejects_a_length_past_the_buffer)
     TT_ASSERT_FALSE(tamga_der_read(&reader, &tag, &content, &content_len));
 }
 
-TT_TEST(der_reads_unsigned_integers_strictly)
-{
+TT_TEST(der_reads_unsigned_integers_strictly) {
     static const unsigned char positive[] = {0x02u, 0x01u, 0x7fu};
     static const unsigned char high_bit[] = {0x02u, 0x02u, 0x00u, 0x80u};
     static const unsigned char negative[] = {0x02u, 0x01u, 0x80u};
@@ -247,8 +234,7 @@ TT_TEST(der_reads_unsigned_integers_strictly)
     TT_ASSERT_FALSE(tamga_der_read_unsigned(&reader, &value, &value_len));
 }
 
-int main(void)
-{
+int main(void) {
     TT_RUN(accepts_a_real_pkcs1_signature);
     TT_RUN(accepts_a_real_pss_signature);
     TT_RUN(the_two_padding_schemes_do_not_cross_verify);

@@ -2,8 +2,7 @@
 
 #include <string.h>
 
-void tamga_der_init(TamgaDer *reader, const unsigned char *data, size_t len)
-{
+void tamga_der_init(TamgaDer *reader, const unsigned char *data, size_t len) {
     if (reader == NULL) {
         return;
     }
@@ -12,14 +11,12 @@ void tamga_der_init(TamgaDer *reader, const unsigned char *data, size_t len)
     reader->pos = 0u;
 }
 
-bool tamga_der_at_end(const TamgaDer *reader)
-{
+bool tamga_der_at_end(const TamgaDer *reader) {
     return reader == NULL || reader->pos >= reader->len;
 }
 
 bool tamga_der_read(TamgaDer *reader, unsigned int *tag, const unsigned char **content,
-                    size_t *content_len)
-{
+                    size_t *content_len) {
     size_t remaining;
     unsigned char first_length_byte;
     size_t length = 0u;
@@ -84,8 +81,7 @@ bool tamga_der_read(TamgaDer *reader, unsigned int *tag, const unsigned char **c
 }
 
 bool tamga_der_expect(TamgaDer *reader, unsigned int tag, const unsigned char **content,
-                      size_t *content_len)
-{
+                      size_t *content_len) {
     unsigned int actual = 0u;
     if (!tamga_der_read(reader, &actual, content, content_len)) {
         return false;
@@ -93,8 +89,7 @@ bool tamga_der_expect(TamgaDer *reader, unsigned int tag, const unsigned char **
     return actual == tag;
 }
 
-bool tamga_der_read_unsigned(TamgaDer *reader, const unsigned char **value, size_t *value_len)
-{
+bool tamga_der_read_unsigned(TamgaDer *reader, const unsigned char **value, size_t *value_len) {
     const unsigned char *content = NULL;
     size_t content_len = 0u;
 
@@ -132,8 +127,7 @@ bool tamga_der_read_unsigned(TamgaDer *reader, const unsigned char **value, size
     return true;
 }
 
-bool tamga_der_read_bit_string(TamgaDer *reader, const unsigned char **value, size_t *value_len)
-{
+bool tamga_der_read_bit_string(TamgaDer *reader, const unsigned char **value, size_t *value_len) {
     const unsigned char *content = NULL;
     size_t content_len = 0u;
 
@@ -151,8 +145,7 @@ bool tamga_der_read_bit_string(TamgaDer *reader, const unsigned char **value, si
     return true;
 }
 
-bool tamga_der_expect_oid(TamgaDer *reader, const unsigned char *expected, size_t expected_len)
-{
+bool tamga_der_expect_oid(TamgaDer *reader, const unsigned char *expected, size_t expected_len) {
     const unsigned char *content = NULL;
     size_t content_len = 0u;
 

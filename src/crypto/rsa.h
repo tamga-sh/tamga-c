@@ -11,11 +11,16 @@
  * machine offline proof -- which is always RSA-2048 PKCS#1 v1.5 / SHA-256
  * regardless of the licence's own scheme.
  *
- * Keys are supplied as raw SubjectPublicKeyInfo DER, matching the convention
- * the rest of the fleet uses. Modulus sizes from 2048 to 8192 bits are
- * accepted, which is the range the reference implementation's verifier
- * (aws-lc-rs RSA_PKCS1_2048_8192_SHA256) accepts; anything smaller is refused
- * rather than verified weakly.
+ * Keys are supplied as DER, in either of the two encodings that occur in
+ * practice: PKCS#1 RSAPublicKey -- SEQUENCE { INTEGER n, INTEGER e } -- which
+ * is what the Tamga server and tamga-rust exchange, or SubjectPublicKeyInfo,
+ * which is what OpenSSL-based tooling produces. The two are unambiguous to
+ * tell apart, so accepting both costs nothing and saves an integrator from
+ * having to know which one they hold.
+ *
+ * Modulus sizes from 2048 to 8192 bits are accepted, matching the range the
+ * reference verifier (aws-lc-rs RSA_PKCS1_2048_8192_SHA256) accepts; anything
+ * smaller is refused rather than verified weakly.
  */
 #ifndef TAMGA_CRYPTO_RSA_H
 #define TAMGA_CRYPTO_RSA_H
@@ -34,8 +39,7 @@
  * for the digest accepts blocks that were never produced by the private key.
  */
 TAMGA_NODISCARD bool tamga_rsa_verify_pkcs1_sha256(const unsigned char *spki, size_t spki_len,
-                                                   const unsigned char *message,
-                                                   size_t message_len,
+                                                   const unsigned char *message, size_t message_len,
                                                    const unsigned char *signature,
                                                    size_t signature_len);
 
@@ -45,8 +49,7 @@ TAMGA_NODISCARD bool tamga_rsa_verify_pkcs1_sha256(const unsigned char *spki, si
  * signs with and the reference verifier requires.
  */
 TAMGA_NODISCARD bool tamga_rsa_verify_pss_sha256(const unsigned char *spki, size_t spki_len,
-                                                 const unsigned char *message,
-                                                 size_t message_len,
+                                                 const unsigned char *message, size_t message_len,
                                                  const unsigned char *signature,
                                                  size_t signature_len);
 

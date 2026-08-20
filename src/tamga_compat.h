@@ -20,13 +20,13 @@
  * in the wild still need __declspec(thread), so both spellings stay.
  */
 #if defined(_MSC_VER)
-#  define TAMGA_THREAD_LOCAL __declspec(thread)
+#define TAMGA_THREAD_LOCAL __declspec(thread)
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-#  define TAMGA_THREAD_LOCAL _Thread_local
+#define TAMGA_THREAD_LOCAL _Thread_local
 #elif defined(__GNUC__) || defined(__clang__)
-#  define TAMGA_THREAD_LOCAL __thread
+#define TAMGA_THREAD_LOCAL __thread
 #else
-#  error "tamga requires thread-local storage support"
+#error "tamga requires thread-local storage support"
 #endif
 
 /* --- symbol visibility ---------------------------------------------------
@@ -38,25 +38,24 @@
  * PRIVATE while compiling the DLL) are distinct.
  */
 #if defined(_WIN32) && !defined(TAMGA_STATIC_LIB)
-#  if defined(TAMGA_BUILD_SHARED_LIB)
-#    define TAMGA_API __declspec(dllexport)
-#  else
-#    define TAMGA_API __declspec(dllimport)
-#  endif
-#elif defined(__GNUC__) || defined(__clang__)
-#  define TAMGA_API __attribute__((visibility("default")))
+#if defined(TAMGA_BUILD_SHARED_LIB)
+#define TAMGA_API __declspec(dllexport)
 #else
-#  define TAMGA_API
+#define TAMGA_API __declspec(dllimport)
+#endif
+#elif defined(__GNUC__) || defined(__clang__)
+#define TAMGA_API __attribute__((visibility("default")))
+#else
+#define TAMGA_API
 #endif
 
 /* --- attributes ---------------------------------------------------------- */
 #if defined(__GNUC__) || defined(__clang__)
-#  define TAMGA_PRINTF(fmt_index, first_arg) \
-      __attribute__((format(printf, fmt_index, first_arg)))
-#  define TAMGA_NODISCARD __attribute__((warn_unused_result))
+#define TAMGA_PRINTF(fmt_index, first_arg) __attribute__((format(printf, fmt_index, first_arg)))
+#define TAMGA_NODISCARD __attribute__((warn_unused_result))
 #else
-#  define TAMGA_PRINTF(fmt_index, first_arg)
-#  define TAMGA_NODISCARD
+#define TAMGA_PRINTF(fmt_index, first_arg)
+#define TAMGA_NODISCARD
 #endif
 
 #define TAMGA_UNUSED(x) ((void)(x))

@@ -7,11 +7,10 @@
 #include <string.h>
 
 #if defined(_WIN32)
-#  include <windows.h>
+#include <windows.h>
 #endif
 
-bool tamga_checked_add(size_t a, size_t b, size_t *out)
-{
+bool tamga_checked_add(size_t a, size_t b, size_t *out) {
     if (out == NULL) {
         return false;
     }
@@ -22,8 +21,7 @@ bool tamga_checked_add(size_t a, size_t b, size_t *out)
     return true;
 }
 
-bool tamga_checked_mul(size_t a, size_t b, size_t *out)
-{
+bool tamga_checked_mul(size_t a, size_t b, size_t *out) {
     if (out == NULL) {
         return false;
     }
@@ -34,8 +32,7 @@ bool tamga_checked_mul(size_t a, size_t b, size_t *out)
     return true;
 }
 
-void *tamga_malloc(size_t size)
-{
+void *tamga_malloc(size_t size) {
     /* malloc(0) is implementation-defined: it may return NULL, which would
      * be indistinguishable from failure at every call site. Round up so the
      * "NULL means failure" contract holds unconditionally. */
@@ -45,8 +42,7 @@ void *tamga_malloc(size_t size)
     return malloc(size);
 }
 
-void *tamga_calloc(size_t count, size_t size)
-{
+void *tamga_calloc(size_t count, size_t size) {
     size_t total;
     if (!tamga_checked_mul(count, size, &total)) {
         return NULL;
@@ -57,16 +53,14 @@ void *tamga_calloc(size_t count, size_t size)
     return calloc((size_t)1, total);
 }
 
-void *tamga_realloc(void *ptr, size_t size)
-{
+void *tamga_realloc(void *ptr, size_t size) {
     if (size == 0u) {
         size = 1u;
     }
     return realloc(ptr, size);
 }
 
-void tamga_free(void *ptr)
-{
+void tamga_free(void *ptr) {
     free(ptr);
 }
 
@@ -89,8 +83,7 @@ void tamga_free(void *ptr)
 static void *(*const volatile tamga_memset_ptr)(void *, int, size_t) = memset;
 #endif
 
-void tamga_secure_zero(void *ptr, size_t len)
-{
+void tamga_secure_zero(void *ptr, size_t len) {
     if (ptr == NULL || len == 0u) {
         return;
     }
@@ -101,8 +94,7 @@ void tamga_secure_zero(void *ptr, size_t len)
 #endif
 }
 
-void tamga_secure_free(void *ptr, size_t len)
-{
+void tamga_secure_free(void *ptr, size_t len) {
     if (ptr == NULL) {
         return;
     }
@@ -110,16 +102,14 @@ void tamga_secure_free(void *ptr, size_t len)
     tamga_free(ptr);
 }
 
-char *tamga_strdup(const char *src)
-{
+char *tamga_strdup(const char *src) {
     if (src == NULL) {
         return NULL;
     }
     return tamga_strndup(src, strlen(src));
 }
 
-char *tamga_strndup(const char *src, size_t len)
-{
+char *tamga_strndup(const char *src, size_t len) {
     char *copy;
     size_t total;
 
@@ -159,8 +149,7 @@ char *tamga_strndup(const char *src, size_t len)
  * plain free() would leave live key material in the heap for whatever
  * allocates next.
  */
-void tamga_string_free(char *ptr)
-{
+void tamga_string_free(char *ptr) {
     if (ptr == NULL) {
         return;
     }

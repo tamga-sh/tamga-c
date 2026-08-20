@@ -2,23 +2,20 @@
 
 #include "util/rfc3339.h"
 
-TT_TEST(parses_the_epoch)
-{
+TT_TEST(parses_the_epoch) {
     int64_t t = -1;
     TT_ASSERT(tamga_rfc3339_parse("1970-01-01T00:00:00Z", &t));
     TT_ASSERT_EQ_INT(t, 0);
 }
 
-TT_TEST(parses_a_representative_server_timestamp)
-{
+TT_TEST(parses_a_representative_server_timestamp) {
     int64_t t = 0;
     /* 2026-08-20T12:00:00Z */
     TT_ASSERT(tamga_rfc3339_parse("2026-08-20T12:00:00Z", &t));
     TT_ASSERT_EQ_INT(t, 1787227200);
 }
 
-TT_TEST(handles_leap_days)
-{
+TT_TEST(handles_leap_days) {
     int64_t t = 0;
     TT_ASSERT(tamga_rfc3339_parse("2024-02-29T00:00:00Z", &t));
     TT_ASSERT_EQ_INT(t, 1709164800);
@@ -30,8 +27,7 @@ TT_TEST(handles_leap_days)
 /* A numeric offset says how far ahead of UTC the stamp is, so the UTC value
  * is the stamp minus the offset. Getting this backwards shifts every expiry
  * check by up to 14 hours in the wrong direction. */
-TT_TEST(applies_numeric_offsets_in_the_right_direction)
-{
+TT_TEST(applies_numeric_offsets_in_the_right_direction) {
     int64_t utc = 0;
     int64_t plus = 0;
     int64_t minus = 0;
@@ -42,8 +38,7 @@ TT_TEST(applies_numeric_offsets_in_the_right_direction)
     TT_ASSERT_EQ_INT(minus, utc);
 }
 
-TT_TEST(accepts_and_truncates_fractional_seconds)
-{
+TT_TEST(accepts_and_truncates_fractional_seconds) {
     int64_t a = 0;
     int64_t b = 0;
     TT_ASSERT(tamga_rfc3339_parse("2026-08-20T12:00:00.123456Z", &a));
@@ -51,8 +46,7 @@ TT_TEST(accepts_and_truncates_fractional_seconds)
     TT_ASSERT_EQ_INT(a, b);
 }
 
-TT_TEST(accepts_lowercase_separators)
-{
+TT_TEST(accepts_lowercase_separators) {
     int64_t a = 0;
     int64_t b = 0;
     TT_ASSERT(tamga_rfc3339_parse("2026-08-20t12:00:00z", &a));
@@ -60,8 +54,7 @@ TT_TEST(accepts_lowercase_separators)
     TT_ASSERT_EQ_INT(a, b);
 }
 
-TT_TEST(clamps_a_leap_second)
-{
+TT_TEST(clamps_a_leap_second) {
     int64_t leap = 0;
     int64_t normal = 0;
     TT_ASSERT(tamga_rfc3339_parse("2016-12-31T23:59:60Z", &leap));
@@ -69,8 +62,7 @@ TT_TEST(clamps_a_leap_second)
     TT_ASSERT_EQ_INT(leap, normal);
 }
 
-TT_TEST(rejects_malformed_input)
-{
+TT_TEST(rejects_malformed_input) {
     int64_t t = 0;
     TT_ASSERT_FALSE(tamga_rfc3339_parse(NULL, &t));
     TT_ASSERT_FALSE(tamga_rfc3339_parse("", &t));
@@ -93,15 +85,13 @@ TT_TEST(rejects_malformed_input)
     TT_ASSERT_FALSE(tamga_rfc3339_parse("2026-08-20T12:00:00+03:60", &t));
 }
 
-TT_TEST(the_clock_is_after_this_code_was_written)
-{
+TT_TEST(the_clock_is_after_this_code_was_written) {
     /* 2026-01-01T00:00:00Z. Guards against a build where time() is stubbed
      * or the epoch conversion is wrong by decades. */
     TT_ASSERT(tamga_time_now_unix() > 1767225600);
 }
 
-int main(void)
-{
+int main(void) {
     TT_RUN(parses_the_epoch);
     TT_RUN(parses_a_representative_server_timestamp);
     TT_RUN(handles_leap_days);

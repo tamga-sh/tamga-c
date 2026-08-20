@@ -6,8 +6,7 @@
 /* Reads exactly `digits` ASCII digits from `s` into `*out`. Returns false on
  * a non-digit -- deliberately strict, so "2026-8-1" is rejected rather than
  * silently parsed as something else. */
-static bool tamga_read_uint(const char *s, size_t digits, unsigned int *out)
-{
+static bool tamga_read_uint(const char *s, size_t digits, unsigned int *out) {
     unsigned int value = 0u;
     size_t i;
 
@@ -22,13 +21,11 @@ static bool tamga_read_uint(const char *s, size_t digits, unsigned int *out)
     return true;
 }
 
-static bool tamga_is_leap_year(int64_t year)
-{
+static bool tamga_is_leap_year(int64_t year) {
     return ((year % 4) == 0 && (year % 100) != 0) || ((year % 400) == 0);
 }
 
-static unsigned int tamga_days_in_month(int64_t year, unsigned int month)
-{
+static unsigned int tamga_days_in_month(int64_t year, unsigned int month) {
     static const unsigned int lengths[12] = {31u, 28u, 31u, 30u, 31u, 30u,
                                              31u, 31u, 30u, 31u, 30u, 31u};
     if (month < 1u || month > 12u) {
@@ -47,8 +44,7 @@ static unsigned int tamga_days_in_month(int64_t year, unsigned int month)
  * accumulate-365-and-add-leap-days loop, which is easy to get subtly wrong
  * around century boundaries.
  */
-static int64_t tamga_days_from_civil(int64_t year, unsigned int month, unsigned int day)
-{
+static int64_t tamga_days_from_civil(int64_t year, unsigned int month, unsigned int day) {
     int64_t y = year;
     int64_t era;
     int64_t yoe;
@@ -57,15 +53,14 @@ static int64_t tamga_days_from_civil(int64_t year, unsigned int month, unsigned 
 
     y -= (month <= 2u) ? 1 : 0;
     era = ((y >= 0) ? y : (y - 399)) / 400;
-    yoe = y - (era * 400);                                    /* [0, 399] */
-    doy = (int64_t)((153u * ((month > 2u) ? (month - 3u) : (month + 9u)) + 2u) / 5u)
-          + (int64_t)day - 1;                                 /* [0, 365] */
-    doe = (yoe * 365) + (yoe / 4) - (yoe / 100) + doy;        /* [0, 146096] */
+    yoe = y - (era * 400); /* [0, 399] */
+    doy = (int64_t)((153u * ((month > 2u) ? (month - 3u) : (month + 9u)) + 2u) / 5u) +
+          (int64_t)day - 1;                            /* [0, 365] */
+    doe = (yoe * 365) + (yoe / 4) - (yoe / 100) + doy; /* [0, 146096] */
     return (era * 146097) + doe - 719468;
 }
 
-bool tamga_rfc3339_parse(const char *str, int64_t *out_epoch_seconds)
-{
+bool tamga_rfc3339_parse(const char *str, int64_t *out_epoch_seconds) {
     unsigned int year_u, month, day, hour, minute, second;
     size_t pos;
     int64_t days;
@@ -168,8 +163,7 @@ bool tamga_rfc3339_parse(const char *str, int64_t *out_epoch_seconds)
     return true;
 }
 
-int64_t tamga_time_now_unix(void)
-{
+int64_t tamga_time_now_unix(void) {
     time_t now = time(NULL);
     if (now == (time_t)-1) {
         return 0;
