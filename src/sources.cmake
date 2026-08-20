@@ -51,6 +51,12 @@ set(TAMGA_SOURCES
     src/checkout/license_file.c
     src/checkout/machine_file.c
     src/proof.c
+
+    # --- HTTP (transport-agnostic; backends are added by CMake) ----------
+    src/http/transport.c
+    src/http/client.c
+    src/models/validation.c
+    src/http/endpoints.c
 )
 
 list(TRANSFORM TAMGA_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")

@@ -27,6 +27,7 @@ endfunction()
 
 add_subdirectory(unit)
 add_subdirectory(integration)
+add_subdirectory(http)
 
 # tests/c/ is the pre-1.3 C ABI harness. Its source files are kept
 # byte-for-byte unmodified across the native rewrite on purpose: if they still

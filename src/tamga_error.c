@@ -87,6 +87,38 @@ const char *tamga_error_name(TamgaErrorCode code) {
         return "TAMGA_ERR_EXPIRED";
     case TAMGA_ERR_OUT_OF_MEMORY:
         return "TAMGA_ERR_OUT_OF_MEMORY";
+    case TAMGA_ERR_TRANSPORT:
+        return "TAMGA_ERR_TRANSPORT";
+    case TAMGA_ERR_NO_TRANSPORT:
+        return "TAMGA_ERR_NO_TRANSPORT";
+    case TAMGA_ERR_API:
+        return "TAMGA_ERR_API";
+    case TAMGA_ERR_RATE_LIMITED:
+        return "TAMGA_ERR_RATE_LIMITED";
+    case TAMGA_ERR_UNAUTHORIZED:
+        return "TAMGA_ERR_UNAUTHORIZED";
+    case TAMGA_ERR_FORBIDDEN:
+        return "TAMGA_ERR_FORBIDDEN";
+    case TAMGA_ERR_NOT_FOUND:
+        return "TAMGA_ERR_NOT_FOUND";
+    case TAMGA_ERR_SERVER:
+        return "TAMGA_ERR_SERVER";
+    case TAMGA_ERR_CHECK_IN_NOT_REQUIRED:
+        return "TAMGA_ERR_CHECK_IN_NOT_REQUIRED";
+    case TAMGA_ERR_LICENSE_NOT_ENCRYPTED:
+        return "TAMGA_ERR_LICENSE_NOT_ENCRYPTED";
+    case TAMGA_ERR_LICENSE_KEY_MISSING:
+        return "TAMGA_ERR_LICENSE_KEY_MISSING";
+    case TAMGA_ERR_TTL_INVALID:
+        return "TAMGA_ERR_TTL_INVALID";
+    case TAMGA_ERR_SCHEME_NOT_SUPPORTED:
+        return "TAMGA_ERR_SCHEME_NOT_SUPPORTED";
+    case TAMGA_ERR_FINGERPRINT_TAKEN:
+        return "TAMGA_ERR_FINGERPRINT_TAKEN";
+    case TAMGA_ERR_DATASET_INVALID:
+        return "TAMGA_ERR_DATASET_INVALID";
+    case TAMGA_ERR_PID_TAKEN:
+        return "TAMGA_ERR_PID_TAKEN";
     default:
         return "TAMGA_ERR_UNKNOWN";
     }

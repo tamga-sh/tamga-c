@@ -130,7 +130,60 @@ typedef enum TamgaErrorCode {
      */
     TAMGA_ERR_EXPIRED = 11,
     /** Memory allocation failed. */
-    TAMGA_ERR_OUT_OF_MEMORY = 12
+    TAMGA_ERR_OUT_OF_MEMORY = 12,
+
+    /* --- HTTP client, added in 1.3 ------------------------------------
+     *
+     * Appended after the offline codes, never interleaved with them. A
+     * caller built against an older header sees only the codes it knows and
+     * treats these as unrecognized failures, which is the correct outcome.
+     */
+
+    /** The request could not be completed: connection, timeout, or TLS. */
+    TAMGA_ERR_TRANSPORT = 13,
+    /**
+     * This build has no HTTP backend and none was registered. The offline
+     * surface is unaffected; register a transport with
+     * tamga_client_set_transport() to use the client.
+     */
+    TAMGA_ERR_NO_TRANSPORT = 14,
+    /** The server returned an error this SDK has no dedicated code for.
+     *  tamga_response_error_code() carries the server's own string. */
+    TAMGA_ERR_API = 15,
+    /**
+     * `429 Too Many Requests`, after the retry budget was spent. The
+     * server's `Retry-After` is available via tamga_response_header().
+     */
+    TAMGA_ERR_RATE_LIMITED = 16,
+    /** `401`: no credential was accepted. Distinct from FORBIDDEN --
+     *  a missing credential and an insufficient one are different states. */
+    TAMGA_ERR_UNAUTHORIZED = 17,
+    /** `403`: the credential is valid but not permitted here. */
+    TAMGA_ERR_FORBIDDEN = 18,
+    /** `404`. */
+    TAMGA_ERR_NOT_FOUND = 19,
+    /** `5xx`. */
+    TAMGA_ERR_SERVER = 20,
+    /**
+     * The licence's policy has `require_check_in: false`. This is a caller
+     * error, not a transient failure -- check the policy before scheduling
+     * periodic check-ins rather than retrying.
+     */
+    TAMGA_ERR_CHECK_IN_NOT_REQUIRED = 21,
+    /** Encrypted checkout was requested for a licence with no key set. */
+    TAMGA_ERR_LICENSE_NOT_ENCRYPTED = 22,
+    /** Encrypted checkout was requested but the licence key is missing. */
+    TAMGA_ERR_LICENSE_KEY_MISSING = 23,
+    /** The requested ttl is outside the accepted range (1 second to 365 days). */
+    TAMGA_ERR_TTL_INVALID = 24,
+    /** The licence's scheme is not supported for this operation. */
+    TAMGA_ERR_SCHEME_NOT_SUPPORTED = 25,
+    /** A machine or component with this fingerprint already exists. */
+    TAMGA_ERR_FINGERPRINT_TAKEN = 26,
+    /** The supplied dataset is not a JSON object. */
+    TAMGA_ERR_DATASET_INVALID = 27,
+    /** A process with this pid already exists on the machine. */
+    TAMGA_ERR_PID_TAKEN = 28
 } TamgaErrorCode;
 
 /* ======================================================================
@@ -407,6 +460,454 @@ TAMGA_API enum TamgaErrorCode
 tamga_offline_proof_generate(const char *rsa_privkey, const char *account_id,
                              const char *machine_id, const char *fingerprint,
                              const char *dataset_json, char **out_proof_str);
+
+/* ======================================================================
+ * HTTP client
+ *
+ * Everything above this point works with no network access and no
+ * dependencies. Everything below needs a transport: either the one this
+ * build was configured with (WinHTTP on Windows, libcurl elsewhere) or one
+ * the caller registers. A build configured with TAMGA_HTTP=none still
+ * compiles and exports all of it -- calls simply return
+ * TAMGA_ERR_NO_TRANSPORT until a transport is registered.
+ *
+ * Structured inputs and outputs are JSON text. That is a deliberate choice
+ * for a C API: mirroring every server resource as a struct would freeze a
+ * large surface into the ABI and force a release whenever the server adds a
+ * field, while a JSON string stays correct as the protocol grows. The
+ * accessors below cover the fields callers act on programmatically.
+ * ====================================================================== */
+
+/** An API client. Not thread-safe; use one per thread, or synchronise. */
+typedef struct TamgaClient TamgaClient;
+
+/** The result of an endpoint call, successful or not. */
+typedef struct TamgaResponse TamgaResponse;
+
+/**
+ * How to authenticate. The server accepts five transports; the Cookie form is
+ * deliberately unsupported, being browser-only and requiring a matching
+ * Origin.
+ *
+ * `TAMGA_AUTH_LICENSE` is the primary choice for software embedding this SDK:
+ * it authenticates with the end user's own licence key. Note that the
+ * licence's policy must have `authentication_strategy` set to `LICENSE` or
+ * `MIXED`; the default `TOKEN` yields 401 LICENSE_NOT_ALLOWED, which is a
+ * provisioning matter rather than an SDK fault.
+ */
+typedef enum TamgaAuthKind {
+    /** `Authorization: Bearer <token>` -- preferred for server-side callers. */
+    TAMGA_AUTH_BEARER = 0,
+    /** `Authorization: License <key>` -- preferred for embedded callers. */
+    TAMGA_AUTH_LICENSE = 1,
+    /** `Authorization: Basic base64(email:password)`. */
+    TAMGA_AUTH_BASIC_EMAIL_PASSWORD = 2,
+    /** `Authorization: Basic base64(token:)`. */
+    TAMGA_AUTH_BASIC_TOKEN = 3,
+    /** `Authorization: Basic base64(license:<key>)`. */
+    TAMGA_AUTH_BASIC_LICENSE = 4,
+    /** `?token=<token>`, for a caller that cannot set a header. */
+    TAMGA_AUTH_QUERY_TOKEN = 5
+} TamgaAuthKind;
+
+/**
+ * A caller-supplied transport.
+ *
+ * Called with the fully-built request. Report the outcome through the
+ * `tamga_http_result_*` functions and return true; return false only when the
+ * request could not be made at all. Any HTTP status, including 4xx and 5xx,
+ * is a successful transport call -- interpreting it is this library's job.
+ *
+ * Whatever you build on must verify TLS certificates and hostnames. This
+ * library offers no way to disable that in its own backends and assumes the
+ * same of yours.
+ */
+typedef struct TamgaHttpResult TamgaHttpResult;
+
+typedef bool (*TamgaHttpFn)(void *user_data, const char *method, const char *url,
+                            const char *const *header_names, const char *const *header_values,
+                            uintptr_t header_count, const char *body, uintptr_t body_len,
+                            unsigned int timeout_ms, TamgaHttpResult *result);
+
+TAMGA_API void tamga_http_result_set_status(TamgaHttpResult *result, int status);
+TAMGA_API bool tamga_http_result_set_body(TamgaHttpResult *result, const char *body,
+                                          uintptr_t body_len);
+TAMGA_API bool tamga_http_result_add_header(TamgaHttpResult *result, const char *name,
+                                            const char *value);
+
+/* --- lifecycle and configuration --------------------------------------- */
+
+/**
+ * Creates a client for one account.
+ *
+ * `host` may be a bare hostname, a hostname with a trailing slash, or a full
+ * URL. An explicit `http://` is preserved rather than upgraded -- production
+ * is always HTTPS, but this keeps the client usable against a local mock
+ * server without a separate code path.
+ *
+ * Credentials must be set with tamga_client_set_auth() before any request.
+ */
+TAMGA_API TamgaErrorCode tamga_client_new(const char *account_id, const char *host,
+                                          TamgaClient **out_client);
+
+TAMGA_API void tamga_client_free(TamgaClient *client);
+
+/**
+ * Sets the credentials. `primary` is the token, licence key or email;
+ * `secondary` is the password, and is required only for
+ * TAMGA_AUTH_BASIC_EMAIL_PASSWORD.
+ */
+TAMGA_API TamgaErrorCode tamga_client_set_auth(TamgaClient *client, TamgaAuthKind kind,
+                                               const char *primary, const char *secondary);
+
+/** Overrides the `Tamga-Version` header. Defaults to "1.8". */
+TAMGA_API TamgaErrorCode tamga_client_set_api_version(TamgaClient *client, const char *version);
+
+/** Overrides the per-request timeout. Defaults to 30 seconds. */
+TAMGA_API TamgaErrorCode tamga_client_set_timeout_ms(TamgaClient *client, unsigned int timeout_ms);
+
+/**
+ * How many times a rate-limited request is retried before giving up.
+ * Defaults to 3; zero handles 429 yourself.
+ *
+ * Only requests that are safe to repeat are retried: every GET, plus POST on
+ * the validate, check-in, check-out and ping actions. Creates are never
+ * retried, because repeating an activation can burn a second seat.
+ */
+TAMGA_API TamgaErrorCode tamga_client_set_max_retries(TamgaClient *client,
+                                                      unsigned int max_retries);
+
+/**
+ * Registers a transport, replacing whichever one the build provides.
+ * `destroy` is optional and is called with `user_data` when the client is
+ * freed or the transport replaced.
+ */
+TAMGA_API TamgaErrorCode tamga_client_set_transport(TamgaClient *client, TamgaHttpFn perform,
+                                                    void *user_data, void (*destroy)(void *));
+
+/** True when this build has a transport compiled in. */
+TAMGA_API bool tamga_has_builtin_transport(void);
+
+/* --- response ----------------------------------------------------------- */
+
+TAMGA_API void tamga_response_free(TamgaResponse *response);
+
+/** The HTTP status code. */
+TAMGA_API int tamga_response_status(const TamgaResponse *response);
+
+/**
+ * The response body. For every endpoint but the raw checkouts this is JSON;
+ * for those it is the PEM certificate itself. Borrowed -- valid until the
+ * response is freed.
+ */
+TAMGA_API const char *tamga_response_json(const TamgaResponse *response, uintptr_t *out_len);
+
+/** A response header by name, case-insensitively. Borrowed. */
+TAMGA_API const char *tamga_response_header(const TamgaResponse *response, const char *name);
+
+/**
+ * The server's own error code (`NOT_FOUND`, `FINGERPRINT_TAKEN`, ...) on a
+ * failed call, or NULL. Borrowed.
+ */
+TAMGA_API const char *tamga_response_error_code(const TamgaResponse *response);
+
+/** Whether a validation response reports the licence as valid. */
+TAMGA_API bool tamga_response_validation_is_valid(const TamgaResponse *response);
+
+/**
+ * The validation outcome code (`VALID`, `EXPIRED`, `TOO_MANY_MACHINES`, ...).
+ * Match on this, never on the detail string, which is prose and may be
+ * reworded. Borrowed.
+ */
+TAMGA_API const char *tamga_response_validation_code(const TamgaResponse *response);
+
+/** The human-readable explanation. Borrowed. */
+TAMGA_API const char *tamga_response_validation_detail(const TamgaResponse *response);
+
+/* --- validation outcomes ------------------------------------------------ */
+
+/**
+ * The `meta.code` a validation endpoint returns.
+ *
+ * All 24 server-declared values are listed, but only 14 are actually
+ * reachable today -- the reachable ones are marked below. The rest are
+ * declared server-side for forward compatibility and never emitted; do not
+ * write logic that waits for one.
+ *
+ * `TAMGA_VALIDATION_UNKNOWN` covers any value a future server adds. Callers
+ * that need the exact string should use tamga_response_validation_code(),
+ * which never loses information.
+ */
+typedef enum TamgaValidationCode {
+    /** Reachable. All checks passed. */
+    TAMGA_VALIDATION_VALID = 0,
+    /** Declared, never emitted -- the handler returns 404 instead. */
+    TAMGA_VALIDATION_NOT_FOUND = 1,
+    /** Declared, not wired into any validation path. */
+    TAMGA_VALIDATION_BANNED = 2,
+    /** Reachable. */
+    TAMGA_VALIDATION_SUSPENDED = 3,
+    /** Reachable. */
+    TAMGA_VALIDATION_EXPIRED = 4,
+    /** Reachable. Check-in is required and the window has elapsed. */
+    TAMGA_VALIDATION_OVERDUE = 5,
+    /** Declared, not wired into any validation path. */
+    TAMGA_VALIDATION_ENTITLEMENTS_MISSING = 6,
+    /** Reachable. Over the policy's machine limit. */
+    TAMGA_VALIDATION_TOO_MANY_MACHINES = 7,
+    /** Reachable. */
+    TAMGA_VALIDATION_TOO_MANY_CORES = 8,
+    /** Reachable. */
+    TAMGA_VALIDATION_TOO_MUCH_MEMORY = 9,
+    /** Reachable. */
+    TAMGA_VALIDATION_TOO_MUCH_DISK = 10,
+    /** Reachable. */
+    TAMGA_VALIDATION_TOO_MANY_PROCESSES = 11,
+    /** Declared, not wired into any validation path. */
+    TAMGA_VALIDATION_TOO_MANY_USERS = 12,
+    /** Declared, not wired into any validation path. */
+    TAMGA_VALIDATION_HEARTBEAT_DEAD = 13,
+    /** Declared, not wired into any validation path. */
+    TAMGA_VALIDATION_HEARTBEAT_NOT_STARTED = 14,
+    /** Reachable. */
+    TAMGA_VALIDATION_PRODUCT_SCOPE_MISMATCH = 15,
+    /** Reachable. */
+    TAMGA_VALIDATION_POLICY_SCOPE_MISMATCH = 16,
+    /** Reachable. */
+    TAMGA_VALIDATION_USER_SCOPE_MISMATCH = 17,
+    /** Declared, not wired into any validation path. */
+    TAMGA_VALIDATION_FINGERPRINT_SCOPE_MISMATCH = 18,
+    /** Declared, not wired into any validation path. */
+    TAMGA_VALIDATION_COMPONENTS_SCOPE_MISMATCH = 19,
+    /** Declared, not wired into any validation path. */
+    TAMGA_VALIDATION_CHECKSUM_SCOPE_MISMATCH = 20,
+    /** Declared, not wired into any validation path. */
+    TAMGA_VALIDATION_VERSION_SCOPE_MISMATCH = 21,
+    /** Reachable. */
+    TAMGA_VALIDATION_ENVIRONMENT_SCOPE_MISMATCH = 22,
+    /** Reachable. Strictly `uses >= max_uses`, whatever the overage strategy. */
+    TAMGA_VALIDATION_TOO_MANY_USES = 23,
+    /** Any value this SDK does not recognise, including future additions. */
+    TAMGA_VALIDATION_UNKNOWN = 24
+} TamgaValidationCode;
+
+/** Parses a wire code string. An unrecognised value yields UNKNOWN rather
+ *  than failing, so a server-side addition cannot break a caller. */
+TAMGA_API TamgaValidationCode tamga_validation_code_parse(const char *code);
+
+/** The wire string for a code. Returns "UNKNOWN" for UNKNOWN. Static, never
+ *  freed. */
+TAMGA_API const char *tamga_validation_code_name(TamgaValidationCode code);
+
+/** The validation code of a response, parsed. */
+TAMGA_API TamgaValidationCode tamga_response_validation_code_enum(const TamgaResponse *response);
+
+/**
+ * True for the codes that mean "the licence is fine, this activation is one
+ * too many": the machine, core, memory, disk and process limits. This is the
+ * set tamga_client_activate_machine() reacts to when asked to undo an
+ * over-limit activation.
+ */
+TAMGA_API bool tamga_validation_code_is_overage(TamgaValidationCode code);
+
+/* --- licence endpoints -------------------------------------------------- */
+
+/**
+ * `POST /licenses/actions/validate-key` -- validates by raw key. No scope
+ * support on this endpoint; use tamga_client_validate_by_id() for that.
+ * `otp` may be NULL unless the account has 2FA enabled.
+ */
+TAMGA_API TamgaErrorCode tamga_client_validate_by_key(TamgaClient *client, const char *license_key,
+                                                      const char *otp,
+                                                      TamgaResponse **out_response);
+
+/**
+ * `POST /licenses/{id}/actions/validate` -- validates by id, optionally
+ * scoped.
+ *
+ * `scope_json` is the scope object as JSON, or NULL. Only `product`, `policy`,
+ * `user` and `environment` are enforced server-side today; `entitlements`,
+ * `fingerprint`, `version` and `checksum` are parsed and ignored, so do not
+ * rely on them as constraints.
+ *
+ * `skip_touch` suppresses the `last_validated_at` side effect.
+ */
+TAMGA_API TamgaErrorCode tamga_client_validate_by_id(TamgaClient *client, const char *license_id,
+                                                     const char *scope_json, bool skip_touch,
+                                                     const char *otp, TamgaResponse **out_response);
+
+/**
+ * `GET /licenses/{id}/actions/validate` -- returns only the flat
+ * `{ ts, valid, detail, code }` outcome, with no licence resource. Cheaper
+ * than a full validation when only the verdict is needed.
+ */
+TAMGA_API TamgaErrorCode tamga_client_quick_validate(TamgaClient *client, const char *license_id,
+                                                     const char *otp, TamgaResponse **out_response);
+
+/**
+ * `POST /licenses/{id}/actions/check-in`.
+ *
+ * Fails with TAMGA_ERR_CHECK_IN_NOT_REQUIRED when the policy does not require
+ * check-in. That is a caller error, not a transient failure -- read the
+ * policy before scheduling periodic check-ins rather than retrying.
+ */
+TAMGA_API TamgaErrorCode tamga_client_check_in(TamgaClient *client, const char *license_id,
+                                               TamgaResponse **out_response);
+
+/**
+ * `GET /licenses/{id}/actions/check-out` -- the raw `.lic` PEM.
+ *
+ * Not idempotent: a fresh identifier backs each call, so two calls yield two
+ * different certificates. Pass the body to tamga_license_file_verify().
+ *
+ * `ttl_seconds` of zero or less requests no ttl.
+ */
+TAMGA_API TamgaErrorCode tamga_client_check_out_license(TamgaClient *client, const char *license_id,
+                                                        bool encrypt, int64_t ttl_seconds,
+                                                        TamgaResponse **out_response);
+
+/** `POST /licenses/{id}/actions/check-out` -- the JSON:API variant, carrying
+ *  the certificate plus ttl/expiry/issued metadata. */
+TAMGA_API TamgaErrorCode tamga_client_check_out_license_json(TamgaClient *client,
+                                                             const char *license_id, bool encrypt,
+                                                             int64_t ttl_seconds,
+                                                             TamgaResponse **out_response);
+
+/* --- machine endpoints -------------------------------------------------- */
+
+/** `GET /machines/{id}/actions/check-out` -- the raw machine-file PEM. */
+TAMGA_API TamgaErrorCode tamga_client_check_out_machine(TamgaClient *client, const char *machine_id,
+                                                        bool encrypt, int64_t ttl_seconds,
+                                                        TamgaResponse **out_response);
+
+/** `POST /machines/{id}/actions/check-out` -- the JSON:API variant. */
+TAMGA_API TamgaErrorCode tamga_client_check_out_machine_json(TamgaClient *client,
+                                                             const char *machine_id, bool encrypt,
+                                                             int64_t ttl_seconds,
+                                                             TamgaResponse **out_response);
+
+/**
+ * `POST /machines` -- registers a machine against a licence.
+ *
+ * `options_json` is an optional JSON object with any of `name`, `ip`,
+ * `hostname`, `platform`, `cores`, `memory`, `disk`, `metadata`.
+ *
+ * ⚠️ No seat limit is checked at creation time. Limits surface later, through
+ * validation. The recommended activation flow is create then validate then
+ * interpret the outcome -- which is what tamga_client_activate_machine()
+ * does.
+ */
+TAMGA_API TamgaErrorCode tamga_client_create_machine(TamgaClient *client, const char *license_id,
+                                                     const char *fingerprint,
+                                                     const char *options_json,
+                                                     TamgaResponse **out_response);
+
+/**
+ * Creates a machine and immediately validates the licence, which is the only
+ * way to discover whether the activation exceeded a limit.
+ *
+ * With `auto_delete_on_overage`, a machine created into an over-limit
+ * validation is deleted again before returning, implementing "reject
+ * over-limit activation" rather than leaving an orphaned row behind. A failed
+ * deletion is not surfaced -- the validation result is what the caller asked
+ * for -- and any machine left behind is still visible to normal machine
+ * management for manual cleanup.
+ *
+ * The returned response is the validation result.
+ */
+TAMGA_API TamgaErrorCode tamga_client_activate_machine(
+    TamgaClient *client, const char *license_id, const char *fingerprint, const char *options_json,
+    const char *scope_json, bool auto_delete_on_overage, TamgaResponse **out_response);
+
+/** `POST /machines/{id}/actions/ping-heartbeat`. */
+TAMGA_API TamgaErrorCode tamga_client_ping_heartbeat(TamgaClient *client, const char *machine_id,
+                                                     TamgaResponse **out_response);
+
+/** `POST /machines/{id}/actions/reset-heartbeat` -- rewinds heartbeat state
+ *  to not-started. */
+TAMGA_API TamgaErrorCode tamga_client_reset_heartbeat(TamgaClient *client, const char *machine_id,
+                                                      TamgaResponse **out_response);
+
+/** `DELETE /machines/{id}`. */
+TAMGA_API TamgaErrorCode tamga_client_delete_machine(TamgaClient *client, const char *machine_id,
+                                                     TamgaResponse **out_response);
+
+/**
+ * `POST /machines/{id}/actions/generate-offline-proof`.
+ *
+ * `dataset_json` must be a JSON object, or NULL for an empty one. The
+ * response carries the machine resource plus `meta.proof`; pass that string,
+ * with the same account/machine/fingerprint/dataset tuple, to
+ * tamga_offline_proof_verify() to check it later with no network access.
+ *
+ * This is the supported way to obtain a proof -- see
+ * tamga_offline_proof_generate(), which deliberately does not sign locally.
+ */
+TAMGA_API TamgaErrorCode tamga_client_generate_offline_proof(TamgaClient *client,
+                                                             const char *machine_id,
+                                                             const char *dataset_json,
+                                                             TamgaResponse **out_response);
+
+/* --- components, processes, entitlements -------------------------------- */
+
+/**
+ * `POST /components`.
+ *
+ * ⚠️ The request body is flat, not JSON:API-enveloped, unlike machine
+ * creation. That asymmetry is the server's, not this SDK's.
+ */
+TAMGA_API TamgaErrorCode tamga_client_create_component(TamgaClient *client, const char *machine_id,
+                                                       const char *fingerprint, const char *name,
+                                                       const char *metadata_json,
+                                                       TamgaResponse **out_response);
+
+/**
+ * `GET /machines/{id}/components` -- keyset-paginated. The response carries no
+ * cursor; pass the last returned component's id as `after` for the next page.
+ * `limit` of zero uses the server default; `after` may be NULL.
+ */
+TAMGA_API TamgaErrorCode tamga_client_list_components(TamgaClient *client, const char *machine_id,
+                                                      uint32_t limit, const char *after,
+                                                      TamgaResponse **out_response);
+
+/**
+ * `POST /processes` -- same flat body shape as component creation.
+ *
+ * Unlike a machine, a process starts alive: its heartbeat is set at creation.
+ * ⚠️ The process heartbeat window is a hardcoded 30 seconds with no
+ * resurrection grace period.
+ */
+TAMGA_API TamgaErrorCode tamga_client_create_process(TamgaClient *client, const char *machine_id,
+                                                     const char *pid, const char *metadata_json,
+                                                     TamgaResponse **out_response);
+
+/** `POST /processes/{id}/actions/ping`. */
+TAMGA_API TamgaErrorCode tamga_client_ping_process(TamgaClient *client, const char *process_id,
+                                                   TamgaResponse **out_response);
+
+/** `GET /licenses/{id}/entitlements` -- keyset-paginated, same shape as
+ *  component listing. */
+TAMGA_API TamgaErrorCode tamga_client_list_entitlements(TamgaClient *client, const char *license_id,
+                                                        uint32_t limit, const char *after,
+                                                        TamgaResponse **out_response);
+
+/** `GET /licenses/{id}/entitlements/{entitlement_id}`. */
+TAMGA_API TamgaErrorCode tamga_client_get_entitlement(TamgaClient *client, const char *license_id,
+                                                      const char *entitlement_id,
+                                                      TamgaResponse **out_response);
+
+/**
+ * Fetches one page of entitlements and reports whether any carries `code`.
+ *
+ * Matches on `code`, the stable developer-facing identifier -- never on
+ * `name`, which is a display label. Fetches at most one page (`limit`,
+ * defaulting to the server's maximum of 100); for a licence with more
+ * entitlements than fit on one page, paginate with
+ * tamga_client_list_entitlements() instead.
+ */
+TAMGA_API TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const char *license_id,
+                                                      const char *code, uint32_t limit,
+                                                      bool *out_has);
 
 #ifdef __cplusplus
 } /* extern "C" */
