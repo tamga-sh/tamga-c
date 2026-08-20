@@ -209,10 +209,17 @@ TT_TEST(verifies_an_offline_proof_from_another_sdk) {
     params[params_len] = '\0';
 
     /* proof_params.txt is account id, machine id and fingerprint, one per
-     * line, in that order. */
-    account_id = strtok((char *)params, "\n");
-    machine_id = strtok(NULL, "\n");
-    fingerprint = strtok(NULL, "\n");
+     * line, in that order.
+     *
+     * CR is a delimiter too. .gitattributes marks the fixtures -text so Git
+     * never rewrites their line endings, and that is the actual fix -- but
+     * this file is scaffolding rather than a protocol artefact, and splitting
+     * on "\n" alone left a trailing CR on two of the three ids on a Windows
+     * checkout. What that produced was a proof that simply did not verify,
+     * which reads as a cryptographic failure and not as a checkout setting. */
+    account_id = strtok((char *)params, "\r\n");
+    machine_id = strtok(NULL, "\r\n");
+    fingerprint = strtok(NULL, "\r\n");
     TT_ASSERT_NOT_NULL(account_id);
     TT_ASSERT_NOT_NULL(machine_id);
     TT_ASSERT_NOT_NULL(fingerprint);

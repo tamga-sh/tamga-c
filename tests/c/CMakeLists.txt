@@ -10,6 +10,19 @@
 # so only the exported entry points are reachable through it; a test that
 # accidentally reached an internal symbol would not be testing the ABI.
 
+# On Windows a test that links the DLL must be able to FIND it at run time.
+# Nothing puts tamga.dll beside these executables and CTest does not adjust
+# PATH, so the loader fails -- and on a CI runner that failure does not print
+# and exit, it blocks. test_license_file_abi started and never returned; the
+# job was cancelled at its 20-minute timeout with no output at all, which
+# looks nothing like a missing DLL and cost a full CI round to identify.
+function(tamga_abi_test_finds_the_dll NAME)
+    if(WIN32 AND TARGET tamga_shared)
+        set_tests_properties(${NAME} PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:tamga_shared>")
+    endif()
+endfunction()
+
 function(tamga_add_abi_test NAME SOURCE)
     add_executable(${NAME} ${SOURCE})
     if(TARGET tamga_shared)
@@ -20,6 +33,7 @@ function(tamga_add_abi_test NAME SOURCE)
     target_include_directories(${NAME} PRIVATE ${CMAKE_SOURCE_DIR}/include)
     tamga_apply_sanitizers(${NAME})
     add_test(NAME ${NAME} COMMAND ${NAME})
+    tamga_abi_test_finds_the_dll(${NAME})
 endfunction()
 
 # Deliberately not run through tamga_set_warnings: these sources are frozen
@@ -44,3 +58,4 @@ target_include_directories(test_abi_surface PRIVATE
 tamga_set_warnings(test_abi_surface)
 tamga_apply_sanitizers(test_abi_surface)
 add_test(NAME test_abi_surface COMMAND test_abi_surface)
+tamga_abi_test_finds_the_dll(test_abi_surface)

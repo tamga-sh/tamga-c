@@ -1,0 +1,16 @@
+# Fixtures are byte-exact artefacts, not text.
+#
+# Without this, Git translates line endings on a Windows checkout and every
+# fixture changes underneath the tests. It surfaced as tests/integration/
+# cross_sdk_test.c failing on Windows only: proof_params.txt arrived with CRLF,
+# strtok on "\n" left a trailing CR on the account and machine ids, and a proof
+# bound to those ids stopped verifying.
+#
+# The .lic and .mach files were passing, but only by luck -- this SDK's PEM
+# reader strips embedded whitespace, so it happened to tolerate the damage. A
+# signature covers exact bytes; nothing should depend on that tolerance.
+tests/fixtures/** -text
+tests/fuzz/corpus/** -text
+
+# Shell scripts must keep LF or they will not run.
+*.sh text eol=lf

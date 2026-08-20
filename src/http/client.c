@@ -9,6 +9,12 @@
  * pulled in.
  */
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+/* A leading underscore makes this a reserved identifier, which clang-tidy
+ * flags -- correctly in general, and unavoidably here: defining the macro is
+ * the only sanctioned way to request a POSIX feature set. It is kept in the
+ * source rather than passed from CMake so the file is still correct when
+ * compiled outside this build system. */
+/* NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 #define _POSIX_C_SOURCE 199309L
 #endif
 
