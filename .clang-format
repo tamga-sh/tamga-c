@@ -1,6 +1,11 @@
-# Shared C/C++ style for tests/c/ and examples/.
-# See CLAUDE.md — CI runs
-# `clang-format --dry-run --Werror` against these directories.
+# The repository's C style, applied to every source file.
+#
+# Through v1.2 this covered only tests/c/ and examples/, because the rest of
+# the library was Rust. It now governs src/, include/ and tests/ as well; the
+# settings are unchanged, so the previously frozen files still conform without
+# being touched.
+#
+# CI runs `clang-format --dry-run --Werror` over the whole tree.
 BasedOnStyle: LLVM
 Language: Cpp
 Standard: c++17

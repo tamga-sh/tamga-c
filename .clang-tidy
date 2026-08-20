@@ -1,0 +1,55 @@
+# Static analysis configuration.
+#
+# The selection targets the bug classes that actually occur in this codebase:
+# null dereferences, unchecked returns, and width or sign changes on lengths.
+# Checks that fight C idioms, or that only make sense for C++, are off.
+#
+# Disabled deliberately:
+#   readability-uppercase-literal-suffix  this codebase writes lowercase `u`
+#                                         throughout, which is the prevailing
+#                                         C convention; consistency is the
+#                                         property that matters and it has it
+#   misc-include-cleaner                  wants every transitively-used symbol
+#                                         to have a direct include, which for
+#                                         C means listing <stddef.h> beside
+#                                         every header that already provides
+#                                         size_t
+#   readability-implicit-bool-conversion  `if (ptr)` and `if (len)` are C
+#   *-magic-numbers, identifier-length    protocol constants and short loop
+#                                         variables are not defects
+#   *.DeprecatedOrUnsafeBufferHandling     wants memset_s/memcpy_s. Those are
+#                                         C11 Annex K, which is OPTIONAL and
+#                                         which neither glibc nor Apple's libc
+#                                         implements -- taking the advice would
+#                                         not compile on either platform this
+#                                         library targets. Every length here
+#                                         already goes through the checked
+#                                         arithmetic in tamga_mem.h, which is
+#                                         the property the check is reaching
+#                                         for. It fires on Linux and not on
+#                                         macOS, which is how it stayed
+#                                         invisible until the first Linux run.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  cert-*,
+  misc-*,
+  performance-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity,
+  -readability-braces-around-statements,
+  -readability-isolate-declaration,
+  -readability-uppercase-literal-suffix,
+  -readability-implicit-bool-conversion,
+  -readability-use-concise-preprocessor-directives,
+  -misc-no-recursion,
+  -misc-include-cleaner,
+  -cert-err33-c,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+
+WarningsAsErrors: 'clang-analyzer-*,bugprone-*'
+HeaderFilterRegex: '^.*/(src|include)/.*'
+FormatStyle: file

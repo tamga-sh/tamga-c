@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "tamga-c",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "CMakeLists.txt"
+        },
+        {
+          "type": "json",
+          "path": "vcpkg.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "vcpkg-port/vcpkg.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "generic",
+          "path": "include/tamga.h"
+        }
+      ]
+    }
+  }
+}

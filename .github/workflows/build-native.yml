@@ -1,144 +1,84 @@
 name: Build Native
 
-# Reusable workflow_call job: cross-compiles tamga-c's cdylib/staticlib for
-# every release target. Called from release.yml on a `v*` tag push.
+# Reusable workflow_call job: builds the release artefacts for every target.
 #
-# REUSE POINT: also called from tamga-swift's build-xcframework.yml
-# (`uses: tamga-sh/tamga-c/.github/workflows/build-native.yml@main`), which
-# lipo's the per-arch macOS/iOS-simulator outputs into universal slices and
-# feeds all three (macOS universal, iOS device, iOS-simulator universal)
-# into `xcodebuild -create-xcframework` -- see that repo's CLAUDE.md and the
-# Tamga API protocol specification's Architecture section (tamga-swift wraps
-# tamga-c via a Swift/Objective-C bridge). Do not remove the ios-* matrix
-# entries below without updating tamga-swift's workflow to match; do not
-# rename a target without doing the same (tamga-swift's
-# `dist/tamga-c-<name>/` artifact paths are keyed on the `name:` values
-# here).
+# Through v1.2 this cross-compiled a Rust crate and additionally produced iOS
+# device and simulator slices for tamga-swift's XCFramework pipeline. Both are
+# gone: the library is plain C, so the toolchain is whatever the runner
+# already has, and tamga-swift dropped its tamga-c binding in favour of a
+# native Swift implementation on 2026-08-12, taking the only consumer of the
+# iOS slices with it. Nothing in the fleet calls this workflow but
+# release.yml.
+#
+# Linux aarch64 is cross-compiled with the distribution's own
+# gcc-aarch64-linux-gnu. That is a build-time tool on the CI runner, not a
+# dependency of the library -- the produced artefact still links against libc
+# alone plus, where present, the system libcurl.
 
 on:
   workflow_call: {}
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   build:
     name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x86_64-gnu
+          - name: linux-x86_64
             os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            use_cross: true
-          - name: linux-aarch64-gnu
+            cmake_args: ""
+          - name: linux-aarch64
             os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            use_cross: true
-          - name: macos-x86_64
+            cross: aarch64
+            cmake_args: >-
+              -DCMAKE_SYSTEM_NAME=Linux
+              -DCMAKE_SYSTEM_PROCESSOR=aarch64
+              -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+              -DTAMGA_HTTP=none
+          # A single universal binary rather than two per-arch ones: it is
+          # what a macOS consumer actually wants to link, and lipo is right
+          # here.
+          - name: macos-universal
             os: macos-14
-            target: x86_64-apple-darwin
-            use_cross: false
-          - name: macos-aarch64
-            os: macos-14
-            target: aarch64-apple-darwin
-            use_cross: false
-          - name: windows-x86_64-msvc
+            cmake_args: -DCMAKE_OSX_ARCHITECTURES=x86_64;arm64
+          - name: windows-x86_64
             os: windows-latest
-            target: x86_64-pc-windows-msvc
-            use_cross: false
-          # iOS targets — consumed by tamga-swift's build-xcframework.yml
-          # (this workflow's original reuse point). Real device + both
-          # simulator archs (Apple Silicon dev machines run the arm64
-          # simulator slice, Intel ones run x86_64) so tamga-swift can
-          # `lipo` the two simulator libs into one universal slice.
-          - name: ios-arm64
-            os: macos-14
-            target: aarch64-apple-ios
-            use_cross: false
-            # Real iOS device linking of this crate's cdylib output fails
-            # with "Undefined symbols ... ___chkstk_darwin" from
-            # aws-lc-sys's precompiled arm64 asm objects — a known
-            # aws-lc-sys/iOS-device-cdylib gotcha that doesn't affect the
-            # iOS Simulator targets below (they link like normal macOS
-            # binaries) or this crate's staticlib output. XCFramework
-            # bundling only needs the staticlib anyway, so this target
-            # builds *only* that crate-type rather than chasing the
-            # underlying upstream linking issue.
-            staticlib_only: true
-          - name: ios-simulator-arm64
-            os: macos-14
-            target: aarch64-apple-ios-sim
-            use_cross: false
-          - name: ios-simulator-x86_64
-            os: macos-14
-            target: x86_64-apple-ios
-            use_cross: false
-    runs-on: ${{ matrix.os }}
-    # windows-x86_64-msvc is the long pole at 4m12s worst observed; every
-    # other leg (cross-compiled Linux, macOS, the three iOS targets) stays
-    # under 2m18s. 30 is ~7x the worst and matches ci.yml's matrix bound.
-    #
-    # This bound is what actually covers release.yml's `build-native` job:
-    # a job that calls a reusable workflow may only carry name/uses/with/
-    # secrets/needs/if/permissions/strategy/concurrency, so timeout-minutes
-    # is rejected there and has to live here instead.
-    timeout-minutes: 30
+            cmake_args: ""
     steps:
       - uses: actions/checkout@v7
-        with:
-          # Explicit, not implicit-current-repo: actions/checkout with no
-          # `repository:` checks out whichever repo/ref the CURRENT JOB's
-          # context resolves to -- for a cross-repo `workflow_call` (as
-          # tamga-swift's build-xcframework.yml does), that's the CALLING
-          # repo, not tamga-c itself. Confirmed by a real failure: "could
-          # not find Cargo.toml in .../tamga-swift/tamga-swift". Pinning
-          # this explicitly makes the workflow correctly self-contained
-          # for both callers (tamga-c's own release.yml and tamga-swift's).
-          repository: tamga-sh/tamga-c
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        timeout-minutes: 10
-        with:
-          targets: ${{ matrix.target }}
+      - name: Install libcurl (Linux)
+        if: runner.os == 'Linux' && matrix.cross != 'aarch64'
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
 
-      - name: Install cross
-        if: matrix.use_cross
-        uses: taiki-e/install-action@cross
-        timeout-minutes: 10
+      # The cross build ships without a transport: pulling a foreign-arch
+      # libcurl into the runner is more machinery than it is worth for an
+      # artefact whose consumers can register their own. The offline surface
+      # is complete either way.
+      - name: Install the aarch64 cross compiler
+        if: matrix.cross == 'aarch64'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Build (cross-rs/cross)
-        if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DTAMGA_C_BUILD_TESTS=OFF ${{ matrix.cmake_args }}
 
-      - name: Build (native cargo)
-        if: ${{ !matrix.use_cross && !matrix.staticlib_only }}
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build
+        run: cmake --build build --config Release
 
-      # See the ios-arm64 matrix entry's comment: this target's cdylib
-      # output fails to link (an aws-lc-sys/iOS-device gotcha unrelated to
-      # this crate's own code), and only the staticlib is actually needed
-      # here. `cargo rustc --crate-type` overrides Cargo.toml's declared
-      # crate-type list for this one invocation instead of building all of
-      # them.
-      - name: Build (native cargo, staticlib only)
-        if: ${{ !matrix.use_cross && matrix.staticlib_only }}
-        run: cargo rustc --release --target ${{ matrix.target }} --crate-type staticlib
+      - name: Stage
+        shell: bash
+        run: |
+          cmake --install build --prefix "dist/${{ matrix.name }}" --config Release
+          cp LICENSE README.md "dist/${{ matrix.name }}/"
+          ls -R "dist/${{ matrix.name }}"
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v4
         with:
           name: tamga-c-${{ matrix.name }}
-          # Only one of these glob groups matches per target OS; the
-          # others simply find nothing, which is fine with
-          # if-no-files-found: warn below rather than erroring the whole
-          # matrix leg out on an unrelated platform's missing extension.
-          path: |
-            target/${{ matrix.target }}/release/*tamga*.so
-            target/${{ matrix.target }}/release/*tamga*.dylib
-            target/${{ matrix.target }}/release/*tamga*.dll
-            target/${{ matrix.target }}/release/*tamga*.a
-            target/${{ matrix.target }}/release/*tamga*.lib
-          if-no-files-found: warn
+          path: dist/${{ matrix.name }}
+          if-no-files-found: error
