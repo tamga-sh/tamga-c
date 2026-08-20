@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/tamga-sh/tamga-c/compare/v1.2.2...v1.3.0) (2026-08-20)
+
+
+### Features
+
+* rewrite as a native C11 library with the full HTTP surface ([#27](https://github.com/tamga-sh/tamga-c/issues/27)) ([7cd4f4e](https://github.com/tamga-sh/tamga-c/commit/7cd4f4e4bbebd11ffda67d359e427b73ce9635dc))
+
 ## [1.2.2](https://github.com/tamga-sh/tamga-c/compare/v1.2.1...v1.2.2) (2026-08-18)
 
 
