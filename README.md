@@ -155,6 +155,26 @@ python3 -m pip install -r requirements-dev.txt
 clang-format's output changes between major versions, so a system-installed
 one will disagree with the gate.
 
+### Opening a pull request
+
+```sh
+sh scripts/mr.sh              # target: main
+sh scripts/mr.sh some-branch  # another target
+```
+
+This runs the checks CI runs — formatting, build, the full suite, and the
+`TAMGA_HTTP=none` build whenever the library itself changed — and only then
+pushes and opens the pull request. Use it rather than `gh pr create` directly:
+the push is its last step, not its purpose.
+
+It also **derives the pull-request title** from the branch's commits, taking
+the highest semver-relevant conventional type actually present. That is not
+cosmetic. This repository squashes, and GitHub writes the PR title as the
+squashed commit message — so a branch full of `feat:` work opened under a
+`chore:` title lands on `main` as a `chore:` commit, and release-please skips
+the release. `MR_TITLE=...` overrides the wording but is refused if its type
+would weaken the release; `MR_BODY_FILE=...` supplies a written description.
+
 ### An offline-only build
 
 ```sh

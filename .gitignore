@@ -34,3 +34,7 @@ tools/fixture-generator/Cargo.lock
 
 # Local install trees produced by `cmake --install --prefix`
 staging/
+
+# Working directories for scripts/mr.sh
+build-mr/
+build-mr-none/
