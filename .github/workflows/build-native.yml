@@ -82,7 +82,7 @@ jobs:
           cp LICENSE README.md "dist/${{ matrix.name }}/"
           ls -R "dist/${{ matrix.name }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tamga-c-${{ matrix.name }}
           path: dist/${{ matrix.name }}
