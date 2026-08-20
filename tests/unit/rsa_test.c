@@ -11,6 +11,10 @@
  */
 #include "tamga_test.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "crypto/der.h"
 #include "crypto/rsa.h"
 
@@ -234,6 +238,91 @@ TT_TEST(der_reads_unsigned_integers_strictly) {
     TT_ASSERT_FALSE(tamga_der_read_unsigned(&reader, &value, &value_len));
 }
 
+/* The generator records how many vectors it kept; reading that beats probing
+ * for a missing file, which the fixture reader (rightly) reports as an
+ * error. */
+static unsigned int vector_count(void) {
+    char manifest[4096];
+    size_t len = tt_read_fixture("keys/vectors/manifest.txt", (unsigned char *)manifest,
+                                 sizeof(manifest) - 1u);
+    const char *marker;
+    if (len == (size_t)-1) {
+        return 0u;
+    }
+    manifest[len] = '\0';
+    marker = strstr(manifest, "count=");
+    return (marker != NULL) ? (unsigned int)strtoul(marker + 6, NULL, 10) : 0u;
+}
+
+/*
+ * The vector set, not the single signature above.
+ *
+ * One key and one message per scheme is exactly the weakness NIST's CAVP
+ * SigVer sets exist to remove: a verifier can be wrong for a whole class of
+ * operand and still verify one signature. CAVP's own files are not vendored
+ * here -- they are large, and their provenance would need tracking -- so
+ * tests/fixtures/keys/generate.sh produces the same coverage locally,.
+ *
+ * For RSA the variation that matters is the digest: every vector signs a
+ * different message, so the padded block differs in every byte position,
+ * which a modexp or a padding comparison that is wrong only for some inputs
+ * will not survive. Both schemes are checked over the same messages, and
+ * each is checked NOT to verify under the other's padding.
+ */
+TT_TEST(verifies_every_committed_vector) {
+    unsigned char spki[SPKI_CAP];
+    size_t spki_len;
+    unsigned int n;
+    unsigned int checked = 0u;
+    unsigned int total = vector_count();
+
+    /* A silently empty or unregenerated fixture directory would make this
+     * test vacuous, so the floor is asserted before anything is read. */
+    TT_ASSERT(total >= 12u);
+
+    spki_len = tt_read_fixture("keys/vectors/rsa2048.spki.der", spki, sizeof(spki));
+    TT_ASSERT(spki_len != (size_t)-1);
+
+    for (n = 1u; n <= total; n++) {
+        char msg_path[64];
+        char p1_path[64];
+        char ps_path[64];
+        unsigned char msg[MSG_CAP];
+        unsigned char pkcs1[SIG_CAP];
+        unsigned char pss[SIG_CAP];
+        size_t msg_len;
+        size_t pkcs1_len;
+        size_t pss_len;
+
+        (void)snprintf(msg_path, sizeof(msg_path), "keys/vectors/msg_%u.bin", n);
+        (void)snprintf(p1_path, sizeof(p1_path), "keys/vectors/pkcs1_%u.bin", n);
+        (void)snprintf(ps_path, sizeof(ps_path), "keys/vectors/pss_%u.bin", n);
+        msg_len = tt_read_fixture(msg_path, msg, sizeof(msg));
+        TT_ASSERT(msg_len != (size_t)-1);
+        pkcs1_len = tt_read_fixture(p1_path, pkcs1, sizeof(pkcs1));
+        pss_len = tt_read_fixture(ps_path, pss, sizeof(pss));
+        TT_ASSERT(pkcs1_len != (size_t)-1);
+        TT_ASSERT(pss_len != (size_t)-1);
+
+        if (!tamga_rsa_verify_pkcs1_sha256(spki, spki_len, msg, msg_len, pkcs1, pkcs1_len) ||
+            !tamga_rsa_verify_pss_sha256(spki, spki_len, msg, msg_len, pss, pss_len)) {
+            tt_failures_++;
+            (void)fprintf(stderr, "FAIL %s: vector %u did not verify\n", tt_current_, n);
+            return;
+        }
+        /* And neither padding accepts the other's signature, for every
+         * vector rather than for the single pair above. */
+        if (tamga_rsa_verify_pkcs1_sha256(spki, spki_len, msg, msg_len, pss, pss_len) ||
+            tamga_rsa_verify_pss_sha256(spki, spki_len, msg, msg_len, pkcs1, pkcs1_len)) {
+            tt_failures_++;
+            (void)fprintf(stderr, "FAIL %s: vector %u cross-verified\n", tt_current_, n);
+            return;
+        }
+        checked++;
+    }
+    TT_ASSERT_EQ_SIZE((size_t)checked, (size_t)total);
+}
+
 int main(void) {
     TT_RUN(accepts_a_real_pkcs1_signature);
     TT_RUN(accepts_a_real_pss_signature);
@@ -246,5 +335,6 @@ int main(void) {
     TT_RUN(der_rejects_non_minimal_lengths);
     TT_RUN(der_rejects_a_length_past_the_buffer);
     TT_RUN(der_reads_unsigned_integers_strictly);
+    TT_RUN(verifies_every_committed_vector);
     return TT_SUMMARY();
 }
