@@ -23,21 +23,34 @@ typedef struct TamgaCurlState {
     CURL *handle;
 } TamgaCurlState;
 
+/* The body writer needs the response as well as the buffer, so it can record
+ * why it aborted -- "the response was too large" and "the machine is out of
+ * memory" are different answers for the caller, and both look like a generic
+ * transport failure from libcurl's side. */
+typedef struct TamgaCurlBodySink {
+    TamgaBuf *buf;
+    TamgaHttpResponse *response;
+} TamgaCurlBodySink;
+
 static size_t tamga_curl_write_body(char *data, size_t size, size_t count, void *user_data) {
-    TamgaBuf *buf = (TamgaBuf *)user_data;
+    TamgaCurlBodySink *sink = (TamgaCurlBodySink *)user_data;
+    TamgaBuf *buf = sink->buf;
     size_t total;
 
     if (!tamga_checked_mul(size, count, &total)) {
+        sink->response->failure = TAMGA_TRANSPORT_FAIL_OVERSIZED;
         return 0u;
     }
     /* Refusing to grow past the input cap is what stops a hostile or
      * misconfigured server from turning a licence check into an
      * out-of-memory. Returning short tells libcurl to abort the transfer. */
     if ((buf->len + total) > TAMGA_MAX_REASONABLE_LEN) {
+        sink->response->failure = TAMGA_TRANSPORT_FAIL_OVERSIZED;
         return 0u;
     }
     tamga_buf_append(buf, data, total);
     if (!tamga_buf_ok(buf)) {
+        sink->response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
         return 0u;
     }
     return total;
@@ -87,6 +100,13 @@ static size_t tamga_curl_write_header(char *data, size_t size, size_t count, voi
     memcpy(value, &data[value_start], value_end - value_start);
     value[value_end - value_start] = '\0';
 
+    /* Discarded on purpose. The only two failures are the 512-header cap
+     * (a deliberate guard against a server streaming headers forever) and an
+     * allocation failure; in both cases dropping the header and carrying on
+     * beats failing the whole response over a header nothing may read. The
+     * one visible consequence is that a dropped Retry-After silently costs
+     * the server's requested delay and falls back to exponential backoff,
+     * which is a degradation rather than a wrong answer. */
     (void)tamga_http_response_add_header(response, name, value);
     return total;
 }
@@ -100,12 +120,15 @@ static bool tamga_curl_perform(void *user_data, const TamgaHttpRequest *request,
     long status = 0;
     size_t i;
     bool ok = false;
+    TamgaCurlBodySink sink;
 
     if (state == NULL || state->handle == NULL || request == NULL || response == NULL) {
         return false;
     }
 
     tamga_buf_init(&body);
+    sink.buf = &body;
+    sink.response = response;
     curl_easy_reset(state->handle);
 
     for (i = 0u; i < request->header_count; i++) {
@@ -133,7 +156,7 @@ static bool tamga_curl_perform(void *user_data, const TamgaHttpRequest *request,
     (void)curl_easy_setopt(state->handle, CURLOPT_URL, request->url);
     (void)curl_easy_setopt(state->handle, CURLOPT_HTTPHEADER, headers);
     (void)curl_easy_setopt(state->handle, CURLOPT_WRITEFUNCTION, tamga_curl_write_body);
-    (void)curl_easy_setopt(state->handle, CURLOPT_WRITEDATA, &body);
+    (void)curl_easy_setopt(state->handle, CURLOPT_WRITEDATA, &sink);
     (void)curl_easy_setopt(state->handle, CURLOPT_HEADERFUNCTION, tamga_curl_write_header);
     (void)curl_easy_setopt(state->handle, CURLOPT_HEADERDATA, response);
     (void)curl_easy_setopt(state->handle, CURLOPT_TIMEOUT_MS, (long)request->timeout_ms);
@@ -187,6 +210,7 @@ static bool tamga_curl_perform(void *user_data, const TamgaHttpRequest *request,
      * would be a much less useful answer than handing over the bytes. */
     response->body = tamga_buf_detach_terminated(&body, &response->body_len);
     if (response->body == NULL) {
+        response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
         goto done;
     }
     ok = true;

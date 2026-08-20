@@ -19,4 +19,13 @@ tamga_add_test(test_unit_ecdsa   ecdsa_test.c)
 # Whitebox: p256.c's Montgomery arithmetic is static, and should stay that way.
 tamga_add_whitebox_test(test_unit_p256 p256_test.c
     DEPS ${CMAKE_SOURCE_DIR}/src/tamga_mem.c)
+
+# Whitebox: the library built against an allocator that can be made to fail,
+# so the OUT_OF_MEMORY branches are reachable at all. tamga_mem.c is excluded
+# from the list because tests/support/failing_alloc.c includes it.
+set(TAMGA_ALLOC_FAILURE_SOURCES ${TAMGA_SOURCES})
+list(FILTER TAMGA_ALLOC_FAILURE_SOURCES EXCLUDE REGEX "src/tamga_mem\\.c$")
+tamga_add_whitebox_test(test_unit_alloc_failure alloc_failure_test.c
+    DEPS ${TAMGA_ALLOC_FAILURE_SOURCES} ${CMAKE_SOURCE_DIR}/tests/support/failing_alloc.c)
+tamga_configure_http(test_unit_alloc_failure)
 tamga_add_test(test_unit_api     api_test.c)

@@ -32,6 +32,15 @@ typedef struct TamgaJsonParser {
 
 static TamgaJson *tamga_json_parse_value(TamgaJsonParser *p);
 
+/* One shared object, so the caller can tell an allocation failure from a
+ * malformed document by comparing the pointer rather than the text. Every
+ * allocation failure in this file reports through it. */
+const char TAMGA_JSON_ERROR_OUT_OF_MEMORY[] = "out of memory";
+
+bool tamga_json_error_is_out_of_memory(const char *error) {
+    return error == TAMGA_JSON_ERROR_OUT_OF_MEMORY;
+}
+
 static void tamga_json_fail(TamgaJsonParser *p, const char *message) {
     if (p->error == NULL) {
         p->error = message;
@@ -382,7 +391,7 @@ static TamgaJson *tamga_json_parse_array(TamgaJsonParser *p) {
     TamgaJson *array = tamga_json_new_array();
 
     if (array == NULL) {
-        tamga_json_fail(p, "out of memory");
+        tamga_json_fail(p, TAMGA_JSON_ERROR_OUT_OF_MEMORY);
         return NULL;
     }
     p->pos++; /* '[' */
@@ -400,7 +409,7 @@ static TamgaJson *tamga_json_parse_array(TamgaJsonParser *p) {
             return NULL;
         }
         if (!tamga_json_array_append(array, item)) {
-            tamga_json_fail(p, "out of memory");
+            tamga_json_fail(p, TAMGA_JSON_ERROR_OUT_OF_MEMORY);
             tamga_json_free(array);
             return NULL;
         }
@@ -426,7 +435,7 @@ static TamgaJson *tamga_json_parse_object(TamgaJsonParser *p) {
     TamgaJson *object = tamga_json_new_object();
 
     if (object == NULL) {
-        tamga_json_fail(p, "out of memory");
+        tamga_json_fail(p, TAMGA_JSON_ERROR_OUT_OF_MEMORY);
         return NULL;
     }
     p->pos++; /* '{' */
@@ -476,7 +485,7 @@ static TamgaJson *tamga_json_parse_object(TamgaJsonParser *p) {
             return NULL;
         }
         if (!tamga_json_object_set(object, key, item)) {
-            tamga_json_fail(p, "out of memory");
+            tamga_json_fail(p, TAMGA_JSON_ERROR_OUT_OF_MEMORY);
             tamga_string_free(key);
             tamga_json_free(object);
             return NULL;
@@ -569,7 +578,7 @@ static TamgaJson *tamga_json_parse_value(TamgaJsonParser *p) {
     }
 
     if (value == NULL && p->error == NULL) {
-        tamga_json_fail(p, "out of memory");
+        tamga_json_fail(p, TAMGA_JSON_ERROR_OUT_OF_MEMORY);
     }
     p->depth--;
     return value;

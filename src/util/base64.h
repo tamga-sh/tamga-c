@@ -38,6 +38,21 @@ TAMGA_NODISCARD bool tamga_base64_decode(const char *in, size_t in_len, unsigned
  * the buffer is released with tamga_free() (or tamga_secure_free() when it
  * held sensitive bytes).
  */
+/* Why a decode returned NULL. The two cases need different answers: one
+ * means the caller's file is corrupt, the other means this machine is out of
+ * memory, and reporting the second as the first turns an allocation failure
+ * into a support ticket about a licence that stopped working. */
+typedef enum TamgaBase64Failure {
+    TAMGA_BASE64_FAILURE_MALFORMED = 0,
+    TAMGA_BASE64_FAILURE_OUT_OF_MEMORY
+} TamgaBase64Failure;
+
+/* As tamga_base64_decode_alloc, but reports which of the two failures it was.
+ * `out_failure` is written only when the return value is NULL. */
+TAMGA_NODISCARD unsigned char *tamga_base64_decode_alloc_why(const char *in, size_t in_len,
+                                                             size_t *out_len,
+                                                             TamgaBase64Failure *out_failure);
+
 TAMGA_NODISCARD unsigned char *tamga_base64_decode_alloc(const char *in, size_t in_len,
                                                          size_t *out_len);
 

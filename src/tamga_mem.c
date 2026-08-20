@@ -137,6 +137,27 @@ char *tamga_strndup(const char *src, size_t len) {
     return copy;
 }
 
+char *tamga_memdup_terminated(const char *src, size_t len) {
+    char *copy;
+    size_t total;
+
+    if (src == NULL || len > TAMGA_MAX_REASONABLE_LEN) {
+        return NULL;
+    }
+    if (!tamga_checked_add(len, 1u, &total)) {
+        return NULL;
+    }
+    copy = (char *)tamga_malloc(total);
+    if (copy == NULL) {
+        return NULL;
+    }
+    if (len > 0u) {
+        memcpy(copy, src, len);
+    }
+    copy[len] = '\0';
+    return copy;
+}
+
 /*
  * Public entry point. Deliberately does NOT touch the thread's last-error
  * slot: freeing cannot fail, so it has no error to report, and clearing here

@@ -203,7 +203,13 @@ bool tamga_gcm_open(const unsigned char key[TAMGA_AES256_KEY_LEN],
     }
     tag = &ciphertext_and_tag[ciphertext_len];
 
-    /* `out` is the output buffer and `computed_tag` the tag, in that order.
+    /* tamga_gcm_core has no failure path -- it returns true unconditionally,
+     * and the return type exists only so a future variant (a hardware-AES
+     * path, say) could report one. Discarding it is safe today and would
+     * stop being safe silently, so: if that ever changes, both call sites
+     * here must be revisited.
+     *
+     * `out` is the output buffer and `computed_tag` the tag, in that order.
      * clang-tidy's suspicious-argument check matches on name similarity, not
      * on types, and reads them as swapped. */
     /* NOLINTNEXTLINE(readability-suspicious-call-argument) */

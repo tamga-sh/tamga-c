@@ -92,6 +92,7 @@ TamgaErrorCode tamga_machine_file_verify_into(const char *pem, size_t pem_len, u
     TamgaJson *payload = NULL;
     const TamgaJson *data;
     const char *parse_error = NULL;
+    TamgaBase64Failure why;
 
     if (pem == NULL || pubkey == NULL || out_resource == NULL) {
         return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "a required argument was null");
@@ -152,9 +153,12 @@ TamgaErrorCode tamga_machine_file_verify_into(const char *pem, size_t pem_len, u
                                "unsupported machine-file encryption mode");
     }
 
-    signature = tamga_base64_decode_alloc(cert.sig, cert.sig_len, &signature_len);
+    signature = tamga_base64_decode_alloc_why(cert.sig, cert.sig_len, &signature_len, &why);
     if (signature == NULL) {
         tamga_cert_free(&cert);
+        if (why == TAMGA_BASE64_FAILURE_OUT_OF_MEMORY) {
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not decode the signature");
+        }
         return tamga_error_set(TAMGA_ERR_INVALID_BASE64, "the signature field is not valid base64");
     }
 
@@ -169,9 +173,12 @@ TamgaErrorCode tamga_machine_file_verify_into(const char *pem, size_t pem_len, u
     }
     tamga_free(signature);
 
-    enc_bytes = tamga_base64_decode_alloc(cert.enc, cert.enc_len, &enc_len);
+    enc_bytes = tamga_base64_decode_alloc_why(cert.enc, cert.enc_len, &enc_len, &why);
     if (enc_bytes == NULL) {
         tamga_cert_free(&cert);
+        if (why == TAMGA_BASE64_FAILURE_OUT_OF_MEMORY) {
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not decode the payload");
+        }
         return tamga_error_set(TAMGA_ERR_INVALID_BASE64, "the enc field is not valid base64");
     }
 
@@ -232,6 +239,9 @@ TamgaErrorCode tamga_machine_file_verify_into(const char *pem, size_t pem_len, u
     tamga_cert_free(&cert);
 
     if (payload == NULL) {
+        if (tamga_json_error_is_out_of_memory(parse_error)) {
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not parse the machine payload");
+        }
         return tamga_error_set(TAMGA_ERR_INVALID_JSON, "machine payload is malformed: %s",
                                (parse_error != NULL) ? parse_error : "unknown");
     }

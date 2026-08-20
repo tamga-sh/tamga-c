@@ -41,6 +41,9 @@ static TamgaErrorCode tamga_proof_build_payload(const char *account_id, const ch
 
     dataset = tamga_json_parse(dataset_json, strlen(dataset_json), &parse_error);
     if (dataset == NULL) {
+        if (tamga_json_error_is_out_of_memory(parse_error)) {
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not parse the dataset");
+        }
         return tamga_error_set(TAMGA_ERR_INVALID_JSON, "the dataset is not valid JSON: %s",
                                (parse_error != NULL) ? parse_error : "unknown");
     }
@@ -62,17 +65,45 @@ static TamgaErrorCode tamga_proof_build_payload(const char *account_id, const ch
         return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the proof payload");
     }
 
+    /*
+     * Written as a staircase rather than one chained condition, because what
+     * is still outstanding differs at every step.
+     *
+     * tamga_json_object_set takes ownership of its `item` whether it
+     * succeeds or fails -- but only of `item`. Until `account` has been set
+     * INTO `root`, root does not own it, so a failure before that point
+     * leaves account, machine and dataset live. A single chained condition
+     * with one `tamga_json_free(root)` cleanup leaked exactly those: found by
+     * failing allocation 24 of 50 in tests/unit/alloc_failure_test.c, worth
+     * 16 blocks.
+     */
     if (!tamga_json_object_set(
             account, "id", tamga_json_new_string(account_canonical, strlen(account_canonical))) ||
         !tamga_json_object_set(
             machine, "id", tamga_json_new_string(machine_canonical, strlen(machine_canonical))) ||
         !tamga_json_object_set(machine, "fingerprint",
-                               tamga_json_new_string(fingerprint, strlen(fingerprint))) ||
-        !tamga_json_object_set(root, "account", account) ||
-        !tamga_json_object_set(root, "machine", machine) ||
-        !tamga_json_object_set(root, "dataset", dataset)) {
-        /* Every setter takes ownership even when it fails, so the children
-         * are already released; only the root can still be outstanding. */
+                               tamga_json_new_string(fingerprint, strlen(fingerprint)))) {
+        tamga_json_free(root);
+        tamga_json_free(account);
+        tamga_json_free(machine);
+        tamga_json_free(dataset);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the proof payload");
+    }
+    /* Each of the three below hands one child to root. On success root owns
+     * it; on failure the setter has already released it. Either way it drops
+     * out of the cleanup list from that line on. */
+    if (!tamga_json_object_set(root, "account", account)) {
+        tamga_json_free(root);
+        tamga_json_free(machine);
+        tamga_json_free(dataset);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the proof payload");
+    }
+    if (!tamga_json_object_set(root, "machine", machine)) {
+        tamga_json_free(root);
+        tamga_json_free(dataset);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the proof payload");
+    }
+    if (!tamga_json_object_set(root, "dataset", dataset)) {
         tamga_json_free(root);
         return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the proof payload");
     }
@@ -94,6 +125,7 @@ TamgaErrorCode tamga_proof_verify(const char *proof, const unsigned char *rsa_pu
     char *payload = NULL;
     size_t payload_len = 0u;
     unsigned char *signature = NULL;
+    TamgaBase64Failure why;
     size_t signature_len = 0u;
     size_t prefix_len = sizeof(TAMGA_PROOF_PREFIX) - 1u;
     size_t proof_len;
@@ -124,10 +156,16 @@ TamgaErrorCode tamga_proof_verify(const char *proof, const unsigned char *rsa_pu
         return TAMGA_OK;
     }
 
-    signature =
-        tamga_base64_decode_alloc(&proof[prefix_len], proof_len - prefix_len, &signature_len);
+    signature = tamga_base64_decode_alloc_why(&proof[prefix_len], proof_len - prefix_len,
+                                              &signature_len, &why);
     if (signature == NULL) {
         tamga_string_free(payload);
+        /* A signature that is not valid base64 makes the proof invalid, which
+         * is an answer. Running out of memory is not an answer, and reporting
+         * it as one would tell the caller a genuine proof was forged. */
+        if (why == TAMGA_BASE64_FAILURE_OUT_OF_MEMORY) {
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not decode the proof signature");
+        }
         return TAMGA_OK;
     }
 

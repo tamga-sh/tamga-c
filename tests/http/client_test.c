@@ -8,6 +8,7 @@
 #include "http/client.h"
 #include "mock_transport.h"
 #include "tamga_error.h"
+#include "tamga_mem.h"
 
 static const char ACCOUNT[] = "01926b3e-0000-7000-8000-0000000000aa";
 static const char LICENSE_ID[] = "01926b3e-0000-7000-8000-000000000001";
@@ -509,6 +510,78 @@ TT_TEST(configuration_is_validated) {
     tamga_client_free(NULL);
 }
 
+/*
+ * A transport that fails carries a reason, and the client maps each to a
+ * distinct answer.
+ *
+ * Before this, every perform() == false became one TAMGA_ERR_TRANSPORT with
+ * one message, so "retry in a moment" (a timeout), "this will never work"
+ * (a response above our own size cap) and "the machine is out of memory"
+ * were indistinguishable to a caller deciding what to do next.
+ *
+ * The vtable is installed directly rather than through
+ * tamga_client_set_transport, because the public callback API has no way to
+ * report a reason -- caller-supplied transports always report NETWORK, which
+ * is exactly the previous behaviour, and is what the last case pins.
+ */
+static TamgaTransportFailure g_forced_failure;
+
+static bool failing_perform(void *user_data, const TamgaHttpRequest *request,
+                            TamgaHttpResponse *response) {
+    (void)user_data;
+    (void)request;
+    response->failure = g_forced_failure;
+    return false;
+}
+
+TT_TEST(a_transport_failure_reports_why_it_failed) {
+    static const struct {
+        TamgaTransportFailure failure;
+        TamgaErrorCode expected;
+        const char *expected_message_fragment;
+    } CASES[] = {
+        {TAMGA_TRANSPORT_FAIL_NETWORK, TAMGA_ERR_TRANSPORT, "could not be completed"},
+        {TAMGA_TRANSPORT_FAIL_OVERSIZED, TAMGA_ERR_TRANSPORT, "exceeded the maximum size"},
+        {TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY, TAMGA_ERR_OUT_OF_MEMORY, "hold the server's response"},
+    };
+    size_t i;
+
+    for (i = 0u; i < (sizeof(CASES) / sizeof(CASES[0])); i++) {
+        TamgaClient *client = NULL;
+        TamgaResponse *response = NULL;
+        TamgaHttpTransport *transport;
+        const char *message;
+
+        TT_ASSERT_EQ_INT(tamga_client_new(ACCOUNT, "api.tamga.sh", &client), TAMGA_OK);
+        TT_ASSERT_NOT_NULL(client);
+        TT_ASSERT_EQ_INT(tamga_client_set_auth(client, TAMGA_AUTH_BEARER, "tok-abc123", NULL),
+                         TAMGA_OK);
+
+        transport = (TamgaHttpTransport *)tamga_calloc(1u, sizeof(*transport));
+        TT_ASSERT_NOT_NULL(transport);
+        transport->perform = failing_perform;
+        tamga_http_transport_destroy(client->transport);
+        client->transport = transport;
+        client->transport_is_default = false;
+
+        g_forced_failure = CASES[i].failure;
+        TT_ASSERT_EQ_INT(tamga_client_quick_validate(client, "6f1d2c3e-4b5a-4c7d-8e9f-0a1b2c3d4e5f",
+                                                     NULL, &response),
+                         CASES[i].expected);
+        TT_ASSERT_NULL(response);
+
+        message = tamga_last_error_message();
+        TT_ASSERT_NOT_NULL(message);
+        if (message == NULL || strstr(message, CASES[i].expected_message_fragment) == NULL) {
+            tt_failures_++;
+            (void)fprintf(stderr, "FAIL %s: message %s lacks \"%s\"\n", tt_current_,
+                          (message != NULL) ? message : "(null)",
+                          CASES[i].expected_message_fragment);
+        }
+        tamga_client_free(client);
+    }
+}
+
 int main(void) {
     TT_RUN(builds_the_account_scoped_base_url);
     TT_RUN(host_forms_normalise_consistently);
@@ -530,5 +603,6 @@ int main(void) {
     TT_RUN(a_line_break_in_a_credential_is_refused_at_configuration);
     TT_RUN(a_response_body_may_contain_a_nul_byte);
     TT_RUN(configuration_is_validated);
+    TT_RUN(a_transport_failure_reports_why_it_failed);
     return TT_SUMMARY();
 }

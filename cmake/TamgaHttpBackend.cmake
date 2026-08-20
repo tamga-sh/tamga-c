@@ -59,15 +59,23 @@ endif()
 
 message(STATUS "tamga: HTTP backend = ${TAMGA_HTTP_BACKEND}")
 
+# Captured while this module is being included, which happens from the top
+# level. CMAKE_CURRENT_SOURCE_DIR inside the function below would be the
+# CALLER's directory instead, so a call from tests/ pointed target_sources at
+# a path that does not exist -- and because a static archive does not resolve
+# its symbols, that produced a library with an undefined
+# tamga_http_transport_create_curl rather than an error.
+set(TAMGA_PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "tamga source root")
+
 # Adds the backend's sources, compile definitions and link libraries to one
 # library target.
 function(tamga_configure_http TARGET)
     if(TAMGA_HTTP_BACKEND STREQUAL "winhttp")
-        target_sources(${TARGET} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/http/transport_winhttp.c)
+        target_sources(${TARGET} PRIVATE ${TAMGA_PROJECT_ROOT}/src/http/transport_winhttp.c)
         target_compile_definitions(${TARGET} PRIVATE TAMGA_HTTP_WINHTTP=1)
         target_link_libraries(${TARGET} PRIVATE winhttp)
     elseif(TAMGA_HTTP_BACKEND STREQUAL "curl")
-        target_sources(${TARGET} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/http/transport_curl.c)
+        target_sources(${TARGET} PRIVATE ${TAMGA_PROJECT_ROOT}/src/http/transport_curl.c)
         target_compile_definitions(${TARGET} PRIVATE TAMGA_HTTP_CURL=1)
         target_link_libraries(${TARGET} PRIVATE CURL::libcurl)
     else()

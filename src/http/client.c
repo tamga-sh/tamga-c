@@ -395,6 +395,13 @@ static TamgaErrorCode tamga_map_api_error(TamgaResponse *response) {
         code = tamga_json_as_string(tamga_json_object_get(first, "code"), NULL);
     }
     if (code != NULL) {
+        /* Diagnostic only, and deliberately not checked: `status` above was
+         * already derived from `code`, so a failed copy costs the caller the
+         * raw string in tamga_response_error_code() and nothing else. The
+         * alternative -- failing the whole call because a diagnostic could
+         * not be copied -- would be worse on the one path where this can
+         * happen, which is an already-failing response under memory
+         * pressure. */
         response->api_error_code = tamga_strdup(code);
     }
 
@@ -565,8 +572,25 @@ TamgaErrorCode tamga_client_send(TamgaClient *client, const char *method, const 
 
         tamga_http_response_init(&http);
         if (!client->transport->perform(client->transport->user_data, &request, &http)) {
+            TamgaTransportFailure reason = http.failure;
             tamga_http_response_free(&http);
-            status = tamga_error_set(TAMGA_ERR_TRANSPORT, "the request could not be completed");
+            switch (reason) {
+            case TAMGA_TRANSPORT_FAIL_OVERSIZED:
+                /* Not a network fault and not worth repeating: the same
+                 * response would be refused every time. */
+                status = tamga_error_set(TAMGA_ERR_TRANSPORT,
+                                         "the server's response exceeded the maximum size this "
+                                         "library will accept");
+                break;
+            case TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY:
+                status = tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY,
+                                         "could not hold the server's response");
+                break;
+            case TAMGA_TRANSPORT_FAIL_NETWORK:
+            default:
+                status = tamga_error_set(TAMGA_ERR_TRANSPORT, "the request could not be completed");
+                break;
+            }
             goto cleanup;
         }
 
@@ -862,10 +886,20 @@ bool tamga_http_result_set_body(TamgaHttpResult *result, const char *body, uintp
         return false;
     }
     if ((size_t)body_len > TAMGA_MAX_REASONABLE_LEN) {
+        result->response->failure = TAMGA_TRANSPORT_FAIL_OVERSIZED;
         return false;
     }
-    copy = tamga_strndup(body, (size_t)body_len);
+    /* Length-authoritative and NUL-tolerant, matching what the built-in
+     * transports do with a body containing a raw NUL. tamga_strndup would
+     * reject it, which made the same response succeed through libcurl and
+     * fail through a caller-supplied transport. */
+    copy = tamga_memdup_terminated(body, (size_t)body_len);
     if (copy == NULL) {
+        /* The reason is recorded here rather than left to the caller: a
+         * transport callback can only return false, so without this the
+         * client would report a machine that is out of memory as a network
+         * failure, and the caller would retry it forever. */
+        result->response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
         return false;
     }
     tamga_secure_free(result->response->body, result->response->body_len);
@@ -878,7 +912,15 @@ bool tamga_http_result_add_header(TamgaHttpResult *result, const char *name, con
     if (result == NULL || result->response == NULL) {
         return false;
     }
-    return tamga_http_response_add_header(result->response, name, value);
+    if (!tamga_http_response_add_header(result->response, name, value)) {
+        /* Either the 512-header cap or an allocation failure. The cap is not
+         * reachable from a sane transport, so attributing this to memory is
+         * the useful reading; a transport that hits the cap has bigger
+         * problems than the error code. */
+        result->response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
+        return false;
+    }
+    return true;
 }
 
 static bool tamga_custom_perform(void *user_data, const TamgaHttpRequest *request,

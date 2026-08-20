@@ -35,6 +35,7 @@ TamgaErrorCode tamga_cert_parse(const char *body, size_t body_len, TamgaCert *ou
     size_t decoded_len = 0u;
     const char *parse_error = NULL;
     TamgaJson *root;
+    TamgaBase64Failure why;
     const TamgaJson *enc;
     const TamgaJson *sig;
     const TamgaJson *alg;
@@ -44,8 +45,12 @@ TamgaErrorCode tamga_cert_parse(const char *body, size_t body_len, TamgaCert *ou
     }
     memset(out, 0, sizeof(*out));
 
-    decoded = tamga_base64_decode_alloc(body, body_len, &decoded_len);
+    decoded = tamga_base64_decode_alloc_why(body, body_len, &decoded_len, &why);
     if (decoded == NULL) {
+        if (why == TAMGA_BASE64_FAILURE_OUT_OF_MEMORY) {
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY,
+                                   "could not allocate room to decode the certificate");
+        }
         return tamga_error_set(TAMGA_ERR_INVALID_BASE64,
                                "the certificate body is not valid base64");
     }
@@ -53,6 +58,9 @@ TamgaErrorCode tamga_cert_parse(const char *body, size_t body_len, TamgaCert *ou
     root = tamga_json_parse((const char *)decoded, decoded_len, &parse_error);
     tamga_secure_free(decoded, decoded_len);
     if (root == NULL) {
+        if (tamga_json_error_is_out_of_memory(parse_error)) {
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not parse the certificate");
+        }
         return tamga_error_set(TAMGA_ERR_INVALID_JSON, "certificate JSON is malformed: %s",
                                (parse_error != NULL) ? parse_error : "unknown");
     }

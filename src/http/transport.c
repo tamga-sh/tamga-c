@@ -14,6 +14,7 @@ void tamga_http_response_init(TamgaHttpResponse *response) {
     response->headers = NULL;
     response->header_count = 0u;
     response->header_capacity = 0u;
+    response->failure = TAMGA_TRANSPORT_FAIL_NETWORK;
 }
 
 void tamga_http_response_free(TamgaHttpResponse *response) {

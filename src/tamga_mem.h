@@ -79,4 +79,15 @@ TAMGA_NODISCARD char *tamga_strdup(const char *src);
  */
 TAMGA_NODISCARD char *tamga_strndup(const char *src, size_t len);
 
+/*
+ * Duplicates `len` bytes and appends a NUL, permitting an interior NUL.
+ *
+ * For payloads whose length is authoritative and where the bytes are data
+ * rather than a C string -- an HTTP response body is the case that exists.
+ * A response carrying a raw NUL is still a well-formed response, and the two
+ * built-in transports hand it over rather than reporting a transport
+ * failure; this is what lets a caller-supplied transport do the same.
+ */
+TAMGA_NODISCARD char *tamga_memdup_terminated(const char *src, size_t len);
+
 #endif /* TAMGA_MEM_H */

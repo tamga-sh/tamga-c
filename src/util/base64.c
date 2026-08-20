@@ -356,19 +356,29 @@ bool tamga_base64_decode(const char *in, size_t in_len, unsigned char *out, size
     return true;
 }
 
-unsigned char *tamga_base64_decode_alloc(const char *in, size_t in_len, size_t *out_len) {
+unsigned char *tamga_base64_decode_alloc_why(const char *in, size_t in_len, size_t *out_len,
+                                             TamgaBase64Failure *out_failure) {
     size_t cap;
     size_t decoded_len = 0u;
     unsigned char *buf;
+    TamgaBase64Failure ignored;
+
+    if (out_failure == NULL) {
+        out_failure = &ignored;
+    }
+    *out_failure = TAMGA_BASE64_FAILURE_MALFORMED;
 
     if (in == NULL || out_len == NULL) {
         return NULL;
     }
+    /* An input so long its decoded size overflows is refused as malformed
+     * rather than as an allocation failure -- nothing was attempted. */
     if (!tamga_base64_decoded_cap(in_len, &cap)) {
         return NULL;
     }
     buf = (unsigned char *)tamga_malloc(cap);
     if (buf == NULL) {
+        *out_failure = TAMGA_BASE64_FAILURE_OUT_OF_MEMORY;
         return NULL;
     }
     if (!tamga_base64_decode(in, in_len, buf, &decoded_len)) {
@@ -377,6 +387,10 @@ unsigned char *tamga_base64_decode_alloc(const char *in, size_t in_len, size_t *
     }
     *out_len = decoded_len;
     return buf;
+}
+
+unsigned char *tamga_base64_decode_alloc(const char *in, size_t in_len, size_t *out_len) {
+    return tamga_base64_decode_alloc_why(in, in_len, out_len, NULL);
 }
 
 bool tamga_base64_encoded_len(size_t decoded_len, size_t *out) {

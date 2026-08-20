@@ -159,4 +159,14 @@ TAMGA_NODISCARD char *tamga_json_write_canonical(const TamgaJson *value, size_t 
  */
 TAMGA_NODISCARD char *tamga_json_write(const TamgaJson *value, size_t *out_len);
 
+/*
+ * The reason string tamga_json_parse reports when it ran out of memory
+ * rather than meeting a malformed document. Compared by identity, not by
+ * text: an out-of-memory reported as "your licence file is corrupt" is a
+ * wrong answer, and the two are otherwise indistinguishable to a caller.
+ */
+extern const char TAMGA_JSON_ERROR_OUT_OF_MEMORY[];
+
+TAMGA_NODISCARD bool tamga_json_error_is_out_of_memory(const char *error);
+
 #endif /* TAMGA_UTIL_JSON_H */

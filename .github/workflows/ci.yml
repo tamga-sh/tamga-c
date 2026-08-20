@@ -161,7 +161,14 @@ jobs:
           -DTAMGA_C_ENABLE_ASAN=ON -DTAMGA_WARNINGS_AS_ERRORS=ON
       - name: Build
         run: cmake --build build-asan
+      # LeakSanitizer runs here and nowhere else: it is unsupported on macOS,
+      # so this Linux job is the only place the allocation-failure walk in
+      # tests/unit/alloc_failure_test.c can prove that a failed allocation
+      # part-way through an operation does not strand the allocations that
+      # came before it. Enabled explicitly rather than relied on as a default.
       - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1
         run: ctest --test-dir build-asan --output-on-failure
 
   no-dependencies:

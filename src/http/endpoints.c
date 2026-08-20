@@ -76,6 +76,9 @@ static TamgaErrorCode tamga_parse_optional_object(const char *json, const char *
     }
     *out = tamga_json_parse(json, strlen(json), &error);
     if (*out == NULL) {
+        if (tamga_json_error_is_out_of_memory(error)) {
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not parse %s", what);
+        }
         return tamga_error_set(TAMGA_ERR_INVALID_JSON, "%s is not valid JSON: %s", what,
                                (error != NULL) ? error : "unknown");
     }
@@ -142,12 +145,38 @@ TamgaErrorCode tamga_client_validate_by_id(TamgaClient *client, const char *lice
         return status;
     }
 
+    /*
+     * `meta` is put inside `root` BEFORE it is populated, so that from that
+     * point on freeing `root` releases everything. Populating first and
+     * attaching last -- the obvious order -- means a failure part-way leaves
+     * `meta` owned by nobody, and the single `tamga_json_free(root)` cleanup
+     * silently leaks it. That was a real leak here, in tamga_checkout_body
+     * and in tamga_proof_build_payload, all three found by the allocation
+     * walk in tests/unit/alloc_failure_test.c.
+     */
     root = tamga_json_new_object();
     meta = tamga_json_new_object();
-    if (root == NULL || meta == NULL ||
-        !tamga_json_object_set(meta, "skip_touch", tamga_json_new_bool(skip_touch)) ||
-        (scope != NULL && !tamga_json_object_set(meta, "scope", scope)) ||
-        !tamga_json_object_set(root, "meta", meta)) {
+    if (root == NULL || meta == NULL) {
+        tamga_json_free(root);
+        tamga_json_free(meta);
+        tamga_json_free(scope);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    if (!tamga_json_object_set(root, "meta", meta)) {
+        /* The failed setter consumed `meta`; only `scope` is still ours. */
+        tamga_json_free(root);
+        tamga_json_free(scope);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    /* Insertion order is the wire order, and the wire bytes are pinned by
+     * tests/http/endpoints_test.c -- so `scope` is freed explicitly on this
+     * path rather than being attached early to make the ownership simpler. */
+    if (!tamga_json_object_set(meta, "skip_touch", tamga_json_new_bool(skip_touch))) {
+        tamga_json_free(root);
+        tamga_json_free(scope);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    if (scope != NULL && !tamga_json_object_set(meta, "scope", scope)) {
         tamga_json_free(root);
         return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
     }
@@ -237,11 +266,16 @@ static char *tamga_checkout_body(bool encrypt, int64_t ttl_seconds) {
         tamga_json_free(meta);
         return NULL;
     }
+    /* Attached before it is populated -- see the note in
+     * tamga_client_validate_by_id for why the other order leaks. */
+    if (!tamga_json_object_set(root, "meta", meta)) {
+        tamga_json_free(root);
+        return NULL;
+    }
     if (!tamga_json_object_set(meta, "encrypt", tamga_json_new_bool(encrypt)) ||
         !tamga_json_object_set(meta, "ttl",
                                (ttl_seconds > 0) ? tamga_json_new_int(ttl_seconds)
-                                                 : tamga_json_new_null()) ||
-        !tamga_json_object_set(root, "meta", meta)) {
+                                                 : tamga_json_new_null())) {
         tamga_json_free(root);
         return NULL;
     }
@@ -362,6 +396,9 @@ TamgaErrorCode tamga_client_create_machine(TamgaClient *client, const char *lice
     if (status != TAMGA_OK) {
         return status;
     }
+    /* Cannot fail: tamga_require_uuid above parsed this same string with
+     * the same parser. If that call is ever changed or moved, this
+     * discard stops being safe. */
     (void)tamga_uuid_normalize(license_id, canonical);
 
     root = tamga_json_new_object();
@@ -378,6 +415,60 @@ TamgaErrorCode tamga_client_create_machine(TamgaClient *client, const char *lice
         tamga_json_free(relationships);
         tamga_json_free(license);
         tamga_json_free(license_data);
+        tamga_json_free(options);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+
+    /*
+     * The whole tree is assembled first, empty, so that `root` owns every
+     * node before any of them is populated. Everything after this point is
+     * covered by a single tamga_json_free(root) -- which is what the cleanup
+     * below has always assumed and, until the allocation walk in
+     * tests/unit/alloc_failure_test.c, was not actually true.
+     */
+    if (!tamga_json_object_set(root, "data", data)) {
+        tamga_json_free(root);
+        tamga_json_free(attributes);
+        tamga_json_free(relationships);
+        tamga_json_free(license);
+        tamga_json_free(license_data);
+        tamga_json_free(options);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    /* "type" goes in before the two sub-objects because insertion order is
+     * the wire order, and endpoints_test.c pins these bytes. */
+    if (!tamga_json_object_set(data, "type", tamga_json_new_string("machines", 8u))) {
+        tamga_json_free(root);
+        tamga_json_free(attributes);
+        tamga_json_free(relationships);
+        tamga_json_free(license);
+        tamga_json_free(license_data);
+        tamga_json_free(options);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    if (!tamga_json_object_set(data, "attributes", attributes)) {
+        tamga_json_free(root);
+        tamga_json_free(relationships);
+        tamga_json_free(license);
+        tamga_json_free(license_data);
+        tamga_json_free(options);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    if (!tamga_json_object_set(data, "relationships", relationships)) {
+        tamga_json_free(root);
+        tamga_json_free(license);
+        tamga_json_free(license_data);
+        tamga_json_free(options);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    if (!tamga_json_object_set(relationships, "license", license)) {
+        tamga_json_free(root);
+        tamga_json_free(license_data);
+        tamga_json_free(options);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    if (!tamga_json_object_set(license, "data", license_data)) {
+        tamga_json_free(root);
         tamga_json_free(options);
         return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
     }
@@ -404,16 +495,11 @@ TamgaErrorCode tamga_client_create_machine(TamgaClient *client, const char *lice
     }
     tamga_json_free(options);
 
+    /* Every node below already belongs to root, so these only add leaves. */
     if (status == TAMGA_OK) {
         if (!tamga_json_object_set(license_data, "type", tamga_json_new_string("licenses", 8u)) ||
             !tamga_json_object_set(license_data, "id",
-                                   tamga_json_new_string(canonical, strlen(canonical))) ||
-            !tamga_json_object_set(license, "data", license_data) ||
-            !tamga_json_object_set(relationships, "license", license) ||
-            !tamga_json_object_set(data, "type", tamga_json_new_string("machines", 8u)) ||
-            !tamga_json_object_set(data, "attributes", attributes) ||
-            !tamga_json_object_set(data, "relationships", relationships) ||
-            !tamga_json_object_set(root, "data", data)) {
+                                   tamga_json_new_string(canonical, strlen(canonical)))) {
             status = TAMGA_ERR_OUT_OF_MEMORY;
         }
     }
@@ -585,9 +671,20 @@ TamgaErrorCode tamga_client_generate_offline_proof(TamgaClient *client, const ch
 
     root = tamga_json_new_object();
     meta = tamga_json_new_object();
-    if (root == NULL || meta == NULL || dataset == NULL ||
-        !tamga_json_object_set(meta, "dataset", dataset) ||
-        !tamga_json_object_set(root, "meta", meta)) {
+    if (root == NULL || meta == NULL || dataset == NULL) {
+        tamga_json_free(root);
+        tamga_json_free(meta);
+        tamga_json_free(dataset);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    /* Attached before it is populated -- see the note in
+     * tamga_client_validate_by_id for why the other order leaks. */
+    if (!tamga_json_object_set(root, "meta", meta)) {
+        tamga_json_free(root);
+        tamga_json_free(dataset);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    if (!tamga_json_object_set(meta, "dataset", dataset)) {
         tamga_json_free(root);
         return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
     }
@@ -635,6 +732,9 @@ TamgaErrorCode tamga_client_create_component(TamgaClient *client, const char *ma
     if (metadata == NULL) {
         metadata = tamga_json_new_object();
     }
+    /* Cannot fail: tamga_require_uuid above parsed this same string with
+     * the same parser. If that call is ever changed or moved, this
+     * discard stops being safe. */
     (void)tamga_uuid_normalize(machine_id, canonical);
 
     /* ⚠️ Flat, not JSON:API-enveloped -- unlike machine creation. The
@@ -692,6 +792,9 @@ static TamgaErrorCode tamga_list(TamgaClient *client, const char *prefix, const 
     }
     if (after != NULL) {
         char canonical[TAMGA_UUID_STRING_SIZE];
+        /* Cannot fail: tamga_require_uuid above parsed this same string with
+         * the same parser. If that call is ever changed or moved, this
+         * discard stops being safe. */
         (void)tamga_uuid_normalize(after, canonical);
         if (limit > 0u) {
             tamga_buf_append_byte(&query_buf, '&');
@@ -764,6 +867,9 @@ TamgaErrorCode tamga_client_create_process(TamgaClient *client, const char *mach
     if (metadata == NULL) {
         metadata = tamga_json_new_object();
     }
+    /* Cannot fail: tamga_require_uuid above parsed this same string with
+     * the same parser. If that call is ever changed or moved, this
+     * discard stops being safe. */
     (void)tamga_uuid_normalize(machine_id, canonical);
 
     /* Flat body, same asymmetry as component creation. */
@@ -841,10 +947,16 @@ TamgaErrorCode tamga_client_get_entitlement(TamgaClient *client, const char *lic
     }
 
     tamga_buf_init(&buf);
+    /* Cannot fail: tamga_require_uuid above parsed this same string with
+     * the same parser. If that call is ever changed or moved, this
+     * discard stops being safe. */
     (void)tamga_uuid_normalize(license_id, canonical);
     tamga_buf_append_str(&buf, "/licenses/");
     tamga_buf_append_str(&buf, canonical);
     tamga_buf_append_str(&buf, "/entitlements/");
+    /* Cannot fail: tamga_require_uuid above parsed this same string with
+     * the same parser. If that call is ever changed or moved, this
+     * discard stops being safe. */
     (void)tamga_uuid_normalize(entitlement_id, canonical);
     tamga_buf_append_str(&buf, canonical);
     path = tamga_buf_detach_string(&buf, NULL);

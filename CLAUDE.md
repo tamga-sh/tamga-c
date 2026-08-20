@@ -180,6 +180,42 @@ base64 decoder. `tamga-swift` and `tamga-java` strip embedded whitespace and
 accept either form. This SDK follows the lenient majority, pinned by
 `license_plain_wrapped.lic`.
 
+### A JSON child belongs to its parent only once it has been set into it
+
+`tamga_json_object_set` takes ownership of its `item` whether it succeeds or
+fails -- but only of that item. Building `meta`, filling it, and setting it
+into `root` last means a failure part-way leaves `meta` owned by nobody, and
+the single `tamga_json_free(root)` that every one of these builders ends with
+silently leaks it.
+
+Three real leaks of exactly this shape were found in `proof.c` and
+`endpoints.c`. The fix is to attach the child to its parent first and fill it
+afterwards -- except where insertion order is the wire order, which
+`tests/http/endpoints_test.c` pins byte-for-byte; there the child is freed
+explicitly on the failure path instead. Do not reorder those keys to make the
+ownership tidier.
+
+### An allocation failure is not a malformed file
+
+`tamga_base64_decode_alloc` and `tamga_json_parse` both return NULL for two
+unrelated reasons, and reporting the wrong one turns "this machine is out of
+memory" into "your licence file is corrupt" -- or, in `proof.c`, into "this
+proof is forged". Use `tamga_base64_decode_alloc_why` and
+`tamga_json_error_is_out_of_memory` at any boundary that maps to a
+`TamgaErrorCode`.
+
+`tests/unit/alloc_failure_test.c` walks every allocation on the offline path
+and in three request builders, failing them one at a time -- 586 injections --
+and asserts each run either succeeds or returns `TAMGA_ERR_OUT_OF_MEMORY`,
+with no blocks left outstanding. Every misreport above was found by it.
+
+### The clock is a security input
+
+`tamga_time_now_unix` returns `bool`. The licence-file expiry check is
+`now - skew > exp`, so any substituted value on a clock-read failure -- 0
+especially -- makes every expiry check pass and returns `TAMGA_OK`. An earlier
+version returned 0 while its own comment claimed to fail closed.
+
 ## Conventions
 
 **The ABI is frozen.** Every signature in `include/tamga.h` that shipped in a
@@ -216,6 +252,19 @@ would measure nothing. Do not write one.
 **Every crypto primitive is pinned to published vectors**, and every gotcha
 above has a *negative* test. A positive test proves the happy path works; only
 the negative one proves the check is there.
+
+**Fuzzing needs three things to mean anything**: the harnesses must be built
+against an instrumented library (`tests/fuzz/CMakeLists.txt` records what
+happened when they were not -- 43M executions at a coverage counter of 3),
+each harness must actually reach the code it names (`machine_file_fuzz.c`
+passed one key length for four schemes and never reached Ed25519), and the
+seed corpus in `tests/fuzz/corpus/` must be used (measured: `cov: 455` cold
+versus `cov: 1221` seeded, same 30 seconds).
+
+**Whitebox tests compile the module under test instead of linking it**, via
+`tamga_add_whitebox_test`. That is how `p256_test.c` reaches static Montgomery
+arithmetic and how `alloc_failure_test.c` substitutes an allocator, without
+either putting a test-only symbol in the library.
 
 **Interoperability is verified, not assumed.** The offline fixtures were
 produced by `tools/fixture-generator/` and run through `tamga-rust`'s verifier

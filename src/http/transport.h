@@ -48,6 +48,24 @@ typedef struct TamgaHttpRequest {
     unsigned int timeout_ms;
 } TamgaHttpRequest;
 
+/*
+ * Why `perform` returned false.
+ *
+ * Without this the client reports one TAMGA_ERR_TRANSPORT for everything,
+ * and a caller cannot tell "retry in a moment" (a timeout) from "this will
+ * never succeed" (a response above the size cap, which is a policy decision
+ * of ours rather than a network fault) from "your process is out of memory".
+ * Three situations, three different things for the caller to do.
+ *
+ * NETWORK is the zero value, so a transport that never sets this -- every
+ * caller-supplied one -- keeps the previous behaviour.
+ */
+typedef enum TamgaTransportFailure {
+    TAMGA_TRANSPORT_FAIL_NETWORK = 0,
+    TAMGA_TRANSPORT_FAIL_OVERSIZED,
+    TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY
+} TamgaTransportFailure;
+
 typedef struct TamgaHttpResponse {
     int status;
     char *body;
@@ -55,6 +73,8 @@ typedef struct TamgaHttpResponse {
     TamgaHttpHeader *headers;
     size_t header_count;
     size_t header_capacity;
+    /* Meaningful only when perform() returned false. */
+    TamgaTransportFailure failure;
 } TamgaHttpResponse;
 
 /*

@@ -104,6 +104,13 @@ static void tamga_winhttp_parse_headers(const char *raw, TamgaHttpResponse *resp
                 name[name_len] = '\0';
                 memcpy(value, value_start, value_len);
                 value[value_len] = '\0';
+                /* Discarded on purpose. The only two failures are the 512-header cap
+                 * (a deliberate guard against a server streaming headers forever) and an
+                 * allocation failure; in both cases dropping the header and carrying on
+                 * beats failing the whole response over a header nothing may read. The
+                 * one visible consequence is that a dropped Retry-After silently costs
+                 * the server's requested delay and falls back to exponential backoff,
+                 * which is a degradation rather than a wrong answer. */
                 (void)tamga_http_response_add_header(response, name, value);
             }
         }
@@ -271,10 +278,12 @@ static bool tamga_winhttp_perform(void *user_data, const TamgaHttpRequest *reque
          * misconfigured server must not be able to turn a licence check into
          * an out-of-memory. */
         if ((body.len + (size_t)read) > TAMGA_MAX_REASONABLE_LEN) {
+            response->failure = TAMGA_TRANSPORT_FAIL_OVERSIZED;
             goto done;
         }
         tamga_buf_append(&body, chunk, (size_t)read);
         if (!tamga_buf_ok(&body)) {
+            response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
             goto done;
         }
     }
@@ -284,6 +293,7 @@ static bool tamga_winhttp_perform(void *user_data, const TamgaHttpRequest *reque
      * would be a much less useful answer than handing over the bytes. */
     response->body = tamga_buf_detach_terminated(&body, &response->body_len);
     if (response->body == NULL) {
+        response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
         goto done;
     }
     ok = true;
