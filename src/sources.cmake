@@ -19,6 +19,13 @@ set(TAMGA_SOURCES
     src/util/json.c
     src/util/json_parse.c
     src/util/json_write.c
+
+    # --- crypto: hashes, MAC, KDF ------------------------------------
+    src/crypto/ct.c
+    src/crypto/sha256.c
+    src/crypto/sha512.c
+    src/crypto/hmac_sha256.c
+    src/crypto/hkdf.c
 )
 
 list(TRANSFORM TAMGA_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
