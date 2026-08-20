@@ -60,7 +60,9 @@ static void tamga_sc_reduce512(const unsigned char in[64], unsigned char out[32]
     tamga_sc_load_l(l);
 
     for (bit = 511; bit >= 0; bit--) {
-        uint32_t carry = (uint32_t)((in[bit / 8] >> (bit % 8)) & 1u);
+        /* Same widening as in gcm.c, and the shift count is made unsigned
+         * too since `bit` is a signed loop counter. */
+        uint32_t carry = ((uint32_t)in[bit / 8] >> (unsigned int)(bit % 8)) & 1u;
         uint32_t candidate[8];
         uint64_t borrow = 0u;
 

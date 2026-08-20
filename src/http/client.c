@@ -1,3 +1,17 @@
+/*
+ * nanosleep and getpid are POSIX, and glibc hides both under a strict -std=c11
+ * (which defines __STRICT_ANSI__) unless a feature-test macro asks for them.
+ * Apple's headers expose them regardless, so a macOS-only build never notices
+ * -- this file did not compile on Linux at all until this was added.
+ *
+ * It has to precede every include, this file's own header included, because a
+ * feature-test macro only takes effect before the first system header is
+ * pulled in.
+ */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 199309L
+#endif
+
 #include "http/client.h"
 
 #include <stdio.h>

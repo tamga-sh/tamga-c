@@ -17,6 +17,18 @@
 #   readability-implicit-bool-conversion  `if (ptr)` and `if (len)` are C
 #   *-magic-numbers, identifier-length    protocol constants and short loop
 #                                         variables are not defects
+#   *.DeprecatedOrUnsafeBufferHandling     wants memset_s/memcpy_s. Those are
+#                                         C11 Annex K, which is OPTIONAL and
+#                                         which neither glibc nor Apple's libc
+#                                         implements -- taking the advice would
+#                                         not compile on either platform this
+#                                         library targets. Every length here
+#                                         already goes through the checked
+#                                         arithmetic in tamga_mem.h, which is
+#                                         the property the check is reaching
+#                                         for. It fires on Linux and not on
+#                                         macOS, which is how it stayed
+#                                         invisible until the first Linux run.
 Checks: >
   clang-analyzer-*,
   bugprone-*,
@@ -35,7 +47,8 @@ Checks: >
   -readability-use-concise-preprocessor-directives,
   -misc-no-recursion,
   -misc-include-cleaner,
-  -cert-err33-c
+  -cert-err33-c,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
 
 WarningsAsErrors: 'clang-analyzer-*,bugprone-*'
 HeaderFilterRegex: '^.*/(src|include)/.*'

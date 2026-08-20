@@ -22,8 +22,14 @@ function(tamga_add_whitebox_test NAME SOURCE)
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/tests
     )
+    # TAMGA_STATIC_LIB because this target COMPILES the library's sources
+    # rather than linking a library that would carry the definition for it.
+    # Without it, TAMGA_API is __declspec(dllimport) on Windows while the
+    # definitions are right here, which MSVC reports as C4273 "inconsistent
+    # dll linkage" -- 64 of them, fatal under /WX.
     target_compile_definitions(${NAME} PRIVATE
         TAMGA_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures"
+        TAMGA_STATIC_LIB=1
     )
     tamga_set_warnings(${NAME})
     tamga_apply_sanitizers(${NAME})

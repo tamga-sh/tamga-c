@@ -46,22 +46,32 @@ _Static_assert(TAMGA_SCHEME_ECDSA_P256_SIGN == 4, "frozen ABI value changed");
 _Static_assert(TAMGA_SCHEME_RSA_2048_JWT_RS256 == 5, "frozen ABI value changed");
 
 int main(void) {
-    /* Taking each address forces the linker to resolve it. A dropped export
-     * becomes a link failure here instead of a consumer's runtime crash. */
-    const void *exports[] = {
-        (const void *)&tamga_last_error_message,
-        (const void *)&tamga_error_name,
-        (const void *)&tamga_string_free,
-        (const void *)&tamga_hkdf_derive_machine_file_key,
-        (const void *)&tamga_hkdf_derive_license_file_key,
-        (const void *)&tamga_license_file_verify,
-        (const void *)&tamga_license_file_get_json,
-        (const void *)&tamga_license_file_free,
-        (const void *)&tamga_machine_file_verify,
-        (const void *)&tamga_machine_file_get_json,
-        (const void *)&tamga_machine_file_free,
-        (const void *)&tamga_offline_proof_verify,
-        (const void *)&tamga_offline_proof_generate,
+    /*
+     * Taking each address forces the linker to resolve it. A dropped export
+     * becomes a link failure here instead of a consumer's runtime crash.
+     *
+     * They are held as a generic FUNCTION pointer, not as void *. Converting
+     * a function pointer to an object pointer is a GNU extension that ISO C
+     * forbids outright, so the void * array this used to be compiled on Apple
+     * clang and was rejected by GCC under -Wpedantic -- which is how this
+     * file, whose whole job is to be the portable ABI gate, failed to build
+     * on the platform it most needed to guard.
+     */
+    typedef void (*AnyFn)(void);
+    AnyFn exports[] = {
+        (AnyFn)tamga_last_error_message,
+        (AnyFn)tamga_error_name,
+        (AnyFn)tamga_string_free,
+        (AnyFn)tamga_hkdf_derive_machine_file_key,
+        (AnyFn)tamga_hkdf_derive_license_file_key,
+        (AnyFn)tamga_license_file_verify,
+        (AnyFn)tamga_license_file_get_json,
+        (AnyFn)tamga_license_file_free,
+        (AnyFn)tamga_machine_file_verify,
+        (AnyFn)tamga_machine_file_get_json,
+        (AnyFn)tamga_machine_file_free,
+        (AnyFn)tamga_offline_proof_verify,
+        (AnyFn)tamga_offline_proof_generate,
     };
     size_t i;
     int failures = 0;

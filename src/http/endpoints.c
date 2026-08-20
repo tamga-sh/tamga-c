@@ -396,10 +396,14 @@ TamgaErrorCode tamga_client_create_machine(TamgaClient *client, const char *lice
     if (status != TAMGA_OK) {
         return status;
     }
-    /* Cannot fail: tamga_require_uuid above parsed this same string with
-     * the same parser. If that call is ever changed or moved, this
-     * discard stops being safe. */
-    (void)tamga_uuid_normalize(license_id, canonical);
+    /* tamga_require_uuid above already parsed this same string with the
+     * same parser, so this cannot fail -- but it is checked rather than
+     * discarded, both because GCC rejects (void) as a suppression for a
+     * warn_unused_result function and because an invariant that is
+     * enforced survives the earlier call being moved. */
+    if (!tamga_uuid_normalize(license_id, canonical)) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "license_id must be a UUID");
+    }
 
     root = tamga_json_new_object();
     data = tamga_json_new_object();
@@ -732,10 +736,14 @@ TamgaErrorCode tamga_client_create_component(TamgaClient *client, const char *ma
     if (metadata == NULL) {
         metadata = tamga_json_new_object();
     }
-    /* Cannot fail: tamga_require_uuid above parsed this same string with
-     * the same parser. If that call is ever changed or moved, this
-     * discard stops being safe. */
-    (void)tamga_uuid_normalize(machine_id, canonical);
+    /* tamga_require_uuid above already parsed this same string with the
+     * same parser, so this cannot fail -- but it is checked rather than
+     * discarded, both because GCC rejects (void) as a suppression for a
+     * warn_unused_result function and because an invariant that is
+     * enforced survives the earlier call being moved. */
+    if (!tamga_uuid_normalize(machine_id, canonical)) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "machine_id must be a UUID");
+    }
 
     /* ⚠️ Flat, not JSON:API-enveloped -- unlike machine creation. The
      * server's handler expects { machine_id, fingerprint, name, metadata }. */
@@ -792,10 +800,14 @@ static TamgaErrorCode tamga_list(TamgaClient *client, const char *prefix, const 
     }
     if (after != NULL) {
         char canonical[TAMGA_UUID_STRING_SIZE];
-        /* Cannot fail: tamga_require_uuid above parsed this same string with
-         * the same parser. If that call is ever changed or moved, this
-         * discard stops being safe. */
-        (void)tamga_uuid_normalize(after, canonical);
+        /* tamga_require_uuid above already parsed this same string with the
+         * same parser, so this cannot fail -- but it is checked rather than
+         * discarded, both because GCC rejects (void) as a suppression for a
+         * warn_unused_result function and because an invariant that is
+         * enforced survives the earlier call being moved. */
+        if (!tamga_uuid_normalize(after, canonical)) {
+            return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "after must be a UUID");
+        }
         if (limit > 0u) {
             tamga_buf_append_byte(&query_buf, '&');
         }
@@ -867,10 +879,14 @@ TamgaErrorCode tamga_client_create_process(TamgaClient *client, const char *mach
     if (metadata == NULL) {
         metadata = tamga_json_new_object();
     }
-    /* Cannot fail: tamga_require_uuid above parsed this same string with
-     * the same parser. If that call is ever changed or moved, this
-     * discard stops being safe. */
-    (void)tamga_uuid_normalize(machine_id, canonical);
+    /* tamga_require_uuid above already parsed this same string with the
+     * same parser, so this cannot fail -- but it is checked rather than
+     * discarded, both because GCC rejects (void) as a suppression for a
+     * warn_unused_result function and because an invariant that is
+     * enforced survives the earlier call being moved. */
+    if (!tamga_uuid_normalize(machine_id, canonical)) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "machine_id must be a UUID");
+    }
 
     /* Flat body, same asymmetry as component creation. */
     root = tamga_json_new_object();
@@ -947,17 +963,25 @@ TamgaErrorCode tamga_client_get_entitlement(TamgaClient *client, const char *lic
     }
 
     tamga_buf_init(&buf);
-    /* Cannot fail: tamga_require_uuid above parsed this same string with
-     * the same parser. If that call is ever changed or moved, this
-     * discard stops being safe. */
-    (void)tamga_uuid_normalize(license_id, canonical);
+    /* tamga_require_uuid above already parsed this same string with the
+     * same parser, so this cannot fail -- but it is checked rather than
+     * discarded, both because GCC rejects (void) as a suppression for a
+     * warn_unused_result function and because an invariant that is
+     * enforced survives the earlier call being moved. */
+    if (!tamga_uuid_normalize(license_id, canonical)) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "license_id must be a UUID");
+    }
     tamga_buf_append_str(&buf, "/licenses/");
     tamga_buf_append_str(&buf, canonical);
     tamga_buf_append_str(&buf, "/entitlements/");
-    /* Cannot fail: tamga_require_uuid above parsed this same string with
-     * the same parser. If that call is ever changed or moved, this
-     * discard stops being safe. */
-    (void)tamga_uuid_normalize(entitlement_id, canonical);
+    /* tamga_require_uuid above already parsed this same string with the
+     * same parser, so this cannot fail -- but it is checked rather than
+     * discarded, both because GCC rejects (void) as a suppression for a
+     * warn_unused_result function and because an invariant that is
+     * enforced survives the earlier call being moved. */
+    if (!tamga_uuid_normalize(entitlement_id, canonical)) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "entitlement_id must be a UUID");
+    }
     tamga_buf_append_str(&buf, canonical);
     path = tamga_buf_detach_string(&buf, NULL);
     tamga_buf_free(&buf);

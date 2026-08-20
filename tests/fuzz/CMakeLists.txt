@@ -40,6 +40,9 @@ target_include_directories(tamga_fuzz_lib
 target_compile_options(tamga_fuzz_lib PRIVATE
     -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer -g)
 target_link_options(tamga_fuzz_lib PUBLIC -fsanitize=address,undefined)
+# Same reason as the whitebox tests: this compiles the library's sources, so
+# it is a static consumer and must say so.
+target_compile_definitions(tamga_fuzz_lib PUBLIC TAMGA_STATIC_LIB=1)
 tamga_configure_http(tamga_fuzz_lib)
 
 function(tamga_add_fuzzer NAME SOURCE)

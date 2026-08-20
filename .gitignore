@@ -21,3 +21,6 @@ staging/
 # one thing here that still needs Rust, and its build output is not tracked.
 tools/fixture-generator/target/
 tools/fixture-generator/Cargo.lock
+
+# Virtualenv for the pinned dev tooling (see requirements-dev.txt)
+.venv/

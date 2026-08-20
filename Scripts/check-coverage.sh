@@ -20,10 +20,27 @@ if [ ! -d "$BUILD" ]; then
     exit 2
 fi
 
-PROFDATA=$(command -v llvm-profdata || command -v xcrun >/dev/null 2>&1 && echo "xcrun llvm-profdata" || true)
-COV=$(command -v llvm-cov || command -v xcrun >/dev/null 2>&1 && echo "xcrun llvm-cov" || true)
-if [ -z "$PROFDATA" ] || [ -z "$COV" ]; then
-    echo "llvm-profdata and llvm-cov are required" >&2
+# Written as explicit branches rather than as `command -v X || command -v xcrun
+# && echo ...`. That chain parses as ((A || B) && C): on a machine where the
+# tool IS on PATH, A prints the path AND C then appends "xcrun llvm-profdata",
+# so the variable holds two lines and the command below runs as
+# `llvm-profdata xcrun llvm-profdata merge`. It only appeared to work on macOS,
+# where A fails and the fallback is what runs.
+if command -v llvm-profdata >/dev/null 2>&1; then
+    PROFDATA="llvm-profdata"
+elif command -v xcrun >/dev/null 2>&1; then
+    PROFDATA="xcrun llvm-profdata"
+else
+    echo "llvm-profdata is required" >&2
+    exit 2
+fi
+
+if command -v llvm-cov >/dev/null 2>&1; then
+    COV="llvm-cov"
+elif command -v xcrun >/dev/null 2>&1; then
+    COV="xcrun llvm-cov"
+else
+    echo "llvm-cov is required" >&2
     exit 2
 fi
 
@@ -38,10 +55,23 @@ fi
 $PROFDATA merge -sparse $RAW -o "$BUILD/coverage.profdata"
 
 # One object is enough for the library's own coverage: every test links the
-# same static archive, and the merged profile covers all of them.
-OBJECT="$BUILD/libtamga.a"
-if [ ! -f "$OBJECT" ]; then
-    echo "static library not found at $OBJECT" >&2
+# same library, and the merged profile covers all of them.
+#
+# The SHARED library is preferred because llvm-cov cannot read a static
+# archive on Linux -- it fails with "coverage mapping header section is larger
+# than buffer size". That worked on macOS, where Mach-O archives are handled,
+# which is exactly how this gate came to be macOS-only without anyone
+# noticing. The static archive stays as the fallback for a
+# -DTAMGA_BUILD_SHARED=OFF build, where it is the only thing there is.
+OBJECT=""
+for candidate in "$BUILD/libtamga.so" "$BUILD/libtamga.dylib" "$BUILD/libtamga.a"; do
+    if [ -f "$candidate" ]; then
+        OBJECT="$candidate"
+        break
+    fi
+done
+if [ -z "$OBJECT" ]; then
+    echo "no built library found in $BUILD" >&2
     exit 2
 fi
 

@@ -28,7 +28,11 @@ static void tamga_gcm_gf_mul(unsigned char x[16], const unsigned char y[16]) {
 
     for (bit = 0u; bit < 128u; bit++) {
         /* Bits of X, most significant first. */
-        unsigned char x_bit = (unsigned char)((x[bit / 8u] >> (7u - (bit % 8u))) & 1u);
+        /* Widened to unsigned before the shift: an unsigned char promotes to
+         * int, and `int & 1u` then converts a signed value to unsigned, which
+         * GCC reports under -Wsign-conversion. */
+        unsigned char x_bit =
+            (unsigned char)(((unsigned int)x[bit / 8u] >> (7u - (bit % 8u))) & 1u);
         unsigned char mask = (unsigned char)(0u - x_bit); /* 0xFF or 0x00 */
         unsigned char lsb;
         unsigned char reduce;

@@ -107,7 +107,13 @@ static size_t tamga_curl_write_header(char *data, size_t size, size_t count, voi
      * one visible consequence is that a dropped Retry-After silently costs
      * the server's requested delay and falls back to exponential backoff,
      * which is a degradation rather than a wrong answer. */
-    (void)tamga_http_response_add_header(response, name, value);
+    {
+        /* Assigned and then discarded rather than cast to (void): GCC does not
+         * accept a cast as suppression for a warn_unused_result function, and
+         * this discard really is deliberate -- see above. */
+        bool dropped = !tamga_http_response_add_header(response, name, value);
+        (void)dropped;
+    }
     return total;
 }
 

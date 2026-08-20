@@ -45,7 +45,10 @@ static void tamga_bn_to_be(const uint32_t *limbs, size_t limb_count, unsigned ch
         size_t offset = byte_len - 1u - i;
         size_t limb = offset / 4u;
         unsigned int shift = (unsigned int)((offset % 4u) * 8u);
-        bytes[i] = (limb < limb_count) ? (unsigned char)(limbs[limb] >> shift) : 0u;
+        /* Narrowed once, around the whole conditional. Casting each branch
+         * separately does not help: both promote back to int, and assigning
+         * that to an unsigned char warns again under -Wconversion. */
+        bytes[i] = (unsigned char)((limb < limb_count) ? (limbs[limb] >> shift) : 0u);
     }
 }
 

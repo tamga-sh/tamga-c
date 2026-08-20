@@ -64,6 +64,16 @@ add_library(tamga_static STATIC)
 tamga_configure_library(tamga_static)
 target_compile_definitions(tamga_static PUBLIC TAMGA_STATIC_LIB=1)
 
+# On Windows a DLL's IMPORT library is also a .lib, and both targets are named
+# `tamga` -- so the static library overwrote the shared one's import library,
+# and everything linking the DLL then linked the static archive instead and
+# failed on unresolved __imp_ symbols. Elsewhere libtamga.a and libtamga.so
+# have different extensions and never collide, so the name stays `tamga`
+# there.
+if(WIN32)
+    set_target_properties(tamga_static PROPERTIES OUTPUT_NAME tamga_static)
+endif()
+
 if(TAMGA_BUILD_SHARED)
     add_library(tamga_shared SHARED)
     tamga_configure_library(tamga_shared)
