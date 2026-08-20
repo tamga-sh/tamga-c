@@ -200,11 +200,17 @@ TT_TEST(offline_proof_verification_survives_every_allocation_failure) {
  * more endpoints. The transport below always succeeds, so the only thing
  * that can fail during these walks is an allocation.
  */
+/* The scripted reply. A non-2xx one matters as much as a 2xx: the error path
+ * reads response->json to pull the JSON:API `code` out, so an allocation
+ * failure there would fall back to a generic TAMGA_ERR_API and lose the
+ * specific error the server actually sent. */
+static int g_reply_status = 200;
+static const char *g_reply_body = "{\"data\":{\"id\":\"01926b3e-0000-7000-8000-000000000002\"}}";
+
 static bool always_ok_perform(void *user_data, const char *method, const char *url,
                               const char *const *header_names, const char *const *header_values,
                               uintptr_t header_count, const char *body, uintptr_t body_len,
                               unsigned int timeout_ms, TamgaHttpResult *result) {
-    static const char REPLY[] = "{\"data\":{\"id\":\"01926b3e-0000-7000-8000-000000000002\"}}";
     (void)user_data;
     (void)method;
     (void)url;
@@ -214,8 +220,8 @@ static bool always_ok_perform(void *user_data, const char *method, const char *u
     (void)body;
     (void)body_len;
     (void)timeout_ms;
-    tamga_http_result_set_status(result, 200);
-    return tamga_http_result_set_body(result, REPLY, (uintptr_t)(sizeof(REPLY) - 1u));
+    tamga_http_result_set_status(result, g_reply_status);
+    return tamga_http_result_set_body(result, g_reply_body, (uintptr_t)strlen(g_reply_body));
 }
 
 static TamgaClient *g_client;
@@ -285,13 +291,28 @@ static TamgaErrorCode validate_by_id(void) {
 }
 
 TT_TEST(request_builders_survive_every_allocation_failure) {
+    /* The last case is a non-2xx reply, and its expected outcome is the
+     * specific error the server sent, not TAMGA_OK. Falling back to the
+     * generic TAMGA_ERR_API would mean an allocation failure had swallowed
+     * the JSON:API `code` -- the same defect as the 2xx case, one branch
+     * over, and previously untested on this side. */
     static const struct {
         const char *label;
         AllocOp op;
+        int reply_status;
+        const char *reply_body;
+        TamgaErrorCode expected;
     } CASES[] = {
-        {"tamga_client_create_machine", create_machine},
-        {"tamga_client_check_out_license_json", check_out_license},
-        {"tamga_client_validate_by_id", validate_by_id},
+        {"tamga_client_create_machine", create_machine, 200,
+         "{\"data\":{\"id\":\"01926b3e-0000-7000-8000-000000000002\"}}", TAMGA_OK},
+        {"tamga_client_check_out_license_json", check_out_license, 200,
+         "{\"data\":{\"id\":\"01926b3e-0000-7000-8000-000000000002\"}}", TAMGA_OK},
+        {"tamga_client_validate_by_id", validate_by_id, 200,
+         "{\"data\":{\"id\":\"01926b3e-0000-7000-8000-000000000002\"}}", TAMGA_OK},
+        {"tamga_client_validate_by_id (422)", validate_by_id, 422,
+         "{\"errors\":[{\"status\":\"422\",\"code\":\"DATASET_INVALID\","
+         "\"title\":\"Unprocessable\",\"detail\":\"dataset must be an object\"}]}",
+         TAMGA_ERR_DATASET_INVALID},
     };
     size_t i;
 
@@ -299,9 +320,12 @@ TT_TEST(request_builders_survive_every_allocation_failure) {
         unsigned long total;
         unsigned long n;
 
+        g_reply_status = CASES[i].reply_status;
+        g_reply_body = CASES[i].reply_body;
+
         TT_ASSERT(open_client());
         tamga_test_alloc_reset();
-        if (CASES[i].op() != TAMGA_OK) {
+        if (CASES[i].op() != CASES[i].expected) {
             tt_failures_++;
             (void)fprintf(stderr, "FAIL %s: %s did not succeed before any injection\n", tt_current_,
                           CASES[i].label);
@@ -323,7 +347,7 @@ TT_TEST(request_builders_survive_every_allocation_failure) {
             tamga_test_alloc_fail_at = n;
             status = CASES[i].op();
 
-            if (status != TAMGA_OK && status != TAMGA_ERR_OUT_OF_MEMORY) {
+            if (status != CASES[i].expected && status != TAMGA_ERR_OUT_OF_MEMORY) {
                 tt_failures_++;
                 (void)fprintf(stderr, "FAIL %s: %s returned %s when allocation %lu of %lu failed\n",
                               tt_current_, CASES[i].label, tamga_error_name(status), n, total);
