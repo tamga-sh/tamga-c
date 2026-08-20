@@ -98,6 +98,46 @@ jobs:
           cmake --build b
           ./b/consumer
 
+  cpp-header:
+    name: the header from C++
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+
+      # This SDK is advertised as C/C++, and the pre-1.3 generated header
+      # carried cpp_compat. Nothing else in the suite compiles the header as
+      # C++, so nothing else would notice it breaking -- a stray C-only
+      # construct or a missing extern "C" would only surface in a consumer's
+      # build.
+      - name: Build the library
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+
+      - name: Compile a C++ consumer against the header
+        run: |
+          set -eu
+          cat > /tmp/cpp_check.cpp <<'SRC'
+          #include <tamga.h>
+          #include <cstdio>
+          int main() {
+              uint8_t key[32];
+              TamgaErrorCode code = tamga_hkdf_derive_license_file_key("k", key);
+              TamgaClient *client = nullptr;
+              if (tamga_client_new("acct", "api.tamga.sh", &client) == TAMGA_OK) {
+                  tamga_client_free(client);
+              }
+              std::printf("%s / %s\n", TAMGA_VERSION_STRING, tamga_error_name(code));
+              return code == TAMGA_OK ? 0 : 1;
+          }
+          SRC
+          for std in c++11 c++17 c++23; do
+            echo "--- $std ---"
+            g++ -std=$std -Wall -Wextra -Werror -Iinclude /tmp/cpp_check.cpp \
+                -Lbuild -ltamga -o /tmp/cpp_check
+            LD_LIBRARY_PATH=build /tmp/cpp_check
+          done
+
   sanitizers:
     name: AddressSanitizer + UndefinedBehaviorSanitizer
     runs-on: ubuntu-latest
