@@ -31,3 +31,6 @@ build-*/
 # The fixture generator is a dev-only tool; its build output is not tracked.
 tools/fixture-generator/target/
 tools/fixture-generator/Cargo.lock
+
+# Local install trees produced by `cmake --install --prefix`
+staging/
