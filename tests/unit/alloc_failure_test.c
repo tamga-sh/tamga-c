@@ -18,6 +18,7 @@
  */
 #include "tamga_test.h"
 
+#include "http/client.h"
 #include "support/failing_alloc.h"
 #include "tamga.h"
 
@@ -234,11 +235,32 @@ static bool open_client(void) {
     return tamga_client_set_transport(g_client, always_ok_perform, NULL, NULL) == TAMGA_OK;
 }
 
+/*
+ * A TAMGA_OK from any of these must come with a usable response.
+ *
+ * The mock always replies with the same well-formed JSON, so if the call
+ * succeeded, response->json parsed. A NULL tree behind a TAMGA_OK is the
+ * failure mode this guards: every accessor built on it reads NULL as "the
+ * field was absent" and answers false, so the caller is told a valid licence
+ * is invalid, with the server's real answer still unread in the body. The
+ * walk exercised that path from the day it was written and could not see it,
+ * because it only checked the return code.
+ */
+static TamgaErrorCode response_must_be_usable(TamgaErrorCode status, TamgaResponse *response) {
+    /* The parsed tree, not tamga_response_json() -- that returns the raw body
+     * text, which is present either way and would prove nothing. */
+    if (status == TAMGA_OK && (response == NULL || response->json == NULL)) {
+        return TAMGA_ERR_INVALID_JSON; /* neither expected code: the walk fails */
+    }
+    return status;
+}
+
 static TamgaErrorCode create_machine(void) {
     TamgaResponse *response = NULL;
     TamgaErrorCode status = tamga_client_create_machine(
         g_client, "01926b3e-0000-7000-8000-0000000000bb", "fingerprint-1",
         "{\"name\":\"a-name\",\"cores\":4,\"metadata\":{\"seat\":1}}", &response);
+    status = response_must_be_usable(status, response);
     tamga_response_free(response);
     return status;
 }
@@ -247,6 +269,7 @@ static TamgaErrorCode check_out_license(void) {
     TamgaResponse *response = NULL;
     TamgaErrorCode status = tamga_client_check_out_license_json(
         g_client, "01926b3e-0000-7000-8000-0000000000bb", true, 3600, &response);
+    status = response_must_be_usable(status, response);
     tamga_response_free(response);
     return status;
 }
@@ -256,6 +279,7 @@ static TamgaErrorCode validate_by_id(void) {
     TamgaErrorCode status =
         tamga_client_validate_by_id(g_client, "01926b3e-0000-7000-8000-0000000000bb",
                                     "{\"product\":\"x\"}", false, NULL, &response);
+    status = response_must_be_usable(status, response);
     tamga_response_free(response);
     return status;
 }

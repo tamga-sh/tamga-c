@@ -151,6 +151,7 @@ static bool tamga_winhttp_perform(void *user_data, const TamgaHttpRequest *reque
     url = tamga_widen(request->url);
     method = tamga_widen(request->method);
     if (url == NULL || method == NULL) {
+        response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
         goto done;
     }
 
@@ -201,17 +202,24 @@ static bool tamga_winhttp_perform(void *user_data, const TamgaHttpRequest *reque
         tamga_buf_append_str(&header_buf, request->headers[i].value);
         tamga_buf_append_str(&header_buf, "\r\n");
     }
+    /* Every failure between here and the send is an allocation failure, not a
+     * network one. Saying so keeps the caller from retrying a request that
+     * memory, not the network, prevented -- the same distinction the body
+     * reader below makes. */
     if (!tamga_buf_ok(&header_buf)) {
+        response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
         goto done;
     }
     {
         char *joined = tamga_buf_detach_string(&header_buf, NULL);
         if (joined == NULL) {
+            response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
             goto done;
         }
         headers = tamga_widen(joined);
         tamga_string_free(joined);
         if (headers == NULL) {
+            response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
             goto done;
         }
     }

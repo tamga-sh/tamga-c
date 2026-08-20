@@ -475,9 +475,24 @@ static TamgaResponse *tamga_response_from_http(TamgaHttpResponse *http) {
     http->header_capacity = 0u;
 
     if (response->body != NULL && response->body_len > 0u) {
+        const char *parse_error = NULL;
+
         /* A non-JSON body is not an error here: a proxy may return HTML, and
-         * the status still means something. */
-        response->json = tamga_json_parse(response->body, response->body_len, NULL);
+         * the status still means something.
+         *
+         * Running out of memory is a different matter, and the reason this
+         * asks why rather than passing NULL. Every accessor built on `json`
+         * -- tamga_response_validation_is_valid and friends -- reads a NULL
+         * tree as "the field was absent" and answers false. So an allocation
+         * failure here would return TAMGA_OK carrying "this licence is not
+         * valid", for a licence the server had just called valid, with the
+         * real answer still sitting unread in response->body. Returning NULL
+         * makes the caller report TAMGA_ERR_OUT_OF_MEMORY instead. */
+        response->json = tamga_json_parse(response->body, response->body_len, &parse_error);
+        if (response->json == NULL && tamga_json_error_is_out_of_memory(parse_error)) {
+            tamga_response_free(response);
+            return NULL;
+        }
     }
     return response;
 }

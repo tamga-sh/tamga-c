@@ -143,11 +143,16 @@ static bool tamga_curl_perform(void *user_data, const TamgaHttpRequest *request,
         joined = tamga_buf_detach_string(&line, NULL);
         tamga_buf_free(&line);
         if (joined == NULL) {
+            /* The only way this fails is allocation. Saying so keeps the
+             * caller from retrying a request that memory, not the network,
+             * prevented -- the same distinction the body writer makes. */
+            response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
             goto done;
         }
         appended = curl_slist_append(headers, joined);
         tamga_string_free(joined);
         if (appended == NULL) {
+            response->failure = TAMGA_TRANSPORT_FAIL_OUT_OF_MEMORY;
             goto done;
         }
         headers = appended;
