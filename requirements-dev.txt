@@ -1,0 +1,11 @@
+# Developer tooling, pinned so CI and a local checkout agree.
+#
+# These are not build or runtime dependencies -- the library itself depends on
+# nothing. They are installed from PyPI rather than a distro package manager
+# because only PyPI lets the version be pinned exactly; clang-format's output
+# and clang-tidy's check set both change between major versions, and an
+# unpinned tool turns a runner-image bump into a red main branch.
+#
+#   python3 -m pip install -r requirements-dev.txt
+clang-format==22.1.8
+clang-tidy==22.1.8

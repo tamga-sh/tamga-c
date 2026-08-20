@@ -21,9 +21,30 @@ if(APPLE AND CMAKE_C_COMPILER_ID STREQUAL "AppleClang")
         "-DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang")
 endif()
 
+# A separately instrumented copy of the library.
+#
+# This is the whole point, and getting it wrong is silent: linking the fuzz
+# harnesses against the ordinary tamga_static gives libFuzzer coverage
+# feedback from the harness translation unit alone -- roughly three edges --
+# so it mutates blind and finds nothing while appearing to run. A security
+# review caught exactly that here: 43 million executions stuck at cov 3, where
+# a properly instrumented build reaches cov 400+ on the same inputs in
+# seconds.
+#
+# fuzzer-no-link gives the library coverage instrumentation without pulling in
+# libFuzzer's own main(); the harness targets supply that.
+add_library(tamga_fuzz_lib STATIC ${TAMGA_SOURCES})
+target_include_directories(tamga_fuzz_lib
+    PUBLIC ${CMAKE_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(tamga_fuzz_lib PRIVATE
+    -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer -g)
+target_link_options(tamga_fuzz_lib PUBLIC -fsanitize=address,undefined)
+tamga_configure_http(tamga_fuzz_lib)
+
 function(tamga_add_fuzzer NAME SOURCE)
     add_executable(${NAME} ${SOURCE})
-    target_link_libraries(${NAME} PRIVATE tamga_static)
+    target_link_libraries(${NAME} PRIVATE tamga_fuzz_lib)
     target_include_directories(${NAME} PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src)

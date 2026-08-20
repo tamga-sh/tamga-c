@@ -175,9 +175,15 @@ static bool tamga_winhttp_perform(void *user_data, const TamgaHttpRequest *reque
         goto done;
     }
     {
+        /* WinHTTP follows redirects by default, so this call is the whole of
+         * the protection the comment above describes. Discarding its result
+         * would let a failure revert silently to the default -- checked for
+         * that reason, unlike the timeouts below. */
         DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-        (void)WinHttpSetOption(handle, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy,
-                               sizeof(redirect_policy));
+        if (!WinHttpSetOption(handle, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy,
+                              sizeof(redirect_policy))) {
+            goto done;
+        }
     }
     (void)WinHttpSetTimeouts(handle, (int)request->timeout_ms, (int)request->timeout_ms,
                              (int)request->timeout_ms, (int)request->timeout_ms);

@@ -79,6 +79,8 @@ TamgaErrorCode tamga_machine_file_verify_into(const char *pem, size_t pem_len, u
     const char *expected_suffix;
     const char *separator;
     size_t prefix_len;
+    size_t suffix_len;
+    size_t expected_suffix_len;
     bool encrypted;
     unsigned char *signature = NULL;
     size_t signature_len = 0u;
@@ -125,18 +127,21 @@ TamgaErrorCode tamga_machine_file_verify_into(const char *pem, size_t pem_len, u
     /* alg is "<encryption>+<signature>". The suffix must be the one the
      * caller's scheme implies -- a mismatch means the file was issued for a
      * different scheme than the licence says. */
-    separator = strchr(cert.alg, '+');
+    separator = (const char *)memchr(cert.alg, '+', cert.alg_len);
     if (separator == NULL) {
         tamga_cert_free(&cert);
         return tamga_error_set(TAMGA_ERR_UNSUPPORTED_SCHEME, "machine-file algorithm is malformed");
     }
-    if (strcmp(separator + 1, expected_suffix) != 0) {
+    prefix_len = (size_t)(separator - cert.alg);
+    suffix_len = cert.alg_len - prefix_len - 1u;
+    expected_suffix_len = strlen(expected_suffix);
+    if (suffix_len != expected_suffix_len ||
+        memcmp(separator + 1, expected_suffix, expected_suffix_len) != 0) {
         tamga_cert_free(&cert);
         return tamga_error_set(TAMGA_ERR_UNSUPPORTED_SCHEME,
                                "the machine file was signed with a different scheme than the "
                                "licence declares");
     }
-    prefix_len = (size_t)(separator - cert.alg);
     if (prefix_len == 6u && memcmp(cert.alg, "base64", 6u) == 0) {
         encrypted = false;
     } else if (prefix_len == 11u && memcmp(cert.alg, "aes-256-gcm", 11u) == 0) {

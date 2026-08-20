@@ -97,11 +97,13 @@ TamgaErrorCode tamga_license_file_verify_at(const char *pem, size_t pem_len,
         return status;
     }
 
-    /* Exactly two algorithm strings are legal, matched in full. A prefix or
-     * substring match would let "base64+ed25519+v2+anything" through. */
-    if (strcmp(cert.alg, TAMGA_ALG_PLAIN) == 0) {
+    /* Exactly two algorithm strings are legal, matched in full and by length.
+     * A prefix or substring match would let "base64+ed25519+v2+anything"
+     * through, and a strcmp would let an interior NUL do the same. */
+    if (tamga_cert_alg_equals(&cert, TAMGA_ALG_PLAIN, sizeof(TAMGA_ALG_PLAIN) - 1u)) {
         encrypted = false;
-    } else if (strcmp(cert.alg, TAMGA_ALG_ENCRYPTED) == 0) {
+    } else if (tamga_cert_alg_equals(&cert, TAMGA_ALG_ENCRYPTED,
+                                     sizeof(TAMGA_ALG_ENCRYPTED) - 1u)) {
         encrypted = true;
     } else {
         tamga_cert_free(&cert);

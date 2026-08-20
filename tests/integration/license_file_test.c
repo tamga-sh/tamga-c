@@ -12,7 +12,10 @@
 #include "checkout/license_file.h"
 #include "tamga_error.h"
 #include "tamga_mem.h"
+#include "util/base64.h"
 #include "util/json.h"
+
+#include <stdio.h>
 
 #define FILE_CAP 8192
 
@@ -185,6 +188,62 @@ TT_TEST(rejects_format_v1) {
 }
 
 /*
+ * A JSON string may carry an interior NUL, and this parser accepts \u0000 in a
+ * value (only keys reject it). Comparing `alg` with strcmp therefore stops at
+ * that NUL, so "base64+ed25519+v2" followed by a NUL and arbitrary trailing
+ * bytes compared equal to the algorithm it merely prefixes -- the length check
+ * the surrounding comment claims to make was not actually being made. The
+ * comparison is length-aware now; this pins that.
+ *
+ * The certificate is built here rather than loaded as a fixture because the
+ * generator emits only well-formed algorithm strings. The alg dispatch runs
+ * before the signature is even decoded, so the empty enc/sig below never get
+ * that far -- which the companion assertion proves by showing the same shape
+ * with an honest alg fails later, at the signature, not here.
+ */
+TT_TEST(rejects_an_algorithm_with_an_interior_nul) {
+    static const char CERT_WITH_NUL[] =
+        "{\"enc\":\"\",\"sig\":\"\",\"alg\":\"base64+ed25519+v2\\u0000junk\"}";
+    static const char CERT_HONEST[] = "{\"enc\":\"\",\"sig\":\"\",\"alg\":\"base64+ed25519+v2\"}";
+    unsigned char pubkey[32];
+    char pem[FILE_CAP];
+    char *encoded;
+    TamgaJson *resource = NULL;
+    int written;
+
+    TT_ASSERT(load_pubkey(pubkey));
+
+    encoded =
+        tamga_base64_encode_alloc((const unsigned char *)CERT_WITH_NUL, sizeof(CERT_WITH_NUL) - 1u);
+    TT_ASSERT_NOT_NULL(encoded);
+    written = snprintf(pem, sizeof(pem),
+                       "-----BEGIN LICENSE FILE-----\n%s\n-----END LICENSE FILE-----\n", encoded);
+    tamga_string_free(encoded);
+    TT_ASSERT(written > 0 && (size_t)written < sizeof(pem));
+
+    TT_ASSERT_EQ_INT(
+        tamga_license_file_verify_at(pem, (size_t)written, pubkey, NULL, NOW, &resource, NULL),
+        TAMGA_ERR_UNSUPPORTED_SCHEME);
+    TT_ASSERT_NULL(resource);
+
+    /* Same certificate, honest alg: it gets past the dispatch and dies on the
+     * empty signature instead. Without this the test above would still pass if
+     * the file were rejected for some unrelated reason. */
+    encoded =
+        tamga_base64_encode_alloc((const unsigned char *)CERT_HONEST, sizeof(CERT_HONEST) - 1u);
+    TT_ASSERT_NOT_NULL(encoded);
+    written = snprintf(pem, sizeof(pem),
+                       "-----BEGIN LICENSE FILE-----\n%s\n-----END LICENSE FILE-----\n", encoded);
+    tamga_string_free(encoded);
+    TT_ASSERT(written > 0 && (size_t)written < sizeof(pem));
+
+    TT_ASSERT_EQ_INT(
+        tamga_license_file_verify_at(pem, (size_t)written, pubkey, NULL, NOW, &resource, NULL),
+        TAMGA_ERR_SIGNATURE_INVALID);
+    TT_ASSERT_NULL(resource);
+}
+
+/*
  * THE format gotcha, as a fixture.
  *
  * This file is signed correctly in every respect except that the signature
@@ -304,6 +363,7 @@ int main(void) {
     TT_RUN(rejects_an_expired_file_distinguishably);
     TT_RUN(the_expiry_check_allows_exactly_sixty_seconds_of_skew);
     TT_RUN(rejects_format_v1);
+    TT_RUN(rejects_an_algorithm_with_an_interior_nul);
     TT_RUN(rejects_a_signature_over_the_decoded_bytes);
     TT_RUN(rejects_a_wrong_public_key);
     TT_RUN(rejects_a_tampered_body);

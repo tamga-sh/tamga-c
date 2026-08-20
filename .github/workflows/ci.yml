@@ -16,8 +16,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Pinned to an exact version, and installed from PyPI rather than apt so
+      # the pin actually holds. `apt-get install clang-format` follows whatever
+      # the runner image ships, and clang-format's output changes between major
+      # versions -- an image bump would then fail the format check on code
+      # nobody touched, on main, with no diff to look at. The same version is
+      # what contributors get from `pip install -r requirements-dev.txt`.
       - name: Install tooling
-        run: sudo apt-get update && sudo apt-get install -y clang-format clang-tidy
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements-dev.txt
+          clang-format --version
+          clang-tidy --version
 
       - name: clang-format
         run: |

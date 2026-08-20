@@ -701,10 +701,24 @@ static TamgaErrorCode tamga_list(TamgaClient *client, const char *prefix, const 
         tamga_buf_append_str(&query_buf, "page%5Bafter%5D=");
         tamga_buf_append_str(&query_buf, canonical);
     }
-    if (query_buf.len > 0u) {
-        query = tamga_buf_detach_string(&query_buf, NULL);
-    }
+    /*
+     * Detached unconditionally, and checked. Gating on `len > 0` instead
+     * looks equivalent but is not: an append that fails part-way leaves the
+     * buffer's sticky failure flag set while `len` still holds the length
+     * from before the failure, so the gate passes, the detach correctly
+     * returns NULL -- and a NULL query is indistinguishable from "the caller
+     * asked for no pagination". The request would go out with no query string
+     * and return TAMGA_OK holding the server's default first page instead of
+     * the requested one.
+     *
+     * An empty, never-appended buffer detaches to a non-NULL empty string,
+     * which tamga_client_build_url already treats as no query.
+     */
+    query = tamga_buf_detach_string(&query_buf, NULL);
     tamga_buf_free(&query_buf);
+    if (query == NULL) {
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
 
     path = tamga_path(prefix, id, suffix);
     if (path == NULL) {
@@ -866,10 +880,10 @@ TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const char *lic
                                             &response);
     if (status != TAMGA_OK || response == NULL) {
         tamga_response_free(response);
-        return (status != TAMGA_OK) ? status
-                                    : tamga_error_set(TAMGA_ERR_UNKNOWN,
-                                                      "the entitlement listing returned no "
-                                                      "response");
+        return (status != TAMGA_OK)
+                   ? status
+                   : tamga_error_set(TAMGA_ERR_UNKNOWN, "the entitlement listing returned no "
+                                                        "response");
     }
 
     data = tamga_json_object_get(response->json, "data");

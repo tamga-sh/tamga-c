@@ -140,17 +140,27 @@ static bool tamga_curl_perform(void *user_data, const TamgaHttpRequest *request,
     (void)curl_easy_setopt(state->handle, CURLOPT_USERAGENT, "tamga-c/" TAMGA_VERSION_STRING);
     (void)curl_easy_setopt(state->handle, CURLOPT_NOSIGNAL, 1L);
 
-    /* Explicit rather than relying on the defaults: these two are the
-     * difference between a verified connection and a decorative one, and
-     * making them visible here is how a reviewer confirms they are on. */
-    (void)curl_easy_setopt(state->handle, CURLOPT_SSL_VERIFYPEER, 1L);
-    (void)curl_easy_setopt(state->handle, CURLOPT_SSL_VERIFYHOST, 2L);
-
-    /* Redirects are not followed. Every endpoint address is constructed by
-     * this library from a configured host, so a redirect can only come from
+    /*
+     * Explicit rather than relying on the defaults: these two are the
+     * difference between a verified connection and a decorative one.
+     *
+     * Redirects are not followed either. Every endpoint address is constructed
+     * by this library from a configured host, so a redirect can only come from
      * someone who already controls the response -- and following one would
-     * replay the Authorization header to wherever they pointed. */
-    (void)curl_easy_setopt(state->handle, CURLOPT_FOLLOWLOCATION, 0L);
+     * replay the Authorization header to wherever they pointed.
+     *
+     * Unlike every other option here, these three are checked. Discarding the
+     * CURLcode would mean a build where one of them is unsupported still sends
+     * the request, with no way for anything downstream to tell a verified
+     * connection from an unverified one. The other setopt calls fail loudly on
+     * their own -- a malformed request is rejected by curl_easy_perform -- so
+     * only the silent-downgrade three need this.
+     */
+    if (curl_easy_setopt(state->handle, CURLOPT_SSL_VERIFYPEER, 1L) != CURLE_OK ||
+        curl_easy_setopt(state->handle, CURLOPT_SSL_VERIFYHOST, 2L) != CURLE_OK ||
+        curl_easy_setopt(state->handle, CURLOPT_FOLLOWLOCATION, 0L) != CURLE_OK) {
+        goto done;
+    }
 
     if (strcmp(request->method, "GET") == 0) {
         (void)curl_easy_setopt(state->handle, CURLOPT_HTTPGET, 1L);

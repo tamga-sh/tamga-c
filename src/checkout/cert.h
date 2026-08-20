@@ -8,6 +8,7 @@
 #ifndef TAMGA_CHECKOUT_CERT_H
 #define TAMGA_CHECKOUT_CERT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "tamga.h"
@@ -21,6 +22,11 @@ typedef struct TamgaCert {
     const char *sig;
     size_t sig_len;
     const char *alg;
+    /* JSON strings may contain an interior NUL, so alg carries its length and
+     * every comparison against it is length-aware. Treating it as a C string
+     * would make "base64+ed25519+v2\0anything" compare equal to the algorithm
+     * it only prefixes. */
+    size_t alg_len;
 } TamgaCert;
 
 /**
@@ -33,6 +39,12 @@ typedef struct TamgaCert {
  * was the same -- fail at the parse boundary with the documented error.
  */
 TAMGA_NODISCARD TamgaErrorCode tamga_cert_parse(const char *body, size_t body_len, TamgaCert *out);
+
+/**
+ * Compares the certificate's `alg` against a literal, by length as well as by
+ * content -- see the note on TamgaCert::alg_len.
+ */
+bool tamga_cert_alg_equals(const TamgaCert *cert, const char *expected, size_t expected_len);
 
 void tamga_cert_free(TamgaCert *cert);
 

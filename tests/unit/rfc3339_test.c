@@ -88,7 +88,15 @@ TT_TEST(rejects_malformed_input) {
 TT_TEST(the_clock_is_after_this_code_was_written) {
     /* 2026-01-01T00:00:00Z. Guards against a build where time() is stubbed
      * or the epoch conversion is wrong by decades. */
-    TT_ASSERT(tamga_time_now_unix() > 1767225600);
+    {
+        int64_t now = 0;
+        TT_ASSERT(tamga_time_now_unix(&now));
+        TT_ASSERT(now > 1767225600);
+        /* A failed read must not be mistaken for a valid time: the out
+         * parameter is cleared, and 0 is exactly the value that would make
+         * every expiry check pass if it were ever returned as success. */
+        TT_ASSERT(!tamga_time_now_unix(NULL));
+    }
 }
 
 int main(void) {

@@ -32,9 +32,15 @@ TAMGA_NODISCARD bool tamga_rfc3339_parse(const char *str, int64_t *out_epoch_sec
 /**
  * Current wall-clock time as Unix epoch seconds.
  *
- * A clock that cannot be read, or one set before the epoch, yields 0 -- which
- * fails every expiry check closed rather than open.
+ * Returns false, and writes 0, if the clock cannot be read or reads before the
+ * epoch. The caller must treat that as a refusal to answer.
+ *
+ * This deliberately does not substitute a value. The expiry check is
+ * `now - skew > exp`, so a substituted 0 makes every expiry check pass -- an
+ * unreadable clock would silently disable expiry enforcement entirely and
+ * still return TAMGA_OK. An earlier version of this function did exactly that
+ * while its own comment claimed to fail closed.
  */
-int64_t tamga_time_now_unix(void);
+TAMGA_NODISCARD bool tamga_time_now_unix(int64_t *out_epoch_seconds);
 
 #endif /* TAMGA_UTIL_RFC3339_H */

@@ -163,13 +163,21 @@ bool tamga_rfc3339_parse(const char *str, int64_t *out_epoch_seconds) {
     return true;
 }
 
-int64_t tamga_time_now_unix(void) {
-    time_t now = time(NULL);
+bool tamga_time_now_unix(int64_t *out_epoch_seconds) {
+    time_t now;
+
+    if (out_epoch_seconds == NULL) {
+        return false;
+    }
+    *out_epoch_seconds = 0;
+
+    now = time(NULL);
     if (now == (time_t)-1) {
-        return 0;
+        return false;
     }
     if ((int64_t)now < 0) {
-        return 0;
+        return false;
     }
-    return (int64_t)now;
+    *out_epoch_seconds = (int64_t)now;
+    return true;
 }

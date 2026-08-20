@@ -6,6 +6,16 @@
 #include "tamga_mem.h"
 #include "util/base64.h"
 
+bool tamga_cert_alg_equals(const TamgaCert *cert, const char *expected, size_t expected_len) {
+    if (cert == NULL || cert->alg == NULL || expected == NULL) {
+        return false;
+    }
+    if (cert->alg_len != expected_len) {
+        return false;
+    }
+    return memcmp(cert->alg, expected, expected_len) == 0;
+}
+
 void tamga_cert_free(TamgaCert *cert) {
     if (cert == NULL) {
         return;
@@ -17,6 +27,7 @@ void tamga_cert_free(TamgaCert *cert) {
     cert->alg = NULL;
     cert->enc_len = 0u;
     cert->sig_len = 0u;
+    cert->alg_len = 0u;
 }
 
 TamgaErrorCode tamga_cert_parse(const char *body, size_t body_len, TamgaCert *out) {
@@ -52,7 +63,7 @@ TamgaErrorCode tamga_cert_parse(const char *body, size_t body_len, TamgaCert *ou
 
     out->enc = tamga_json_as_string(enc, &out->enc_len);
     out->sig = tamga_json_as_string(sig, &out->sig_len);
-    out->alg = tamga_json_as_string(alg, NULL);
+    out->alg = tamga_json_as_string(alg, &out->alg_len);
 
     if (out->enc == NULL || out->sig == NULL || out->alg == NULL) {
         tamga_json_free(root);

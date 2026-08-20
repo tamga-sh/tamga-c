@@ -8,8 +8,7 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
-{
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     size_t decoded_len = 0u;
     unsigned char *decoded = tamga_base64_decode_alloc((const char *)data, size, &decoded_len);
 
@@ -20,8 +19,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         char *encoded = tamga_base64_encode_alloc(decoded, decoded_len);
         if (encoded != NULL) {
             size_t round_len = 0u;
-            unsigned char *round = tamga_base64_decode_alloc(encoded, strlen(encoded),
-                                                             &round_len);
+            unsigned char *round = tamga_base64_decode_alloc(encoded, strlen(encoded), &round_len);
             if (round == NULL || round_len != decoded_len) {
                 abort();
             }

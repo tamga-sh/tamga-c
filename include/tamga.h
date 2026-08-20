@@ -59,11 +59,20 @@
  * Library version, matching the git tag and the CMake project version.
  * The trailing markers are what release-please rewrites on a release; do not
  * edit these by hand or the three places the version appears will drift.
+ *
+ * Formatting is off across this block on purpose. clang-format aligns
+ * trailing comments to the longest line, and release-please rewrites the
+ * version in place without re-aligning anything -- so the first release that
+ * changes the string's width (1.9.0 to 1.10.0, say) would leave the file
+ * unformatted and break the format check on main, at the one moment nobody is
+ * looking at a diff.
  */
+/* clang-format off */
 #define TAMGA_VERSION_MAJOR 1 /* x-release-please-major */
 #define TAMGA_VERSION_MINOR 3 /* x-release-please-minor */
 #define TAMGA_VERSION_PATCH 0 /* x-release-please-patch */
 #define TAMGA_VERSION_STRING "1.3.0" /* x-release-please-version */
+/* clang-format on */
 
 #ifdef __cplusplus
 extern "C" {

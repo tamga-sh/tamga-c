@@ -121,6 +121,7 @@ TamgaErrorCode tamga_license_file_verify(const char *pem, uintptr_t pem_len,
     TamgaErrorCode status;
     TamgaJson *resource = NULL;
     struct TamgaLicenseFile *handle;
+    int64_t now_unix = 0;
 
     tamga_error_clear();
 
@@ -136,8 +137,16 @@ TamgaErrorCode tamga_license_file_verify(const char *pem, uintptr_t pem_len,
     }
     *out_handle = NULL;
 
+    if (!tamga_time_now_unix(&now_unix)) {
+        /* Refusing beats guessing: the only thing `now` is used for is the
+         * expiry check, and any substituted value silently decides it. */
+        return tamga_error_set(TAMGA_ERR_UNKNOWN,
+                               "the system clock could not be read, so the file's expiry "
+                               "could not be checked");
+    }
+
     status = tamga_license_file_verify_at(pem, (size_t)pem_len, ed25519_pubkey, license_key,
-                                          tamga_time_now_unix(), &resource, NULL);
+                                          now_unix, &resource, NULL);
     if (status != TAMGA_OK) {
         return status;
     }

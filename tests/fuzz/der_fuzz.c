@@ -10,8 +10,7 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
-{
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     static const unsigned char message[] = "message";
     static const unsigned char signature[64] = {0};
 
@@ -23,7 +22,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                                       sizeof(signature));
     (void)tamga_ecdsa_p256_verify(data, size, message, sizeof(message) - 1u, signature,
                                   sizeof(signature));
-    (void)tamga_ecdsa_p256_verify(signature, sizeof(signature), message, sizeof(message) - 1u,
-                                  data, size);
+    (void)tamga_ecdsa_p256_verify(signature, sizeof(signature), message, sizeof(message) - 1u, data,
+                                  size);
     return 0;
 }

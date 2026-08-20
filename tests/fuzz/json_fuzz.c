@@ -13,8 +13,7 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
-{
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     TamgaJson *value = tamga_json_parse((const char *)data, size, NULL);
     char *first;
     TamgaJson *reparsed;
