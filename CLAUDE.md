@@ -76,7 +76,21 @@ sh Scripts/check-coverage.sh 80 build-cov
 # Fuzzing -- needs a full LLVM clang; Apple's does not ship libFuzzer
 cmake -S . -B build-fuzz -DTAMGA_C_ENABLE_FUZZ=ON -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang
 cmake --build build-fuzz
-for f in build-fuzz/tests/fuzz/fuzz_*; do "$f" -max_total_time=60; done
+# Start from the committed seeds; copy them aside, libFuzzer writes into the
+# directory it is given. Cold-starting a target wastes the run rediscovering
+# the file format.
+for d in tests/fuzz/corpus/*/; do
+    name=$(basename "$d")
+    mkdir -p "/tmp/corpus/$name" && cp "$d"* "/tmp/corpus/$name/"
+done
+for f in build-fuzz/tests/fuzz/fuzz_*; do
+    "$f" "/tmp/corpus/$(basename "$f" | sed 's/^fuzz_//')" -max_total_time=60
+done
+
+# Style and static analysis. Install the pinned versions first -- CI uses
+# exactly these, and clang-format's output differs between major versions, so
+# a system clang-format will disagree with the gate.
+python3 -m pip install -r requirements-dev.txt
 
 clang-format --dry-run --Werror $(find src include tests examples -name '*.c' -o -name '*.h')
 cmake -S . -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

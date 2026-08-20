@@ -144,6 +144,17 @@ More in [`examples/`](examples/), including the full activation flow.
 `auto` picks WinHTTP on Windows and libcurl elsewhere when it is found, and
 falls back to no backend with a message rather than failing the build.
 
+None of these options add a dependency to the library. The one thing a
+*contributor* needs beyond a C compiler and CMake is the pinned style and
+static-analysis tooling, which CI uses at exactly these versions:
+
+```sh
+python3 -m pip install -r requirements-dev.txt
+```
+
+clang-format's output changes between major versions, so a system-installed
+one will disagree with the gate.
+
 ### An offline-only build
 
 ```sh
