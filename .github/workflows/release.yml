@@ -17,7 +17,19 @@ name: Release
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  # `tag` re-runs only the artefact half against a release that already
+  # exists. It is here because v1.3.0 shipped with no binaries at all: one
+  # target's Configure step failed, package-and-attach depends on every
+  # target, and release-please had already cut the tag -- so there was no way
+  # to repair the release short of tagging another version. Left empty, this
+  # behaves exactly as before.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to rebuild and attach artefacts to (e.g. v1.3.0). Leave empty for a normal release run."
+        required: false
+        default: ""
+
 
 permissions:
   contents: write
@@ -55,7 +67,7 @@ jobs:
 
   build-native:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' || inputs.tag != '' }}
     # No timeout-minutes here on purpose: GitHub rejects it on a job that
     # calls a reusable workflow ("Invalid workflow file"). The bound lives on
     # the `build` job inside build-native.yml instead -- do not "fix" this by
@@ -64,7 +76,7 @@ jobs:
 
   package-and-attach:
     needs: [release-please, build-native]
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' || inputs.tag != '' }}
     runs-on: ubuntu-latest
     # 17-26s across 6 observed runs (download 8 artifacts, tar/zip, upload).
     # 20 is generous headroom for a slow GitHub artifact or upload API day
@@ -107,7 +119,7 @@ jobs:
       - name: Attach artifacts to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          tag_name: ${{ inputs.tag != '' && inputs.tag || needs.release-please.outputs.tag_name }}
           files: |
             out/*.tar.gz
             out/*.zip
