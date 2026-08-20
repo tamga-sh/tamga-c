@@ -65,14 +65,38 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure -C Release
 
-      # A consumer's first experience is find_package, so it is worth proving
-      # the install tree works rather than only the build tree.
-      - name: Install and consume
+      # A consumer's first experience is find_package, so this actually
+      # builds one rather than checking that files exist. Checking for files
+      # is what let a broken export ship once already: the build tree had a
+      # tamga::tamga alias, install(EXPORT) does not carry aliases, and a
+      # consumer following the README got "target not found" from a package
+      # that had installed perfectly cleanly.
+      - name: Install and consume via find_package
         if: runner.os != 'Windows'
         run: |
-          cmake --install build --prefix "$PWD/staging"
-          test -f staging/include/tamga.h
-          test -f staging/lib/cmake/tamga/tamga-config.cmake
+          set -eu
+          cmake --install build --prefix "$PWD/staging" --config Release
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          cat > CMakeLists.txt <<'CMAKE'
+          cmake_minimum_required(VERSION 3.22)
+          project(consumer LANGUAGES C)
+          find_package(tamga 1.3 REQUIRED)
+          add_executable(consumer main.c)
+          target_link_libraries(consumer PRIVATE tamga::tamga)
+          CMAKE
+          cat > main.c <<'SRC'
+          #include <stdio.h>
+          #include <tamga.h>
+          int main(void) {
+              uint8_t key[32];
+              if (tamga_hkdf_derive_license_file_key("k", key) != TAMGA_OK) { return 1; }
+              printf("tamga %s ok\n", TAMGA_VERSION_STRING);
+              return 0;
+          }
+          SRC
+          cmake -S . -B b -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/staging"
+          cmake --build b
+          ./b/consumer
 
   sanitizers:
     name: AddressSanitizer + UndefinedBehaviorSanitizer
