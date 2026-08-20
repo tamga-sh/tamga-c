@@ -23,3 +23,7 @@ examples/build/
 # CMake build trees
 build/
 build-*/
+
+# Test key material is generated, never committed -- see
+# tests/fixtures/keys/generate.sh
+*.pem

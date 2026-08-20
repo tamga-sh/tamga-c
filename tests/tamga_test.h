@@ -182,7 +182,42 @@ TT_MAYBE_UNUSED static size_t tt_hex2bin(const char *hex, unsigned char *out, si
     return len / 2u;
 }
 
-TT_MAYBE_UNUSED static int tt_summary_(void)
+TT_MAYBE_UNUSED /*
+ * Reads a file from tests/fixtures/ into `out`. Returns the byte count, or
+ * SIZE_MAX if the file is missing or larger than `out_cap` -- both of which
+ * are bugs in the test setup, so callers assert on the result.
+ *
+ * TAMGA_FIXTURES_DIR is defined by the build so tests can run from any
+ * working directory.
+ */
+TT_MAYBE_UNUSED static size_t tt_read_fixture(const char *relative_path, unsigned char *out,
+                                              size_t out_cap)
+{
+    char path[1024];
+    FILE *file;
+    size_t read_bytes;
+
+    if (snprintf(path, sizeof(path), "%s/%s", TAMGA_FIXTURES_DIR, relative_path) < 0) {
+        return (size_t)-1;
+    }
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        (void)fprintf(stderr, "fixture not found: %s\n", path);
+        return (size_t)-1;
+    }
+    read_bytes = fread(out, 1u, out_cap, file);
+    /* A file that exactly fills the buffer is indistinguishable from one that
+     * overflows it, so require at least one spare byte. */
+    if (!feof(file) || read_bytes == out_cap) {
+        (void)fclose(file);
+        (void)fprintf(stderr, "fixture too large for the buffer: %s\n", path);
+        return (size_t)-1;
+    }
+    (void)fclose(file);
+    return read_bytes;
+}
+
+static int tt_summary_(void)
 {
     if (tt_failures_ == 0) {
         (void)fprintf(stderr, "ok: %d test(s) passed\n", tt_tests_run_);

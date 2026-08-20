@@ -34,6 +34,11 @@ set(TAMGA_SOURCES
     # --- crypto: Ed25519 ----------------------------------------------
     src/crypto/fe25519.c
     src/crypto/ed25519.c
+
+    # --- crypto: RSA ---------------------------------------------------
+    src/crypto/bn.c
+    src/crypto/der.c
+    src/crypto/rsa.c
 )
 
 list(TRANSFORM TAMGA_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
