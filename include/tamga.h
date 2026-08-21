@@ -70,8 +70,8 @@
 /* clang-format off */
 #define TAMGA_VERSION_MAJOR 1 /* x-release-please-major */
 #define TAMGA_VERSION_MINOR 3 /* x-release-please-minor */
-#define TAMGA_VERSION_PATCH 0 /* x-release-please-patch */
-#define TAMGA_VERSION_STRING "1.3.0" /* x-release-please-version */
+#define TAMGA_VERSION_PATCH 1 /* x-release-please-patch */
+#define TAMGA_VERSION_STRING "1.3.1" /* x-release-please-version */
 /* clang-format on */
 
 #ifdef __cplusplus

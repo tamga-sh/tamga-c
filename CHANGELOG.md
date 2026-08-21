@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.3.1](https://github.com/tamga-sh/tamga-c/compare/v1.3.0...v1.3.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* align the HTTP surface and its docs with the current server contract ([fcdde1e](https://github.com/tamga-sh/tamga-c/commit/fcdde1ea26a604c5936d0f0309d7bb1475f9aebc))
+* align the HTTP surface and its docs with the current server contract ([fc78290](https://github.com/tamga-sh/tamga-c/commit/fc782905a6dbacc817be4b5a79980a4322016036))
+* document the server behaviour behind the new endpoint surface ([5ab6f2f](https://github.com/tamga-sh/tamga-c/commit/5ab6f2fd6c0263c70aa747a5bb475137c2ce2d93))
+* erase the tail of a base64 allocation before freeing it ([2db259e](https://github.com/tamga-sh/tamga-c/commit/2db259e860cbe7b8c02a2ede852c29e1703789ed))
+* make the pull-request gate cover a branch's updates too ([4182a23](https://github.com/tamga-sh/tamga-c/commit/4182a23117cb771d0108a357e4b79c006af6341b))
+* name both ways the heartbeat window accessor refuses ([4caa44c](https://github.com/tamga-sh/tamga-c/commit/4caa44c6a9d8f7de522be3564e9a7034e6cb0c49))
+* narrow activate_machine's response hand-back to the limit path only ([2b19be3](https://github.com/tamga-sh/tamga-c/commit/2b19be3c6b3c6d7f04e37de8863f3132e70d18d8))
+* pin the guards the heartbeat and validation contracts promise ([f3a891a](https://github.com/tamga-sh/tamga-c/commit/f3a891a71faee80e2e78a3c5037a5186ae688e14))
+* pin the machine-file alg parser against malformed and NUL-bearing algs ([f13687c](https://github.com/tamga-sh/tamga-c/commit/f13687c586ee97a19776ee5caf0c10adacc30370))
+* reach the endpoints an embedded client cannot work without ([a779ade](https://github.com/tamga-sh/tamga-c/commit/a779ade65ecd0440b1ae8cf5f14bd04005b9359a))
+* reach the endpoints an embedded client cannot work without ([f689034](https://github.com/tamga-sh/tamga-c/commit/f6890344e08674e0645cd405b9011312d6932a4a))
+* record why the fingerprint lookup is scoped to one licence ([cf93c64](https://github.com/tamga-sh/tamga-c/commit/cf93c6456e8e347c7a86cc848c5bcaeb3875e6be))
+* say which title the gate is reporting on the update path ([477626d](https://github.com/tamga-sh/tamga-c/commit/477626d4f7d7ea39014de0b09f5ef0bceaa3877f))
+* verify machine files the server actually produces ([a94f315](https://github.com/tamga-sh/tamga-c/commit/a94f3158cc290c402709f08a8c7ee6fa93adb242))
+* verify machine files the server actually produces ([2cfbbfe](https://github.com/tamga-sh/tamga-c/commit/2cfbbfed9199af92cc14fd993db7fc75181a972e))
+
 ## [1.3.0](https://github.com/tamga-sh/tamga-c/compare/v1.2.2...v1.3.0) (2026-08-20)
 
 
