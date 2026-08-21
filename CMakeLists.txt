@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(tamga
-    VERSION 1.3.0 # x-release-please-version
+    VERSION 1.3.1 # x-release-please-version
     # CMake's DESCRIPTION is a single line; this is the fleet-wide SDK
     # description, matching vcpkg.json.
     DESCRIPTION "Official C/C++ SDK for Tamga. Integrate license activation, offline verification, and machine management into your C/C++ applications."
