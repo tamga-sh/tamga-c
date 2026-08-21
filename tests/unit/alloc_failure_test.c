@@ -244,10 +244,31 @@ TT_TEST(offline_proof_verification_survives_every_allocation_failure) {
 static int g_reply_status = 200;
 static const char *g_reply_body = "{\"data\":{\"id\":\"01926b3e-0000-7000-8000-000000000002\"}}";
 
+/*
+ * A scripted reply sequence, for the operations that make more than one
+ * request. The composites are exactly where an allocation failure part-way
+ * through can strand the response from an earlier leg, so they have to be
+ * walkable -- and that needs each leg to get its own answer.
+ *
+ * Empty means "answer every call with g_reply_status/g_reply_body"; the last
+ * scripted entry repeats, so a script only has to cover the interesting
+ * prefix.
+ */
+#define SCRIPT_MAX 4
+static struct {
+    int status;
+    const char *body;
+} g_script[SCRIPT_MAX];
+static size_t g_script_len;
+static size_t g_script_pos;
+
 static bool always_ok_perform(void *user_data, const char *method, const char *url,
                               const char *const *header_names, const char *const *header_values,
                               uintptr_t header_count, const char *body, uintptr_t body_len,
                               unsigned int timeout_ms, TamgaHttpResult *result) {
+    int status = g_reply_status;
+    const char *reply = g_reply_body;
+
     (void)user_data;
     (void)method;
     (void)url;
@@ -257,8 +278,28 @@ static bool always_ok_perform(void *user_data, const char *method, const char *u
     (void)body;
     (void)body_len;
     (void)timeout_ms;
-    tamga_http_result_set_status(result, g_reply_status);
-    return tamga_http_result_set_body(result, g_reply_body, (uintptr_t)strlen(g_reply_body));
+
+    if (g_script_len > 0u) {
+        size_t index = (g_script_pos < g_script_len) ? g_script_pos : (g_script_len - 1u);
+        status = g_script[index].status;
+        reply = g_script[index].body;
+        g_script_pos++;
+    }
+    tamga_http_result_set_status(result, status);
+    return tamga_http_result_set_body(result, reply, (uintptr_t)strlen(reply));
+}
+
+static void script_reset(void) {
+    g_script_len = 0u;
+    g_script_pos = 0u;
+}
+
+static void script_add(int status, const char *body) {
+    if (g_script_len < SCRIPT_MAX) {
+        g_script[g_script_len].status = status;
+        g_script[g_script_len].body = body;
+        g_script_len++;
+    }
 }
 
 static TamgaClient *g_client;
@@ -268,6 +309,8 @@ static TamgaClient *g_client;
 static bool open_client(void) {
     tamga_client_free(g_client);
     g_client = NULL;
+    /* Each run of an op replays the same script from the top. */
+    g_script_pos = 0u;
     if (tamga_client_new("01926b3e-0000-7000-8000-0000000000aa", "api.tamga.sh", &g_client) !=
         TAMGA_OK) {
         return false;
@@ -370,6 +413,221 @@ static TamgaErrorCode activate_machine_limit_and_free(void) {
     return status;
 }
 
+#define ALLOC_LICENSE_ID "01926b3e-0000-7000-8000-0000000000bb"
+#define ALLOC_MACHINE_ID "01926b3e-0000-7000-8000-000000000002"
+#define ALLOC_PRODUCT_ID "01926b3e-0000-7000-8000-000000000006"
+#define ALLOC_PROCESS_ID "01926b3e-0000-7000-8000-000000000003"
+
+/* One page holding the machine the lookups below are asked for. */
+#define ALLOC_MACHINE_PAGE                                                                         \
+    "{\"data\":[{\"id\":\"" ALLOC_MACHINE_ID "\","                                                 \
+    "\"attributes\":{\"fingerprint\":\"fingerprint-1\"}}],"                                        \
+    "\"meta\":{\"page\":{\"number\":1,\"size\":100,\"total\":1,\"totalPages\":1}}}"
+
+#define ALLOC_CONFLICT                                                                             \
+    "{\"errors\":[{\"status\":\"409\",\"code\":\"FINGERPRINT_TAKEN\","                             \
+    "\"title\":\"Conflict\",\"detail\":\"already activated\"}]}"
+
+#define ALLOC_VALIDATION "{\"data\":{},\"meta\":{\"valid\":true,\"code\":\"VALID\"}}"
+
+static TamgaErrorCode update_machine(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status = tamga_client_update_machine(
+        g_client, ALLOC_MACHINE_ID,
+        "{\"hostname\":\"build-02\",\"cores\":8,\"metadata\":{\"a\":1}}", &response);
+    status = response_must_be_usable(status, response);
+    tamga_response_free(response);
+    return status;
+}
+
+static TamgaErrorCode list_machines(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status = tamga_client_list_machines(g_client, ALLOC_LICENSE_ID, "fingerprint-1",
+                                                       1u, 100u, &response);
+    status = response_must_be_usable(status, response);
+    tamga_response_free(response);
+    return status;
+}
+
+static TamgaErrorCode check_upgrade(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status =
+        tamga_client_check_upgrade(g_client, ALLOC_PRODUCT_ID, "darwin-aarch64", "dmg", "1.2.0",
+                                   "beta", ">=1.2, <2", &response);
+    status = response_must_be_usable(status, response);
+    tamga_response_free(response);
+    return status;
+}
+
+static TamgaErrorCode health(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status = tamga_client_health(g_client, &response);
+    status = response_must_be_usable(status, response);
+    tamga_response_free(response);
+    return status;
+}
+
+static TamgaErrorCode delete_process(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status = tamga_client_delete_process(g_client, ALLOC_PROCESS_ID, &response);
+    status = response_must_be_usable(status, response);
+    tamga_response_free(response);
+    return status;
+}
+
+/*
+ * The lookup behind the idempotent activation, walked on its own.
+ *
+ * A TAMGA_OK carrying no id would mean an allocation failure had been turned
+ * into "this machine is not activated" -- and the caller above reads that as
+ * "the fingerprint belongs to another licence", which is a wrong and
+ * unactionable answer to an out-of-memory. Returning a code the walk does not
+ * expect is how that fails loudly.
+ */
+static TamgaErrorCode find_machine_by_fingerprint(void) {
+    char *machine_id = NULL;
+    TamgaErrorCode status = tamga_client_find_machine_by_fingerprint(g_client, ALLOC_LICENSE_ID,
+                                                                     "fingerprint-1", &machine_id);
+    if (status == TAMGA_OK && machine_id == NULL) {
+        return TAMGA_ERR_NOT_FOUND;
+    }
+    tamga_string_free(machine_id);
+    return status;
+}
+
+/*
+ * Three requests in one call -- create (409), lookup, validate -- so an
+ * allocation failure can land between any two of them with an earlier leg's
+ * response still outstanding. That is the shape the counter below exists to
+ * catch.
+ */
+static TamgaErrorCode activate_machine_idempotent(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status = tamga_client_activate_machine_idempotent(
+        g_client, ALLOC_LICENSE_ID, "fingerprint-1", NULL, NULL, true, &response);
+
+    tamga_response_free(response);
+    return status;
+}
+
+TT_TEST(the_added_endpoints_survive_every_allocation_failure) {
+    static const struct {
+        const char *label;
+        AllocOp op;
+        int reply_status;
+        const char *reply_body;
+        TamgaErrorCode expected;
+        const char *script[3];
+        int script_status[3];
+    } CASES[] = {
+        {"tamga_client_update_machine",
+         update_machine,
+         200,
+         "{\"data\":{\"id\":\"" ALLOC_MACHINE_ID "\"}}",
+         TAMGA_OK,
+         {NULL, NULL, NULL},
+         {0, 0, 0}},
+        {"tamga_client_list_machines",
+         list_machines,
+         200,
+         ALLOC_MACHINE_PAGE,
+         TAMGA_OK,
+         {NULL, NULL, NULL},
+         {0, 0, 0}},
+        {"tamga_client_check_upgrade",
+         check_upgrade,
+         200,
+         "{\"data\":{\"id\":\"" ALLOC_MACHINE_ID "\"}}",
+         TAMGA_OK,
+         {NULL, NULL, NULL},
+         {0, 0, 0}},
+        {"tamga_client_health",
+         health,
+         200,
+         "{\"status\":\"ok\",\"version\":\"0.1.0\",\"uptime_secs\":42}",
+         TAMGA_OK,
+         {NULL, NULL, NULL},
+         {0, 0, 0}},
+        {"tamga_client_delete_process",
+         delete_process,
+         200,
+         "{\"data\":{\"id\":\"" ALLOC_PROCESS_ID "\"}}",
+         TAMGA_OK,
+         {NULL, NULL, NULL},
+         {0, 0, 0}},
+        {"tamga_client_find_machine_by_fingerprint",
+         find_machine_by_fingerprint,
+         200,
+         ALLOC_MACHINE_PAGE,
+         TAMGA_OK,
+         {NULL, NULL, NULL},
+         {0, 0, 0}},
+        {"tamga_client_activate_machine_idempotent",
+         activate_machine_idempotent,
+         0,
+         NULL,
+         TAMGA_OK,
+         {ALLOC_CONFLICT, ALLOC_MACHINE_PAGE, ALLOC_VALIDATION},
+         {409, 200, 200}},
+    };
+    size_t i;
+
+    for (i = 0u; i < (sizeof(CASES) / sizeof(CASES[0])); i++) {
+        unsigned long total;
+        unsigned long n;
+        size_t leg;
+
+        script_reset();
+        for (leg = 0u; leg < 3u; leg++) {
+            if (CASES[i].script[leg] != NULL) {
+                script_add(CASES[i].script_status[leg], CASES[i].script[leg]);
+            }
+        }
+        g_reply_status = CASES[i].reply_status;
+        g_reply_body = CASES[i].reply_body;
+
+        TT_ASSERT(open_client());
+        tamga_test_alloc_reset();
+        if (CASES[i].op() != CASES[i].expected) {
+            tt_failures_++;
+            (void)fprintf(stderr, "FAIL %s: %s did not succeed before any injection\n", tt_current_,
+                          CASES[i].label);
+            continue;
+        }
+        total = tamga_test_alloc_calls;
+        TT_ASSERT(total > 0uL);
+
+        for (n = 1uL; n <= total; n++) {
+            TamgaErrorCode status;
+            unsigned long live_before;
+
+            TT_ASSERT(open_client());
+            tamga_test_alloc_reset();
+            live_before = tamga_test_alloc_live;
+            tamga_test_alloc_fail_at = n;
+            status = CASES[i].op();
+
+            if (status != CASES[i].expected && status != TAMGA_ERR_OUT_OF_MEMORY) {
+                tt_failures_++;
+                (void)fprintf(stderr, "FAIL %s: %s returned %s when allocation %lu of %lu failed\n",
+                              tt_current_, CASES[i].label, tamga_error_name(status), n, total);
+                break;
+            }
+            if (tamga_test_alloc_live != live_before) {
+                tt_failures_++;
+                (void)fprintf(
+                    stderr, "FAIL %s: %s leaked %lu block(s) when allocation %lu of %lu failed\n",
+                    tt_current_, CASES[i].label, tamga_test_alloc_live - live_before, n, total);
+                break;
+            }
+        }
+        tamga_test_alloc_reset();
+    }
+    script_reset();
+    tamga_client_free(g_client);
+    g_client = NULL;
+}
+
 TT_TEST(request_builders_survive_every_allocation_failure) {
     /* The last case is a non-2xx reply, and its expected outcome is the
      * specific error the server sent, not TAMGA_OK. Falling back to the
@@ -465,5 +723,6 @@ int main(void) {
     TT_RUN(machine_file_verification_survives_every_allocation_failure);
     TT_RUN(offline_proof_verification_survives_every_allocation_failure);
     TT_RUN(request_builders_survive_every_allocation_failure);
+    TT_RUN(the_added_endpoints_survive_every_allocation_failure);
     return TT_SUMMARY();
 }
