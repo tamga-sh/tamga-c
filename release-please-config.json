@@ -24,6 +24,10 @@
         {
           "type": "generic",
           "path": "include/tamga.h"
+        },
+        {
+          "type": "generic",
+          "path": "README.md"
         }
       ]
     }
