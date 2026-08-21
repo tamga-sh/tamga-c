@@ -164,14 +164,25 @@ one will disagree with the gate.
 ### Opening a pull request
 
 ```sh
-sh scripts/mr.sh              # target: main
-sh scripts/mr.sh some-branch  # another target
+sh Scripts/mr.sh              # target: main, or the pull request's own base
+sh Scripts/mr.sh some-branch  # another target
 ```
+
+The directory is capitalised. It is the only top-level one that is, and a
+lowercase `scripts/` works on macOS only because the filesystem is
+case-insensitive — on Linux it fails outright.
 
 This runs the checks CI runs — formatting, build, the full suite, and the
 `TAMGA_HTTP=none` build whenever the library itself changed — and only then
-pushes and opens the pull request. Use it rather than `gh pr create` directly:
-the push is its last step, not its purpose.
+pushes. Use it rather than `gh pr create` or `git push` directly: the push is
+its last step, not its purpose.
+
+It handles a branch that **already has an open pull request**, which is most
+of a branch's life: it runs the same checks and pushes to that pull request
+instead of trying to open a second one. It also takes the base branch from the
+pull request itself, so a stacked branch does not need the target spelled out
+— pass one only to override, and it will refuse if it disagrees with the pull
+request rather than guess.
 
 It also **derives the pull-request title** from the branch's commits, taking
 the highest semver-relevant conventional type actually present. That is not
