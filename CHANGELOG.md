@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.2](https://github.com/tamga-sh/tamga-c/compare/v1.3.1...v1.3.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* keep the FetchContent tag current at release ([8c9ac88](https://github.com/tamga-sh/tamga-c/commit/8c9ac8826eeacc2a9f3f81de052b15a64817f96d))
+* keep the FetchContent tag current at release ([b9b1478](https://github.com/tamga-sh/tamga-c/commit/b9b1478c1542139b46910b85004a6dead3d67590))
+
 ## [1.3.1](https://github.com/tamga-sh/tamga-c/compare/v1.3.0...v1.3.1) (2026-08-21)
 
 
