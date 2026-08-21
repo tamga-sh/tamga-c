@@ -256,7 +256,69 @@ typedef enum TamgaErrorCode {
      * precondition. Either the policy is changed or a token credential is
      * used instead.
      */
-    TAMGA_ERR_LICENSE_NOT_ALLOWED = 36
+    TAMGA_ERR_LICENSE_NOT_ALLOWED = 36,
+
+    /* --- offline signing-key rotation, added in 1.3.3 --------------------
+     *
+     * Appended after the limit block, never interleaved with it. All three are
+     * reachable only from tamga_license_file_verify_with_key_set() and
+     * tamga_machine_file_verify_with_key_set(), which did not exist before
+     * 1.3.3 -- so no call a caller already writes can start returning one.
+     */
+
+    /**
+     * The file's signed `kid` claim names a signing key the supplied key set
+     * does not hold.
+     *
+     * ⚠️ This is NOT a forgery, and reporting it as one is the whole defect
+     * these codes exist to end. It is what an authentic file checked out
+     * before the account rotated its signing key produces against a key set
+     * that has not caught up -- a stale cache, or an application shipped with
+     * a single pinned key. A tampered file whose `kid` IS known fails as
+     * `TAMGA_ERR_SIGNATURE_INVALID` instead, and separating the two is the
+     * point of verifying through a key set at all: the first calls for
+     * refetching the keys or shipping an update, the second for refusing the
+     * file. Told apart wrongly, a paying customer holding a perfectly good
+     * licence is locked out and support is sent to look for tampering.
+     *
+     * The claimed `kid` and the number of keys held are in
+     * tamga_last_error_message().
+     */
+    TAMGA_ERR_UNKNOWN_SIGNING_KEY = 37,
+    /**
+     * The file's `kid` is `TAMGA_UNPUBLISHED_KEY_ID`, so no key set can ever
+     * match it: the account signed the file while its Ed25519 public key was
+     * unset.
+     *
+     * Both server-side checkout handlers compute the claim as
+     * `key_id(account.ed25519_public_key.unwrap_or_default())`, so an account
+     * that predates the public-key backfill hashes the empty string and stamps
+     * that one constant into every file it signs.
+     *
+     * Distinct from `TAMGA_ERR_UNKNOWN_SIGNING_KEY` because the obvious remedy
+     * for that one does not work here: refetching the key set will never
+     * produce a match, however many times it is tried, and `GET
+     * /signing-keys` on such an account answers `{"data": []}` forever. Verify
+     * with the account's own public key through tamga_license_file_verify(),
+     * and have the key published.
+     */
+    TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED = 38,
+    /**
+     * A `kid` cannot select this machine file's key, because under this
+     * signing scheme the claim does not name the key that signed it.
+     *
+     * A machine file's signing key is chosen by the licence's `scheme`, but
+     * its `kid` is computed from the account's ED25519 key whatever the scheme
+     * is -- so for an RSA- or ECDSA-signed file the claim names a key that had
+     * no part in the signature, and `GET /signing-keys` publishes Ed25519 keys
+     * only in any case. Verify those with tamga_machine_file_verify() and the
+     * account's own key for that algorithm.
+     *
+     * Nothing is lost by the restriction: `/actions/rotate-signing-key`
+     * rotates the Ed25519 key alone, so no other scheme has a rotation to
+     * survive.
+     */
+    TAMGA_ERR_KEY_ID_NOT_APPLICABLE = 39
 } TamgaErrorCode;
 
 /* ======================================================================
@@ -313,6 +375,15 @@ typedef struct TamgaLicenseFile TamgaLicenseFile;
  * tamga_machine_file_free() exactly once.
  */
 typedef struct TamgaMachineFile TamgaMachineFile;
+
+/**
+ * Opaque handle wrapping the set of Ed25519 signing keys an offline file is
+ * allowed to have been signed by, indexed by `kid`.
+ *
+ * Obtained from tamga_signing_key_set_new(); must be freed with
+ * tamga_signing_key_set_free() exactly once. See "Signing keys" below.
+ */
+typedef struct TamgaSigningKeySet TamgaSigningKeySet;
 
 /* ======================================================================
  * Diagnostics and memory
@@ -399,6 +470,195 @@ TAMGA_API enum TamgaErrorCode tamga_hkdf_derive_license_file_key(const char *lic
                                                                  uint8_t *out_32_bytes);
 
 /* ======================================================================
+ * Signing keys and key rotation
+ *
+ * Everything here is offline. A key set is built from keys the caller already
+ * trusts -- pinned in its own binary, or read from a `GET /signing-keys`
+ * document it obtained however it likes -- and never from the file being
+ * verified.
+ *
+ * ⚠️ A licence-key credential CANNOT call `GET /signing-keys`: the route needs
+ * the `account.read` permission and `Role::LicenseToken` does not carry it, so
+ * an embedded client authenticating with a licence key gets `403`. Unlike
+ * `policy.read`, there is no second route exposing the same resource under a
+ * permission it does hold. That is why tamga_signing_key_set_add_json() takes
+ * bytes rather than a client, and why tamga_signing_key_set_add_public_key()
+ * exists at all: a key set has to be constructible with no network, or offline
+ * verification stops being offline.
+ * ====================================================================== */
+
+/**
+ * The length of a `kid` in characters, and the buffer size one needs including
+ * the terminating NUL.
+ *
+ * Sixteen characters, not sixty-four: a `kid` is the first EIGHT bytes of a
+ * SHA-256 digest rendered as lowercase hex. The truncation is the server's
+ * choice, and rendering the whole digest produces an id that matches nothing.
+ */
+#define TAMGA_KEY_ID_LENGTH 16
+#define TAMGA_KEY_ID_SIZE 17
+
+/**
+ * The `kid` every file signed by an account with no published Ed25519 public
+ * key carries: `SHA-256("")`, truncated like any other.
+ *
+ * Not a defensive constant -- a real past state of real accounts. Both
+ * server-side checkout handlers hash
+ * `account.ed25519_public_key.unwrap_or_default()`, so an account whose key
+ * column was never populated signs every file with this one id. Recognising it
+ * is the difference between telling a customer "your key set is stale" and
+ * telling them "this server published no key at all", which have different
+ * fixes -- and only one of them is the caller's to make. Reported as
+ * `TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED` rather than left for a caller to
+ * compare against by hand.
+ */
+#define TAMGA_UNPUBLISHED_KEY_ID "e3b0c44298fc1c14"
+
+/**
+ * Computes the `kid` a file signed under `ed25519_public_key` will claim: the
+ * first eight bytes of `SHA-256(ed25519_public_key)`, as TAMGA_KEY_ID_LENGTH
+ * lowercase hex characters plus a NUL.
+ *
+ * ⚠️ It hashes the base64 STRING, byte for byte as the server stores it -- NOT
+ * the 32 bytes that string decodes to. The natural assumption is the wrong
+ * one, and it is wrong silently: decoding first yields an equally well-formed
+ * sixteen-character id that matches nothing the server ever issued, so every
+ * genuine file reports an unknown signing key and the bug looks like a
+ * rotation problem rather than a hashing one. The server's `key_id()` takes a
+ * `&str` and digests `.as_bytes()`.
+ *
+ * `ed25519_public_key` is consequently NOT validated -- not as base64, not as
+ * a key, not for length. It is hashed as given, because the empty string is a
+ * meaningful input (see TAMGA_UNPUBLISHED_KEY_ID) and rejecting it would put
+ * the one value a caller most needs to recognise out of reach.
+ *
+ * Computing a `kid` is only necessary for a key the caller holds itself. A key
+ * set read from the server is already indexed by `kid` -- the resource `id` IS
+ * the `kid`, set from the same value the server writes into the file's claim
+ * -- so tamga_signing_key_set_add_json() indexes by that and uses this only as
+ * a cross-check.
+ *
+ * Parameters:
+ * - `ed25519_public_key`: the key exactly as the server stores and publishes
+ *   it, standard base64 of the raw 32 bytes. Required, may be empty.
+ * - `out_key_id`: receives TAMGA_KEY_ID_LENGTH characters plus a NUL, and only
+ *   on `TAMGA_OK`.
+ *
+ * Safety: `out_key_id` must point to at least TAMGA_KEY_ID_SIZE writable
+ * bytes.
+ */
+TAMGA_API enum TamgaErrorCode tamga_signing_key_id(const char *ed25519_public_key,
+                                                   char *out_key_id);
+
+/**
+ * Creates an empty key set.
+ *
+ * `*out_set` receives an owned handle on `TAMGA_OK`; free it with
+ * tamga_signing_key_set_free() exactly once. An empty set is a usable set --
+ * every verification through it reports `TAMGA_ERR_UNKNOWN_SIGNING_KEY`, which
+ * is the honest answer -- but it is almost always a sign that the fetch or the
+ * pinned-key list is wrong.
+ */
+TAMGA_API enum TamgaErrorCode tamga_signing_key_set_new(struct TamgaSigningKeySet **out_set);
+
+/**
+ * Frees a set obtained from tamga_signing_key_set_new(). Same contract as
+ * tamga_license_file_free(): NULL is a no-op, double-free is documented
+ * undefined behaviour and intentionally unguarded.
+ */
+TAMGA_API void tamga_signing_key_set_free(struct TamgaSigningKeySet *set);
+
+/**
+ * Adds one key the caller holds itself -- pinned in its own binary, or
+ * configured alongside it -- indexed by the `kid` computed from it.
+ *
+ * This is the path that needs no network, and on a licence-key credential it
+ * is the only one available (see the section note above).
+ *
+ * Strict on purpose, and the opposite of tamga_signing_key_set_add_json(): a
+ * value that is not standard base64 of exactly 32 bytes is
+ * `TAMGA_ERR_INVALID_BASE64` or `TAMGA_ERR_LENGTH_INVALID`, never a silently
+ * skipped entry. A typo in a key compiled into an application has to fail
+ * loudly at startup rather than produce a set that reports every genuine file
+ * in the field as signed by an unknown key.
+ *
+ * Adding the same key twice is permitted and wasteful, not an error; the first
+ * match wins.
+ */
+TAMGA_API enum TamgaErrorCode tamga_signing_key_set_add_public_key(struct TamgaSigningKeySet *set,
+                                                                   const char *ed25519_public_key);
+
+/**
+ * Adds every usable key in a `GET /signing-keys` document -- the account's
+ * whole key history, retired keys included, which is exactly what makes a
+ * rotation survivable.
+ *
+ * Takes the document's bytes rather than a client or a response so that it
+ * works for a caller who cannot make the call: a licence-key credential is
+ * refused by the route, so the JSON commonly arrives out of band, cached on
+ * disk or shipped with the application. Pass tamga_response_json()'s buffer
+ * when you did fetch it yourself.
+ *
+ * Lenient where tamga_signing_key_set_add_public_key() is strict, and for the
+ * opposite reason: this input is the server's whole history, and one unusable
+ * row -- a future non-Ed25519 algorithm, a legacy key that does not decode --
+ * must not strand every file the account has ever signed. Such rows land in
+ * `*out_skipped` instead of failing the call.
+ *
+ * Each key is indexed by the resource `id`, which IS the `kid`. The local
+ * computation still runs as a cross-check, and a row whose served id and
+ * computed id disagree is counted in `*out_mismatched` -- and is still added,
+ * under the SERVED id, because that is what an offline file actually names.
+ * Dropping it would strand precisely the files it is needed for. A non-zero
+ * `*out_mismatched` is worth a log line: it means this SDK and the server no
+ * longer agree about how a `kid` is derived.
+ *
+ * Atomic. On any non-`TAMGA_OK` return the set holds exactly what it held
+ * before and NONE of the three counters is written -- a half-merged key set is
+ * worse than an unmerged one, because it verifies some of the account's files
+ * and reports the rest as forged. All three out-parameters are optional.
+ *
+ * Returns `TAMGA_ERR_INVALID_JSON` when the bytes are not a JSON:API
+ * collection with a `data` array, `TAMGA_ERR_LENGTH_INVALID` for a zero or
+ * over-long length, and `TAMGA_ERR_OUT_OF_MEMORY` for an allocation failure --
+ * which is never reported as a skipped row, because a caller reads "skipped"
+ * as "that key was unusable" rather than as "this machine is out of memory".
+ */
+TAMGA_API enum TamgaErrorCode tamga_signing_key_set_add_json(struct TamgaSigningKeySet *set,
+                                                             const char *json, uintptr_t json_len,
+                                                             uintptr_t *out_added,
+                                                             uintptr_t *out_skipped,
+                                                             uintptr_t *out_mismatched);
+
+/**
+ * The raw 32-byte public key the set holds under `key_id`, if any.
+ *
+ * Returns false when the set holds no key under that id, and writes NOTHING in
+ * that case -- so a caller that ignores the return value reads back whatever
+ * it already had there, never a plausible-looking key it did not earn.
+ * `out_ed25519_pubkey` is optional: pass NULL to test membership alone.
+ *
+ * Matching is exact and case-sensitive; the server emits lowercase hex in the
+ * resource `id` and in the file's claim alike. The id's shape is deliberately
+ * not validated -- it is an opaque server-issued label selecting from keys the
+ * caller already trusts, so imposing a format here would buy nothing and would
+ * refuse a server that ever widened it.
+ *
+ * Safety: `out_ed25519_pubkey` must be NULL or point to at least 32 writable
+ * bytes.
+ */
+TAMGA_API bool tamga_signing_key_set_find(const struct TamgaSigningKeySet *set, const char *key_id,
+                                          uint8_t *out_ed25519_pubkey);
+
+/**
+ * How many usable keys the set holds. Zero for NULL.
+ *
+ * Compare it against the number of resources the response carried
+ * (tamga_response_signing_key_count()) to learn that something was dropped.
+ */
+TAMGA_API uintptr_t tamga_signing_key_set_count(const struct TamgaSigningKeySet *set);
+
+/* ======================================================================
  * Licence file (.lic)
  * ====================================================================== */
 
@@ -427,6 +687,44 @@ TAMGA_API enum TamgaErrorCode tamga_license_file_verify(const char *pem, uintptr
                                                         const uint8_t *ed25519_pubkey,
                                                         const char *license_key,
                                                         struct TamgaLicenseFile **out_handle);
+
+/**
+ * As tamga_license_file_verify(), selecting the public key by the file's own
+ * signed `kid` claim from a set of keys the caller already trusts.
+ *
+ * This is what makes a signing-key rotation survivable. Against one embedded
+ * key, a file checked out before the rotation reports exactly the error a
+ * forgery does; through a key set the two are separate outcomes:
+ *
+ *   - the `kid` is not in the set -> `TAMGA_ERR_UNKNOWN_SIGNING_KEY`. Refetch
+ *     the key set or ship an update, then try again.
+ *   - the `kid` is `TAMGA_UNPUBLISHED_KEY_ID` ->
+ *     `TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED`. Refetching will never help; this
+ *     server published no key at all.
+ *   - the `kid` is in the set but the signature fails ->
+ *     `TAMGA_ERR_SIGNATURE_INVALID`. Refuse the file.
+ *
+ * ⚠️ One ordering difference from tamga_license_file_verify() is worth knowing
+ * before choosing between them. Selecting a key needs the `kid`, and the `kid`
+ * lives inside `enc` -- so `enc` is decoded, and for an encrypted file
+ * decrypted under the licence key, BEFORE the signature is checked. A
+ * malformed or undecryptable file therefore reports that rather than a
+ * signature failure, and this entry point runs the JSON parser over bytes
+ * whose signature has not yet been established. Nothing from those bytes is
+ * trusted: the single value taken from them before verification is the `kid`,
+ * and it can only ever SELECT from keys the caller supplied -- it can never
+ * introduce one, and there is deliberately no "try every key" fallback, which
+ * would accept the same files while destroying the distinction above.
+ *
+ * `keys` is borrowed for the duration of the call and may be shared across
+ * threads as long as nothing mutates it concurrently. Everything else --
+ * format v2 only, the Ed25519-only rule, the 60-second skew tolerance on the
+ * signed `exp`, and the `license_key` requirement for an encrypted file -- is
+ * exactly as tamga_license_file_verify() documents it.
+ */
+TAMGA_API enum TamgaErrorCode tamga_license_file_verify_with_key_set(
+    const char *pem, uintptr_t pem_len, const struct TamgaSigningKeySet *keys,
+    const char *license_key, struct TamgaLicenseFile **out_handle);
 
 /**
  * Exposes the decoded licence resource as an owned JSON C string.
@@ -495,6 +793,39 @@ TAMGA_API enum TamgaErrorCode
 tamga_machine_file_verify(const char *pem, uintptr_t pem_len, uint32_t scheme,
                           const uint8_t *pubkey, uintptr_t pubkey_len, const char *license_key,
                           const char *fingerprint, struct TamgaMachineFile **out_handle);
+
+/**
+ * As tamga_machine_file_verify(), selecting the public key by the file's own
+ * signed `kid` claim. **Ed25519-signed machine files only.**
+ *
+ * The restriction is the server's, not this SDK's, and it is worth stating
+ * precisely because the natural assumption is wrong. A machine file's signing
+ * key is chosen by the licence's `scheme`, but its `kid` claim is computed
+ * from `account.ed25519_public_key` WHATEVER the scheme -- so for an RSA- or
+ * ECDSA-signed file the claim names a key that had no part in the signature,
+ * and `GET /signing-keys` publishes Ed25519 keys only in any case. Passing
+ * `TAMGA_SCHEME_RSA_2048_PKCS1_SIGN`, `TAMGA_SCHEME_RSA_2048_PKCS1_PSS_SIGN`
+ * or `TAMGA_SCHEME_ECDSA_P256_SIGN` here yields
+ * `TAMGA_ERR_KEY_ID_NOT_APPLICABLE`; verify those with
+ * tamga_machine_file_verify() and the account's own key for that algorithm.
+ * Nothing is lost by it -- only the Ed25519 key is ever rotated, so no other
+ * scheme has a rotation to survive.
+ *
+ * `TAMGA_SCHEME_NONE`, `TAMGA_SCHEME_RSA_2048_JWT_RS256` and any value outside
+ * the declared range stay `TAMGA_ERR_UNSUPPORTED_SCHEME`, exactly as in
+ * tamga_machine_file_verify() -- a scheme this library refuses outright is
+ * refused the same way on both paths, rather than being reported as a `kid`
+ * problem.
+ *
+ * The same key-selection outcomes and the same pre-verification decode
+ * ordering apply as in tamga_license_file_verify_with_key_set(); see there.
+ * `license_key` and `fingerprint` are needed only for an encrypted file, and
+ * on this path they are needed BEFORE the signature is checked rather than
+ * after.
+ */
+TAMGA_API enum TamgaErrorCode tamga_machine_file_verify_with_key_set(
+    const char *pem, uintptr_t pem_len, uint32_t scheme, const struct TamgaSigningKeySet *keys,
+    const char *license_key, const char *fingerprint, struct TamgaMachineFile **out_handle);
 
 /**
  * Exposes the decoded machine resource as an owned JSON C string. Same
@@ -854,6 +1185,54 @@ TAMGA_API bool tamga_response_page(const TamgaResponse *response, int64_t *out_n
  */
 TAMGA_API bool tamga_response_heartbeat_window_secs(const TamgaResponse *response,
                                                     int64_t *out_seconds);
+
+/**
+ * How many `signing-keys` resources a tamga_client_list_signing_keys()
+ * response carries. Zero for anything else, including an error document.
+ *
+ * ⚠️ Zero is the ORDINARY state of a healthy account, not a fault.
+ * `account_signing_keys` is written only by the rotation handler, which
+ * backfills the current key on its way through, so an account that has never
+ * rotated has no rows and the route answers `{"data": []}`. Read zero as
+ * "nothing has rotated yet" and fall back to the key the application already
+ * pins -- never as "this account has no signing key".
+ */
+TAMGA_API uintptr_t tamga_response_signing_key_count(const TamgaResponse *response);
+
+/**
+ * Reads one `signing-keys` resource out of a tamga_client_list_signing_keys()
+ * response.
+ *
+ * Every out-parameter is optional; pass NULL for the ones you do not want. The
+ * strings are BORROWED, like every other response accessor here: valid until
+ * the response is freed.
+ *
+ * ⚠️ `*out_key_id` is the resource `id`, and on this one route the id is NOT a
+ * UUID -- it IS the `kid`, the same sixteen-character lowercase hex string an
+ * offline file's claim carries. That is what makes matching a file to its key
+ * a lookup rather than a computation.
+ *
+ * `*out_public_key` is standard base64 of the raw 32 bytes, read from the wire
+ * name `publicKey` -- the ONE camelCase field on an otherwise snake_case
+ * resource. `algorithm`, `status` and `created` are bare, and applying
+ * camelCase to the whole resource is as wrong as applying snake_case to all of
+ * it.
+ *
+ * Returns false when `index` is out of range or the resource is unreadable,
+ * and writes NOTHING in that case -- every field is read before any is stored,
+ * so a caller that ignores the return value cannot act on a half-filled set.
+ *
+ * `*out_retired` is the exception that proves the rule: it receives NULL, with
+ * a TRUE return, for a key that is still active. The server omits the field
+ * entirely rather than sending null while a key is current, so its absence is
+ * the documented "not retired" state and not a read failure. `status` carries
+ * the same fact as a string (`"active"` / `"retired"`), and is left an open
+ * string rather than an enum so a future value decodes instead of failing.
+ */
+TAMGA_API bool tamga_response_signing_key_at(const TamgaResponse *response, uintptr_t index,
+                                             const char **out_key_id, const char **out_algorithm,
+                                             const char **out_public_key, const char **out_status,
+                                             const char **out_created, const char **out_retired);
 
 /**
  * The validation outcome code (`VALID`, `EXPIRED`, `TOO_MANY_MACHINES`, ...).
@@ -1566,6 +1945,40 @@ TAMGA_API TamgaErrorCode tamga_client_get_entitlement(TamgaClient *client, const
 TAMGA_API TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const char *license_id,
                                                       const char *code, uint32_t limit,
                                                       bool *out_has);
+
+/* --- signing keys -------------------------------------------------------- */
+
+/**
+ * `GET /signing-keys` -- every Ed25519 signing key the account has held,
+ * retired ones included.
+ *
+ * Retired keys are the point. A `.lic` or machine file checked out before a
+ * rotation names the key that signed it, and without that key it fails
+ * verification with the same error a forged file produces. Feed the response
+ * body to tamga_signing_key_set_add_json() and verify through
+ * tamga_license_file_verify_with_key_set().
+ *
+ * One call, cacheable for the life of the process: the set only changes when
+ * the account rotates, and a rotation does not invalidate what is already
+ * cached -- it adds to it.
+ *
+ * ⚠️ Closed to a licence key, and unlike `GET /policies/{id}` there is no
+ * second route to the same resource. This one needs the `account.read`
+ * permission, which `Role::LicenseToken` does not carry, so a
+ * `TAMGA_AUTH_LICENSE` or `TAMGA_AUTH_BASIC_LICENSE` credential gets `403`
+ * here whatever the policy says. An embedded client therefore cannot fetch its
+ * own account's key set: obtain the document with a token-authenticated caller
+ * and ship or cache it, or pin the keys with
+ * tamga_signing_key_set_add_public_key().
+ *
+ * ⚠️ `{"data": []}` is the ordinary answer for an account that has never
+ * rotated -- see tamga_response_signing_key_count().
+ *
+ * The listing is not paginated and takes no cursor: an account's key history
+ * is a handful of rows.
+ */
+TAMGA_API TamgaErrorCode tamga_client_list_signing_keys(TamgaClient *client,
+                                                        TamgaResponse **out_response);
 
 /* ======================================================================
  * Releases and diagnostics

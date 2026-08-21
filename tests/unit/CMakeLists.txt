@@ -15,6 +15,7 @@ tamga_add_test(test_unit_ed25519 ed25519_test.c)
 tamga_add_test(test_unit_bn      bn_test.c)
 tamga_add_test(test_unit_rsa     rsa_test.c)
 tamga_add_test(test_unit_ecdsa   ecdsa_test.c)
+tamga_add_test(test_unit_signing_key signing_key_test.c)
 
 # Whitebox: p256.c's Montgomery arithmetic is static, and should stay that way.
 tamga_add_whitebox_test(test_unit_p256 p256_test.c

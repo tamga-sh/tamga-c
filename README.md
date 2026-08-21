@@ -19,6 +19,8 @@ HTTP half needs a transport, which is either an operating-system component
 - verify and decode a machine file across all four signing schemes
 - verify a machine offline proof
 - derive the two AES keys those formats use
+- survive a signing-key rotation: verify a file against the key its own `kid`
+  claim names, from a set of keys you already trust
 
 **Over HTTP:**
 
@@ -31,6 +33,7 @@ HTTP half needs a transport, which is either an operating-system component
 - register, list and dispose of components and processes
 - list and query entitlements
 - ask whether a newer release is available
+- read the account's signing keys, retired ones included
 - probe the server's health, for when nothing else works
 
 Everything the [Rust reference SDK](https://github.com/tamga-sh/tamga-rust)
@@ -258,6 +261,63 @@ zero-padding the licence key rather than from HKDF.
 **The client's clock is the user's clock.** For a stricter offline grace
 period, keep a server-supplied timestamp and check the file's expiry against
 that instead of the system clock.
+
+**A rotated signing key does not have to lock anyone out.** When an account
+rotates its Ed25519 key, a file checked out *before* the rotation is still
+authentic — but against the one key an application has embedded it fails with
+exactly the error a forged file produces. Verify through a key set instead and
+the two become different answers:
+
+```c
+TamgaSigningKeySet *keys = NULL;
+tamga_signing_key_set_new(&keys);
+
+/* Keys you pin in your own binary. Their kid is computed locally, so this
+   needs no network -- which matters, because a licence-key credential is
+   refused GET /signing-keys outright. */
+tamga_signing_key_set_add_public_key(keys, current_key_b64);
+tamga_signing_key_set_add_public_key(keys, previous_key_b64);
+
+TamgaLicenseFile *file = NULL;
+switch (tamga_license_file_verify_with_key_set(pem, pem_len, keys, NULL, &file)) {
+case TAMGA_OK:
+    break;
+case TAMGA_ERR_UNKNOWN_SIGNING_KEY:
+    /* Not a forgery. The key set has not caught up with a rotation --
+       refresh it, or ship an update. */
+    break;
+case TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED:
+    /* This account never published an Ed25519 public key, so no key set can
+       ever match. Refetching will not help. */
+    break;
+case TAMGA_ERR_SIGNATURE_INVALID:
+    /* The kid resolved and the signature still failed. Refuse the file. */
+    break;
+default:
+    break;
+}
+```
+
+A `kid` is `SHA-256` of the public key's **base64 string** — not of the 32
+bytes it decodes to — truncated to eight bytes and hex-encoded.
+`tamga_signing_key_id()` computes it, but you rarely need to: a key set fetched
+with `tamga_client_list_signing_keys()` is already indexed by `kid`, because on
+that route the resource `id` *is* the `kid`.
+
+⚠️ Two limits, both the server's. `GET /signing-keys` needs `account.read`,
+which a licence key does not carry, and there is no second route to the same
+resource — so an embedded client must be *given* the key set rather than fetch
+it. And a machine file signed under an RSA or ECDSA scheme cannot be matched by
+`kid` at all: the server computes that claim from the account's Ed25519 key
+whatever scheme signed the file. Those get
+`TAMGA_ERR_KEY_ID_NOT_APPLICABLE`; verify them with
+`tamga_machine_file_verify()`. Nothing is lost, because only the Ed25519 key is
+ever rotated.
+
+**An empty key set is a healthy account.** `GET /signing-keys` answers
+`{"data": []}` for an account that has never rotated — the table is written
+only by the rotation handler. Read that as "nothing has rotated yet", not as a
+fault.
 
 **Machine files need the fingerprint.** An encrypted machine file's key is
 derived from the licence key *and* the machine's fingerprint, so a file issued

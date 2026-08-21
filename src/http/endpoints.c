@@ -1610,6 +1610,38 @@ TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const char *lic
     return TAMGA_OK;
 }
 
+/* --- signing keys -------------------------------------------------------- */
+
+/*
+ * `GET /signing-keys` -- the account's whole Ed25519 key history, retired keys
+ * included, which is the point: a file checked out before a rotation names the
+ * key that signed it, and without that key it fails verification with the same
+ * error a forged file produces.
+ *
+ * Not paginated and takes no cursor. The route reads the whole
+ * `account_signing_keys` table for the account, which is a handful of rows,
+ * and answers with no `meta` -- so neither tamga_response_page() nor
+ * tamga_response_next_cursor() applies here.
+ *
+ * ⚠️ Needs `account.read`, which `Role::LicenseToken` does not carry, so a
+ * licence-key credential gets `403`. Unlike `policy.read` there is no second
+ * route to the same resource, which is why tamga_signing_key_set_add_json()
+ * takes bytes rather than a client: an embedded client has to be given the
+ * document rather than fetch it.
+ *
+ * ⚠️ `{"data": []}` is the ordinary answer for an account that has never
+ * rotated -- the table is written only by the rotation handler, which
+ * backfills the current key on its way through. Empty means "nothing has
+ * rotated yet", not "this account has no signing key".
+ */
+TamgaErrorCode tamga_client_list_signing_keys(TamgaClient *client, TamgaResponse **out_response) {
+    tamga_error_clear();
+    if (client == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "client and out_response are required");
+    }
+    return tamga_client_send(client, "GET", "/signing-keys", NULL, NULL, NULL, false, out_response);
+}
+
 /* --- releases ------------------------------------------------------------ */
 
 /*

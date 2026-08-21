@@ -382,6 +382,101 @@ bool tamga_response_heartbeat_window_secs(const TamgaResponse *response, int64_t
     return true;
 }
 
+/* The `data` array of a signing-key listing, or NULL when this is not one. */
+static const TamgaJson *tamga_response_signing_keys(const TamgaResponse *response) {
+    const TamgaJson *data;
+
+    if (response == NULL || response->json == NULL) {
+        return NULL;
+    }
+    data = tamga_json_object_get(response->json, "data");
+    if (data == NULL || tamga_json_type(data) != TAMGA_JSON_ARRAY) {
+        return NULL;
+    }
+    return data;
+}
+
+uintptr_t tamga_response_signing_key_count(const TamgaResponse *response) {
+    tamga_error_clear();
+    /*
+     * Zero for an error document or the wrong response, and zero for an
+     * account that has simply never rotated -- which is the ordinary state of
+     * a healthy one, not a fault. The two are told apart by
+     * tamga_response_status(), not here.
+     */
+    return (uintptr_t)tamga_json_array_len(tamga_response_signing_keys(response));
+}
+
+bool tamga_response_signing_key_at(const TamgaResponse *response, uintptr_t index,
+                                   const char **out_key_id, const char **out_algorithm,
+                                   const char **out_public_key, const char **out_status,
+                                   const char **out_created, const char **out_retired) {
+    const TamgaJson *data;
+    const TamgaJson *resource;
+    const TamgaJson *attributes;
+    const char *key_id;
+    const char *algorithm;
+    const char *public_key;
+    const char *status;
+    const char *created;
+    const char *retired;
+
+    tamga_error_clear();
+    data = tamga_response_signing_keys(response);
+    if (data == NULL || (size_t)index >= tamga_json_array_len(data)) {
+        return false;
+    }
+    resource = tamga_json_array_at(data, (size_t)index);
+    if (resource == NULL || tamga_json_type(resource) != TAMGA_JSON_OBJECT) {
+        return false;
+    }
+    attributes = tamga_json_object_get(resource, "attributes");
+
+    /* ⚠️ On this route the resource `id` IS the `kid` -- not a UUID like every
+     * other resource this SDK reads. It is the same value an offline file's
+     * claim carries, which is what makes matching a file to its key a lookup
+     * rather than a computation. */
+    key_id = tamga_json_as_string(tamga_json_object_get(resource, "id"), NULL);
+    algorithm = tamga_json_as_string(tamga_json_object_get(attributes, "algorithm"), NULL);
+    /* ⚠️ `publicKey` is the ONE camelCase field on an otherwise snake_case
+     * resource. The three around it are bare. */
+    public_key = tamga_json_as_string(tamga_json_object_get(attributes, "publicKey"), NULL);
+    status = tamga_json_as_string(tamga_json_object_get(attributes, "status"), NULL);
+    created = tamga_json_as_string(tamga_json_object_get(attributes, "created"), NULL);
+    /* Absent, not null, while a key is still active: the server skips the
+     * field entirely. So its absence is the documented "not retired" state and
+     * NOT a reason to refuse the whole row. */
+    retired = tamga_json_as_string(tamga_json_object_get(attributes, "retired"), NULL);
+
+    if (key_id == NULL || algorithm == NULL || public_key == NULL || status == NULL ||
+        created == NULL) {
+        return false;
+    }
+
+    /* All five required fields read before any is stored, so a caller that
+     * ignores the return value cannot act on a half-filled set -- an entry
+     * carrying an id but no key would be indexed and then verify nothing. */
+    if (out_key_id != NULL) {
+        *out_key_id = key_id;
+    }
+    if (out_algorithm != NULL) {
+        *out_algorithm = algorithm;
+    }
+    if (out_public_key != NULL) {
+        *out_public_key = public_key;
+    }
+    if (out_status != NULL) {
+        *out_status = status;
+    }
+    if (out_created != NULL) {
+        *out_created = created;
+    }
+    if (out_retired != NULL) {
+        *out_retired = retired;
+    }
+    return true;
+}
+
 /* --- request construction ------------------------------------------------ */
 
 static bool tamga_client_auth_header(const TamgaClient *client, char **out_name, char **out_value) {

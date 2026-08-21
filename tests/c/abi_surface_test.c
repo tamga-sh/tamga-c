@@ -46,6 +46,25 @@ _Static_assert(TAMGA_ERR_PID_TAKEN == 28, "appended ABI value changed");
 /* The limit and licence-state block, appended in 1.3.1. */
 _Static_assert(TAMGA_ERR_MACHINE_LIMIT_EXCEEDED == 29, "appended ABI value changed");
 _Static_assert(TAMGA_ERR_LICENSE_NOT_ALLOWED == 36, "appended ABI value changed");
+/*
+ * The offline signing-key rotation block, appended in 1.3.3. Both ends pinned,
+ * for the same reason the block above pins both of its ends: an insertion into
+ * the middle renumbers everything after it, and a compiler is perfectly happy
+ * to accept that.
+ */
+_Static_assert(TAMGA_ERR_UNKNOWN_SIGNING_KEY == 37, "appended ABI value changed");
+_Static_assert(TAMGA_ERR_KEY_ID_NOT_APPLICABLE == 39, "appended ABI value changed");
+
+/* --- the key-id shape --------------------------------------------------- */
+/*
+ * Sixteen characters, from the first EIGHT digest bytes. A build that widened
+ * either would compute ids matching nothing the server issues, and a caller
+ * sizing a buffer from these constants would overflow it.
+ */
+_Static_assert(TAMGA_KEY_ID_LENGTH == 16, "a kid is 16 hex characters");
+_Static_assert(TAMGA_KEY_ID_SIZE == TAMGA_KEY_ID_LENGTH + 1, "room for the NUL");
+_Static_assert(sizeof(TAMGA_UNPUBLISHED_KEY_ID) == TAMGA_KEY_ID_SIZE,
+               "the unpublished-account sentinel is itself a kid");
 
 /* --- frozen scheme values ---------------------------------------------- */
 _Static_assert(TAMGA_SCHEME_NONE == 0, "frozen ABI value changed");
@@ -82,6 +101,17 @@ int main(void) {
         (AnyFn)tamga_machine_file_free,
         (AnyFn)tamga_offline_proof_verify,
         (AnyFn)tamga_offline_proof_generate,
+        /* Appended in 1.3.3. Purely additive: nothing above changed, and this
+         * harness is otherwise the v1.2.2 one. */
+        (AnyFn)tamga_signing_key_id,
+        (AnyFn)tamga_signing_key_set_new,
+        (AnyFn)tamga_signing_key_set_free,
+        (AnyFn)tamga_signing_key_set_add_public_key,
+        (AnyFn)tamga_signing_key_set_add_json,
+        (AnyFn)tamga_signing_key_set_find,
+        (AnyFn)tamga_signing_key_set_count,
+        (AnyFn)tamga_license_file_verify_with_key_set,
+        (AnyFn)tamga_machine_file_verify_with_key_set,
     };
     size_t i;
     int failures = 0;

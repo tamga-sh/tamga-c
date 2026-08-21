@@ -140,6 +140,82 @@ decimal/exponential threshold is ryu's, not printf's `%g`; and `serde_json`'s
 *parser* is one ULP off on at least one input, while its writer agrees with
 this one given identical bits.
 
+### A `kid` hashes the base64 STRING, and a machine file's names the wrong key
+
+`key_id()` (`tamga-api/src/shared/crypto/license_file.rs`) takes a `&str` and
+digests `.as_bytes()`, so a `kid` is
+`lowercase_hex(SHA-256(<the base64 text>)[0..8])` — sixteen characters from
+**eight** bytes. Hashing the 32 decoded bytes instead is the natural assumption
+and it is wrong silently: it yields an equally well-formed sixteen-character id
+that matches nothing the server ever issued, so every genuine file reports an
+unknown signing key and the bug reads as a rotation problem rather than a
+hashing one.
+
+Pinned twice, from two unrelated sources.
+`tests/fixtures/signing-keys/signing-key-ids.json` carries a **negative**
+vector — the same key yields `905f28def18eaac0` correctly and
+`630dcd2966c43366` decoded-first — and it was produced outside this SDK
+family. `tests/fixtures/server-machine-files/manifest.json` was produced by the
+server's own encoder and agrees, which
+`signing_key_test.c::the_servers_own_machine_file_manifest_agrees_with_the_hash_rule`
+asserts.
+
+⚠️ But that manifest may be used for the hash rule and **nothing else**. Its
+generator derived each `kid` from the file's *own* signing key, so its RSA and
+ECDSA entries carry four distinct kids where the live server emits one. Both
+live checkout handlers compute the claim from
+`account.ed25519_public_key.unwrap_or_default()` **whatever scheme signed the
+bytes** (`check_out_license.rs:92-94`, `check_out_machine.rs:125-127`), while
+the machine file's signing key is chosen by the licence's scheme
+(`check_out_machine.rs:83-96`).
+
+Three consequences, and each one silently breaks the obvious implementation:
+
+- **A `kid` can only select a key for a licence file or an Ed25519 machine
+  file.** For RSA and ECDSA the claim names a key that had no part in the
+  signature, so a scheme-agnostic `kid`-to-key lookup would report an authentic
+  file as forged — reintroducing the very defect in a new place.
+  `tamga_machine_file_verify_with_key_set()` refuses them by name with
+  `TAMGA_ERR_KEY_ID_NOT_APPLICABLE`. Nothing is lost: `rotate_ed25519` is the
+  only rotation there is, so no other scheme has one to survive.
+- **`unwrap_or_default()` means the empty string is a real input.** An account
+  whose key column was never populated stamps `e3b0c44298fc1c14` —
+  `SHA-256("")` — into every file it signs. `TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED`
+  exists so that this is not reported as a stale key set: refetching the keys
+  will never produce a match, however many times it is tried.
+  `tamga_signing_key_id()` therefore validates nothing about its input, or that
+  value would be out of reach.
+- **A licence key cannot fetch the key set.** `GET /signing-keys` needs
+  `account.read`, which `Role::LicenseToken` lacks, and unlike `policy.read`
+  there is no second route to the same resource. So the key set is built from
+  bytes (`tamga_signing_key_set_add_json`) or from pinned keys
+  (`tamga_signing_key_set_add_public_key`), never from a client — otherwise
+  offline verification would stop being offline.
+
+The resource `id` on that route **is** the `kid`, not a UUID, so a fetched set
+is indexed by the served id and the local computation is only a cross-check;
+`tamga_signing_key_set_add_json` counts a disagreement in `*out_mismatched`
+and still adds the key under the served id, because that is what a file names.
+Retired keys are kept for the same reason — filtering them out reinstates the
+whole defect.
+
+Lookup matches the **served id alone**, never the computed one as a fallback.
+`tamga-swift` documents the lenient rule (either id matches); `tamga-rust` and
+`tamga-dotnet` match the served id, and so does this one. It is not a security
+difference — the signature still has to verify against that key's bytes, so a
+wrong selection fails closed — but a fallback would swallow the very signal
+`*out_mismatched` exists to raise, and would invent a matching rule the wire
+does not have. `a_fetched_key_set_indexes_by_the_served_id_not_the_computed_one`
+pins the absence of the second path.
+
+⚠️ Choosing a key by `kid` inverts this format's usual order: the `kid` lives
+inside `enc`, so `enc` is decoded (and decrypted) **before** the signature is
+checked. That is sound only because the `kid` can select from keys the caller
+already trusts and can never introduce one, and because there is deliberately
+no "try every key" fallback — which would accept the same files while
+destroying the distinction the whole feature exists to draw. The single-key
+entry points keep the old order and are unchanged.
+
 ### The two key derivations are not interchangeable
 
 Both are HKDF-SHA256 over the licence key, with different parameters:
@@ -272,9 +348,16 @@ proof is forged". Use `tamga_base64_decode_alloc_why` and
 `TamgaErrorCode`.
 
 `tests/unit/alloc_failure_test.c` walks every allocation on the offline path
-and in three request builders, failing them one at a time -- 586 injections --
-and asserts each run either succeeds or returns `TAMGA_ERR_OUT_OF_MEMORY`,
-with no blocks left outstanding. Every misreport above was found by it.
+and in three request builders, failing them one at a time -- 943 injections
+across five offline operations, plus the request builders -- and asserts each
+run either succeeds or returns `TAMGA_ERR_OUT_OF_MEMORY`, with no blocks left
+outstanding. Every misreport above was found by it.
+
+The key-set walk is there for a reason of its own: on that path a failed
+`strdup` of a key id would leave the set short of the key a genuine file names,
+and the caller would read the resulting `TAMGA_ERR_UNKNOWN_SIGNING_KEY` as
+"this file belongs to another licence". The walk asserts that no allocation
+failure can produce a verdict -- only `TAMGA_OK` or `TAMGA_ERR_OUT_OF_MEMORY`.
 
 ### The same over-limit activation is reported two different ways
 

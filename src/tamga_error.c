@@ -135,6 +135,12 @@ const char *tamga_error_name(TamgaErrorCode code) {
         return "TAMGA_ERR_LICENSE_EXPIRED";
     case TAMGA_ERR_LICENSE_NOT_ALLOWED:
         return "TAMGA_ERR_LICENSE_NOT_ALLOWED";
+    case TAMGA_ERR_UNKNOWN_SIGNING_KEY:
+        return "TAMGA_ERR_UNKNOWN_SIGNING_KEY";
+    case TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED:
+        return "TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED";
+    case TAMGA_ERR_KEY_ID_NOT_APPLICABLE:
+        return "TAMGA_ERR_KEY_ID_NOT_APPLICABLE";
     default:
         return "TAMGA_ERR_UNKNOWN";
     }

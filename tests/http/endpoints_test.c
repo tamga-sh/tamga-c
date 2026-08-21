@@ -1323,6 +1323,173 @@ TT_TEST(health_is_not_account_scoped) {
     tamga_client_free(client);
 }
 
+/*
+ * The rotation-survival route. Retired keys are the point of it: a file
+ * checked out before a rotation names the key that signed it, and without that
+ * key it fails verification with the same error a forgery produces.
+ */
+TT_TEST(the_signing_key_listing_carries_retired_keys_too) {
+    static const char BODY[] =
+        "{\"data\":["
+        "{\"type\":\"signing-keys\",\"id\":\"dc45aa88aa947b02\",\"attributes\":{"
+        "\"algorithm\":\"ed25519\","
+        "\"publicKey\":\"AQAg/HkMCKUVnpDfZAVDWheJo2UmA6fiBHTUDgCFC0g=\","
+        "\"status\":\"retired\",\"created\":\"2026-01-01T00:00:00Z\","
+        "\"retired\":\"2026-06-01T00:00:00Z\"}},"
+        "{\"type\":\"signing-keys\",\"id\":\"5f301887c15a1d3d\",\"attributes\":{"
+        "\"algorithm\":\"ed25519\","
+        "\"publicKey\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\","
+        "\"status\":\"active\",\"created\":\"2026-06-01T00:00:00Z\"}}"
+        "]}";
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    const char *key_id = NULL;
+    const char *algorithm = NULL;
+    const char *public_key = NULL;
+    const char *status = NULL;
+    const char *created = NULL;
+    const char *retired = NULL;
+    TamgaSigningKeySet *set = NULL;
+    uintptr_t body_len = 0u;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, BODY);
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_list_signing_keys(client, &response), TAMGA_OK);
+    expect_call(&mock, "GET", "/signing-keys");
+    /* Not paginated: an account's key history is a handful of rows, and the
+     * route takes no cursor or page parameters at all. */
+    TT_ASSERT_NULL(strstr(mock.calls[0].url, "?"));
+
+    TT_ASSERT_EQ_SIZE(tamga_response_signing_key_count(response), 2u);
+    TT_ASSERT(tamga_response_signing_key_at(response, 0u, &key_id, &algorithm, &public_key, &status,
+                                            &created, &retired));
+    /* ⚠️ On this route the resource id IS the kid -- not a UUID like every
+     * other resource this SDK reads. */
+    TT_ASSERT_EQ_STR(key_id, "dc45aa88aa947b02");
+    TT_ASSERT_EQ_STR(algorithm, "ed25519");
+    /* ⚠️ Read from `publicKey`: the one camelCase field on an otherwise
+     * snake_case resource. Reading `public_key` here would yield NULL and take
+     * the whole row down with it. */
+    TT_ASSERT_EQ_STR(public_key, "AQAg/HkMCKUVnpDfZAVDWheJo2UmA6fiBHTUDgCFC0g=");
+    TT_ASSERT_EQ_STR(status, "retired");
+    TT_ASSERT_EQ_STR(created, "2026-01-01T00:00:00Z");
+    TT_ASSERT_EQ_STR(retired, "2026-06-01T00:00:00Z");
+
+    /* An active key omits `retired` entirely rather than sending null, so its
+     * absence is the documented state and not a reason to refuse the row. */
+    retired = "sentinel";
+    TT_ASSERT(
+        tamga_response_signing_key_at(response, 1u, NULL, NULL, NULL, &status, NULL, &retired));
+    TT_ASSERT_EQ_STR(status, "active");
+    TT_ASSERT_NULL(retired);
+
+    /* Out of range writes nothing at all. */
+    key_id = "sentinel";
+    TT_ASSERT_FALSE(
+        tamga_response_signing_key_at(response, 2u, &key_id, NULL, NULL, NULL, NULL, NULL));
+    TT_ASSERT_EQ_STR(key_id, "sentinel");
+
+    /* And the body feeds a key set directly -- the composition a caller
+     * actually writes. */
+    TT_ASSERT_EQ_INT(tamga_signing_key_set_new(&set), TAMGA_OK);
+    TT_ASSERT_NOT_NULL(tamga_response_json(response, &body_len));
+    TT_ASSERT_EQ_INT(tamga_signing_key_set_add_json(set, tamga_response_json(response, NULL),
+                                                    body_len, NULL, NULL, NULL),
+                     TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(tamga_signing_key_set_count(set), 2u);
+    TT_ASSERT(tamga_signing_key_set_find(set, "dc45aa88aa947b02", NULL));
+    tamga_signing_key_set_free(set);
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * ⚠️ Closed to a licence key, and unlike GET /policies/{id} there is no second
+ * route to the same resource: this one needs `account.read`, which
+ * Role::LicenseToken does not carry. An embedded client cannot fetch its own
+ * account's key set at all, which is why the key set is constructible from
+ * bytes and from pinned keys.
+ */
+TT_TEST(a_licence_key_is_refused_the_signing_key_listing) {
+    MockTransport mock;
+    TamgaClient *client = NULL;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 403,
+               "{\"errors\":[{\"status\":\"403\",\"code\":\"FORBIDDEN\","
+               "\"title\":\"Forbidden\",\"detail\":\"missing permission account.read\"}]}");
+    TT_ASSERT_EQ_INT(tamga_client_new(ACCOUNT, "api.tamga.sh", &client), TAMGA_OK);
+    TT_ASSERT_EQ_INT(tamga_client_set_auth(client, TAMGA_AUTH_LICENSE, "LICENCE-KEY", NULL),
+                     TAMGA_OK);
+    TT_ASSERT_EQ_INT(tamga_client_set_transport(client, mock_perform, &mock, NULL), TAMGA_OK);
+
+    TT_ASSERT_EQ_INT(tamga_client_list_signing_keys(client, &response), TAMGA_ERR_FORBIDDEN);
+    /* No key set can be built from it, and the count says so rather than
+     * looking like an account with no keys. */
+    TT_ASSERT_EQ_SIZE(tamga_response_signing_key_count(response), 0u);
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * An empty collection is the ORDINARY state of a healthy account:
+ * `account_signing_keys` is written only by the rotation handler, so an
+ * account that has never rotated has no rows. Reading that as a fault would
+ * make every un-rotated account look broken.
+ */
+TT_TEST(an_account_that_never_rotated_answers_with_an_empty_collection) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, "{\"data\":[]}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_list_signing_keys(client, &response), TAMGA_OK);
+    TT_ASSERT_EQ_INT(tamga_response_status(response), 200);
+    TT_ASSERT_EQ_SIZE(tamga_response_signing_key_count(response), 0u);
+    TT_ASSERT_FALSE(
+        tamga_response_signing_key_at(response, 0u, NULL, NULL, NULL, NULL, NULL, NULL));
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/* A row missing a required field takes itself out rather than being reported
+ * half-read: an entry carrying an id but no key would be indexed and then
+ * verify nothing, which reads back as a signature failure. */
+TT_TEST(a_signing_key_row_missing_a_field_is_refused_whole) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    const char *key_id = "sentinel";
+    const char *algorithm = "sentinel";
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200,
+               "{\"data\":[{\"type\":\"signing-keys\",\"id\":\"abcdef0123456789\","
+               "\"attributes\":{\"algorithm\":\"ed25519\","
+               "\"status\":\"active\",\"created\":\"2026-01-01T00:00:00Z\"}}]}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_list_signing_keys(client, &response), TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(tamga_response_signing_key_count(response), 1u);
+    TT_ASSERT_FALSE(
+        tamga_response_signing_key_at(response, 0u, &key_id, &algorithm, NULL, NULL, NULL, NULL));
+    TT_ASSERT_EQ_STR(key_id, "sentinel");
+    TT_ASSERT_EQ_STR(algorithm, "sentinel");
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
 int main(void) {
     TT_RUN(validate_by_key);
     TT_RUN(validate_by_id_with_and_without_scope);
@@ -1369,5 +1536,9 @@ int main(void) {
     TT_RUN(the_upgrade_check_sends_every_required_parameter);
     TT_RUN(the_upgrade_check_reports_204_without_claiming_currency);
     TT_RUN(health_is_not_account_scoped);
+    TT_RUN(the_signing_key_listing_carries_retired_keys_too);
+    TT_RUN(a_licence_key_is_refused_the_signing_key_listing);
+    TT_RUN(an_account_that_never_rotated_answers_with_an_empty_collection);
+    TT_RUN(a_signing_key_row_missing_a_field_is_refused_whole);
     return TT_SUMMARY();
 }

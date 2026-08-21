@@ -4,6 +4,7 @@
 
 #include "checkout/cert.h"
 #include "checkout/claims.h"
+#include "checkout/key_set.h"
 #include "checkout/pem.h"
 #include "crypto/ecdsa.h"
 #include "crypto/ed25519.h"
@@ -155,8 +156,13 @@ static bool tamga_machine_check_signature(uint32_t scheme, const unsigned char *
  * stale doc comment still describes -- cannot open a single real file. The
  * ciphertext half already carries the 16-byte GCM tag.
  *
- * Called only after the signature over the whole `enc` string has verified, so
- * nothing here decodes bytes an attacker chose.
+ * ⚠️ Called AFTER the signature has verified on the single-key path, and
+ * BEFORE it on the key-set path -- there, the `kid` that names the key lives
+ * inside this very payload, so there is no way round it. The bytes are
+ * attacker-chosen in that second case, which is why nothing below leaves the
+ * strict base64 decoder and the AEAD: an altered ciphertext fails the GCM tag,
+ * and the only value read out of the plaintext before verification is the
+ * `kid`, which selects from keys the caller already trusts.
  */
 static TamgaErrorCode tamga_machine_open_encrypted(const char *enc, size_t enc_len,
                                                    const char *license_key, const char *fingerprint,
@@ -270,42 +276,25 @@ static TamgaErrorCode tamga_machine_open_encrypted(const char *enc, size_t enc_l
     return TAMGA_OK;
 }
 
-TamgaErrorCode tamga_machine_file_verify_at(const char *pem, size_t pem_len, uint32_t scheme,
-                                            const unsigned char *pubkey, size_t pubkey_len,
-                                            const char *license_key, const char *fingerprint,
-                                            int64_t now_unix, TamgaJson **out_resource,
-                                            TamgaFileClaims *out_claims) {
+/* Unwraps the PEM envelope, parses the certificate, and cross-checks its `alg`
+ * against the scheme the CALLER supplied -- never the other way round. */
+static TamgaErrorCode tamga_machine_open(const char *pem, size_t pem_len, uint32_t scheme,
+                                         TamgaCert *out_cert, bool *out_encrypted) {
     TamgaErrorCode status;
     char *body = NULL;
     size_t body_len = 0u;
-    TamgaCert cert;
     const char *expected_suffix;
+    size_t expected_suffix_len;
     const char *alg_prefix = NULL;
     size_t alg_prefix_len = 0u;
     const char *alg_suffix = NULL;
     size_t alg_suffix_len = 0u;
-    size_t expected_suffix_len;
-    bool encrypted;
-    unsigned char *signature = NULL;
-    size_t signature_len = 0u;
-    unsigned char *plaintext = NULL;
-    size_t plaintext_len = 0u;
-    size_t plaintext_capacity = 0u;
-    TamgaJson *payload = NULL;
-    const TamgaJson *data;
-    TamgaFileClaims claims;
-    const char *parse_error = NULL;
-    TamgaBase64Failure why;
 
-    if (pem == NULL || pubkey == NULL || out_resource == NULL) {
-        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "a required argument was null");
-    }
-    *out_resource = NULL;
-
-    if (pubkey_len == 0u || pubkey_len > TAMGA_MAX_REASONABLE_LEN) {
-        return tamga_error_set(TAMGA_ERR_LENGTH_INVALID,
-                               "public key length is zero or exceeds the accepted maximum");
-    }
+    /* Emptied first, because the scheme check below returns before anything
+     * would otherwise touch it. A caller reading a certificate back out of a
+     * failed call gets an empty one rather than an indeterminate one, and the
+     * function has no path that leaves its out-parameter unwritten. */
+    memset(out_cert, 0, sizeof(*out_cert));
 
     /* Rejected before any parsing: the server itself refuses this scheme for
      * machine files, and attempting a JWT-shaped verification here would fail
@@ -322,16 +311,16 @@ TamgaErrorCode tamga_machine_file_verify_at(const char *pem, size_t pem_len, uin
         return status;
     }
 
-    status = tamga_cert_parse(body, body_len, &cert);
+    status = tamga_cert_parse(body, body_len, out_cert);
     tamga_string_free(body);
     if (status != TAMGA_OK) {
         return status;
     }
 
     /* alg is "<encoding>+<signing suffix>+v2". */
-    if (!tamga_machine_alg_split(cert.alg, cert.alg_len, &alg_prefix, &alg_prefix_len, &alg_suffix,
-                                 &alg_suffix_len)) {
-        tamga_cert_free(&cert);
+    if (!tamga_machine_alg_split(out_cert->alg, out_cert->alg_len, &alg_prefix, &alg_prefix_len,
+                                 &alg_suffix, &alg_suffix_len)) {
+        tamga_cert_free(out_cert);
         return tamga_error_set(TAMGA_ERR_UNSUPPORTED_SCHEME,
                                "unsupported machine-file algorithm; only offline format v2 "
                                "is accepted, and there is no v1 fallback");
@@ -342,75 +331,84 @@ TamgaErrorCode tamga_machine_file_verify_at(const char *pem, size_t pem_len, uin
     expected_suffix_len = strlen(expected_suffix);
     if (alg_suffix_len != expected_suffix_len ||
         memcmp(alg_suffix, expected_suffix, expected_suffix_len) != 0) {
-        tamga_cert_free(&cert);
+        tamga_cert_free(out_cert);
         return tamga_error_set(TAMGA_ERR_UNSUPPORTED_SCHEME,
                                "the machine file was signed with a different scheme than the "
                                "licence declares");
     }
     if (alg_prefix_len == 6u && memcmp(alg_prefix, "base64", 6u) == 0) {
-        encrypted = false;
-    } else if (alg_prefix_len == 11u && memcmp(alg_prefix, "aes-256-gcm", 11u) == 0) {
-        encrypted = true;
-    } else {
-        tamga_cert_free(&cert);
-        return tamga_error_set(TAMGA_ERR_UNSUPPORTED_SCHEME,
-                               "unsupported machine-file encryption mode");
+        *out_encrypted = false;
+        return TAMGA_OK;
     }
+    if (alg_prefix_len == 11u && memcmp(alg_prefix, "aes-256-gcm", 11u) == 0) {
+        *out_encrypted = true;
+        return TAMGA_OK;
+    }
+    tamga_cert_free(out_cert);
+    return tamga_error_set(TAMGA_ERR_UNSUPPORTED_SCHEME,
+                           "unsupported machine-file encryption mode");
+}
 
-    signature = tamga_base64_decode_alloc_why(cert.sig, cert.sig_len, &signature_len, &why);
-    if (signature == NULL) {
-        tamga_cert_free(&cert);
+/*
+ * Decodes `enc` into the signed payload's bytes.
+ *
+ * `*out_capacity` is what was ALLOCATED and `*out_len` what was written; the
+ * two differ for an encrypted file because the GCM tag is not plaintext, and
+ * every free of this buffer must use the capacity or leave licence-key-derived
+ * plaintext behind in freed memory.
+ */
+static TamgaErrorCode tamga_machine_decode_payload(const TamgaCert *cert, bool encrypted,
+                                                   const char *license_key, const char *fingerprint,
+                                                   unsigned char **out_plaintext, size_t *out_len,
+                                                   size_t *out_capacity) {
+    TamgaBase64Failure why;
+
+    *out_plaintext = NULL;
+    *out_len = 0u;
+    *out_capacity = 0u;
+
+    if (encrypted) {
+        return tamga_machine_open_encrypted(cert->enc, cert->enc_len, license_key, fingerprint,
+                                            out_plaintext, out_len, out_capacity);
+    }
+    /* A plain payload is one base64 blob, with no separator. Branching on
+     * the alg prefix rather than on whether a '.' happens to be present
+     * keeps the file's shape a consequence of what it declared. */
+    *out_plaintext = tamga_base64_decode_alloc_why(cert->enc, cert->enc_len, out_len, &why);
+    if (*out_plaintext == NULL) {
         if (why == TAMGA_BASE64_FAILURE_OUT_OF_MEMORY) {
-            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not decode the signature");
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not decode the payload");
         }
-        return tamga_error_set(TAMGA_ERR_INVALID_BASE64, "the signature field is not valid base64");
+        return tamga_error_set(TAMGA_ERR_INVALID_BASE64, "the enc field is not valid base64");
     }
+    *out_capacity = *out_len;
+    return TAMGA_OK;
+}
 
-    /* ⚠️ Over enc's base64 STRING bytes, before decoding -- same rule as the
-     * licence file. Verify, THEN split, THEN decode, THEN decrypt: nothing
-     * below this point parses bytes an attacker chose. */
-    if (!tamga_machine_check_signature(scheme, pubkey, pubkey_len, (const unsigned char *)cert.enc,
-                                       cert.enc_len, signature, signature_len)) {
-        tamga_free(signature);
-        tamga_cert_free(&cert);
-        return tamga_error_set(TAMGA_ERR_SIGNATURE_INVALID,
-                               "machine-file signature did not verify");
+/* Parses the signed payload, keeping "this machine is out of memory" distinct
+ * from "your machine file is corrupt". */
+static TamgaErrorCode tamga_machine_parse_payload(const unsigned char *plaintext, size_t len,
+                                                  TamgaJson **out_payload) {
+    const char *parse_error = NULL;
+
+    *out_payload = tamga_json_parse((const char *)plaintext, len, &parse_error);
+    if (*out_payload != NULL) {
+        return TAMGA_OK;
     }
-    tamga_free(signature);
-
-    if (!encrypted) {
-        /* A plain payload is one base64 blob, with no separator. Branching on
-         * the alg prefix rather than on whether a '.' happens to be present
-         * keeps the file's shape a consequence of what it declared. */
-        plaintext = tamga_base64_decode_alloc_why(cert.enc, cert.enc_len, &plaintext_len, &why);
-        if (plaintext == NULL) {
-            tamga_cert_free(&cert);
-            if (why == TAMGA_BASE64_FAILURE_OUT_OF_MEMORY) {
-                return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not decode the payload");
-            }
-            return tamga_error_set(TAMGA_ERR_INVALID_BASE64, "the enc field is not valid base64");
-        }
-        plaintext_capacity = plaintext_len;
-    } else {
-        status = tamga_machine_open_encrypted(cert.enc, cert.enc_len, license_key, fingerprint,
-                                              &plaintext, &plaintext_len, &plaintext_capacity);
-        if (status != TAMGA_OK) {
-            tamga_cert_free(&cert);
-            return status;
-        }
+    if (tamga_json_error_is_out_of_memory(parse_error)) {
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not parse the machine payload");
     }
+    return tamga_error_set(TAMGA_ERR_INVALID_JSON, "machine payload is malformed: %s",
+                           (parse_error != NULL) ? parse_error : "unknown");
+}
 
-    payload = tamga_json_parse((const char *)plaintext, plaintext_len, &parse_error);
-    tamga_secure_free(plaintext, plaintext_capacity);
-    tamga_cert_free(&cert);
-
-    if (payload == NULL) {
-        if (tamga_json_error_is_out_of_memory(parse_error)) {
-            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not parse the machine payload");
-        }
-        return tamga_error_set(TAMGA_ERR_INVALID_JSON, "machine payload is malformed: %s",
-                               (parse_error != NULL) ? parse_error : "unknown");
-    }
+/* Everything after the signature has verified. Consumes `payload` on every
+ * path. */
+static TamgaErrorCode tamga_machine_finish(TamgaJson *payload, int64_t now_unix,
+                                           TamgaJson **out_resource, TamgaFileClaims *out_claims) {
+    TamgaFileClaims claims;
+    const TamgaJson *data;
+    TamgaErrorCode status;
 
     status = tamga_claims_read(tamga_json_object_get(payload, "meta"), &claims);
     if (status != TAMGA_OK) {
@@ -448,4 +446,147 @@ TamgaErrorCode tamga_machine_file_verify_at(const char *pem, size_t pem_len, uin
         *out_claims = claims;
     }
     return TAMGA_OK;
+}
+
+/*
+ * The shared body of both entry points. Exactly one of `pubkey` and `keys` is
+ * non-NULL, and which one decides the ORDER of the two steps below -- see
+ * license_file.c's core, which makes the same trade for the same reason.
+ */
+static TamgaErrorCode
+tamga_machine_file_verify_core(const char *pem, size_t pem_len, uint32_t scheme,
+                               const unsigned char *pubkey, size_t pubkey_len,
+                               const TamgaSigningKeySet *keys, const char *license_key,
+                               const char *fingerprint, int64_t now_unix, TamgaJson **out_resource,
+                               TamgaFileClaims *out_claims) {
+    TamgaErrorCode status;
+    TamgaCert cert;
+    bool encrypted = false;
+    unsigned char *signature = NULL;
+    size_t signature_len = 0u;
+    unsigned char *plaintext = NULL;
+    size_t plaintext_len = 0u;
+    size_t plaintext_capacity = 0u;
+    TamgaJson *payload = NULL;
+    unsigned char selected[TAMGA_ED25519_PUBKEY_LEN];
+    const unsigned char *verifier = pubkey;
+    size_t verifier_len = pubkey_len;
+    TamgaBase64Failure why;
+
+    if (pem == NULL || out_resource == NULL || (pubkey == NULL && keys == NULL)) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "a required argument was null");
+    }
+    *out_resource = NULL;
+
+    if (keys == NULL && (pubkey_len == 0u || pubkey_len > TAMGA_MAX_REASONABLE_LEN)) {
+        return tamga_error_set(TAMGA_ERR_LENGTH_INVALID,
+                               "public key length is zero or exceeds the accepted maximum");
+    }
+
+    status = tamga_machine_open(pem, pem_len, scheme, &cert, &encrypted);
+    if (status != TAMGA_OK) {
+        return status;
+    }
+
+    signature = tamga_base64_decode_alloc_why(cert.sig, cert.sig_len, &signature_len, &why);
+    if (signature == NULL) {
+        tamga_cert_free(&cert);
+        if (why == TAMGA_BASE64_FAILURE_OUT_OF_MEMORY) {
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not decode the signature");
+        }
+        return tamga_error_set(TAMGA_ERR_INVALID_BASE64, "the signature field is not valid base64");
+    }
+
+    if (keys != NULL) {
+        status = tamga_machine_decode_payload(&cert, encrypted, license_key, fingerprint,
+                                              &plaintext, &plaintext_len, &plaintext_capacity);
+        if (status == TAMGA_OK) {
+            status = tamga_machine_parse_payload(plaintext, plaintext_len, &payload);
+            /* At the CAPACITY it was allocated with, not the length GCM
+             * reported -- the difference is the tag. */
+            tamga_secure_free(plaintext, plaintext_capacity);
+        }
+        if (status == TAMGA_OK) {
+            status = tamga_key_set_select(
+                keys, tamga_claims_key_id(tamga_json_object_get(payload, "meta")), selected);
+            verifier = selected;
+            verifier_len = sizeof(selected);
+        }
+    }
+
+    /* ⚠️ Over enc's base64 STRING bytes, before decoding -- same rule as the
+     * licence file. On the single-key path below nothing has yet parsed bytes
+     * an attacker chose. */
+    if (status == TAMGA_OK && !tamga_machine_check_signature(
+                                  scheme, verifier, verifier_len, (const unsigned char *)cert.enc,
+                                  cert.enc_len, signature, signature_len)) {
+        status =
+            tamga_error_set(TAMGA_ERR_SIGNATURE_INVALID, "machine-file signature did not verify");
+    }
+    tamga_free(signature);
+
+    if (status == TAMGA_OK && payload == NULL) {
+        status = tamga_machine_decode_payload(&cert, encrypted, license_key, fingerprint,
+                                              &plaintext, &plaintext_len, &plaintext_capacity);
+        if (status == TAMGA_OK) {
+            status = tamga_machine_parse_payload(plaintext, plaintext_len, &payload);
+            tamga_secure_free(plaintext, plaintext_capacity);
+        }
+    }
+    tamga_cert_free(&cert);
+
+    if (status != TAMGA_OK) {
+        tamga_json_free(payload);
+        return status;
+    }
+    return tamga_machine_finish(payload, now_unix, out_resource, out_claims);
+}
+
+TamgaErrorCode tamga_machine_file_verify_at(const char *pem, size_t pem_len, uint32_t scheme,
+                                            const unsigned char *pubkey, size_t pubkey_len,
+                                            const char *license_key, const char *fingerprint,
+                                            int64_t now_unix, TamgaJson **out_resource,
+                                            TamgaFileClaims *out_claims) {
+    if (pubkey == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "a required argument was null");
+    }
+    return tamga_machine_file_verify_core(pem, pem_len, scheme, pubkey, pubkey_len, NULL,
+                                          license_key, fingerprint, now_unix, out_resource,
+                                          out_claims);
+}
+
+TamgaErrorCode
+tamga_machine_file_verify_at_with_key_set(const char *pem, size_t pem_len, uint32_t scheme,
+                                          const TamgaSigningKeySet *keys, const char *license_key,
+                                          const char *fingerprint, int64_t now_unix,
+                                          TamgaJson **out_resource, TamgaFileClaims *out_claims) {
+    if (keys == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "a key set is required");
+    }
+    /*
+     * Ed25519 only, and the refusal is deliberately not TAMGA_ERR_UNSUPPORTED_
+     * SCHEME: RSA and ECDSA are perfectly good machine-file schemes, and
+     * tamga_machine_file_verify() takes them. What cannot be done is SELECTING
+     * their key by `kid`, because the server computes that claim from
+     * `account.ed25519_public_key` whatever scheme actually signed the bytes --
+     * so for those files the claim names a key that had no part in the
+     * signature. Saying so precisely is the difference between a caller
+     * reaching for the right entry point and a caller believing its file is
+     * unsupported.
+     */
+    if (scheme != (uint32_t)TAMGA_SCHEME_ED25519_SIGN) {
+        /* A scheme this library refuses outright stays refused the same way on
+         * both paths -- NONE and JWT_RS256 are not "a kid problem". */
+        if (tamga_machine_alg_suffix(scheme) == NULL) {
+            return tamga_error_set(TAMGA_ERR_UNSUPPORTED_SCHEME,
+                                   "this signing scheme is not valid for a machine file");
+        }
+        return tamga_error_set(TAMGA_ERR_KEY_ID_NOT_APPLICABLE,
+                               "a machine file's kid names the account's Ed25519 key whatever "
+                               "scheme signed the file, so it cannot select an RSA or ECDSA "
+                               "key; verify this one with the account's own key for its "
+                               "algorithm");
+    }
+    return tamga_machine_file_verify_core(pem, pem_len, scheme, NULL, 0u, keys, license_key,
+                                          fingerprint, now_unix, out_resource, out_claims);
 }
