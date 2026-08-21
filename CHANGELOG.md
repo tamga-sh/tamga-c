@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.3.3](https://github.com/tamga-sh/tamga-c/compare/v1.3.2...v1.3.3) (2026-08-21)
+
+
+### Bug Fixes
+
+* canonicalise a fingerprint before it becomes a second seat ([6b6dc3e](https://github.com/tamga-sh/tamga-c/commit/6b6dc3ed1c795119ab853badd7362c874724194a))
+* keep a file signed before a key rotation verifiable ([0458f9e](https://github.com/tamga-sh/tamga-c/commit/0458f9e46a87ec23cd5f009744e50e7b0f339eb8))
+* reach the artifact read and download routes a licence key now has ([61f11c4](https://github.com/tamga-sh/tamga-c/commit/61f11c4a2ca024d7262a3e87316b0faa05e76a78))
+* trim every character the rule names, and stop claiming a redirect rule ([6f35a90](https://github.com/tamga-sh/tamga-c/commit/6f35a90786829661be750e89e9376a8fd224c1f0))
+* verify across a key rotation, reach the artifact download, and canonicalise a fingerprint ([d3608a5](https://github.com/tamga-sh/tamga-c/commit/d3608a5b27c40ef3b4e1711f1b8eb03f9c46d15b))
+
 ## [1.3.2](https://github.com/tamga-sh/tamga-c/compare/v1.3.1...v1.3.2) (2026-08-21)
 
 
