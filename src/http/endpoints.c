@@ -1764,26 +1764,47 @@ TamgaErrorCode tamga_client_get_artifact(TamgaClient *client, const char *artifa
  * kind this SDK supports was driven separately, because a rule about one
  * credential is not a rule about another:
  *
- *   kind                          same-origin hop   cross-origin hop
+ *   credential                    same-origin hop   cross-origin hop
  *   TAMGA_AUTH_LICENSE            SENT INTACT       stripped
  *   TAMGA_AUTH_BEARER             SENT INTACT       stripped
  *   TAMGA_AUTH_BASIC_*            SENT INTACT       stripped
  *   TAMGA_AUTH_QUERY_TOKEN        not sent          not sent
+ *   Tamga-OTP header              SENT INTACT       SENT INTACT
  *
- * So all three Authorization forms leak on a same-origin redirect and none
- * leaks cross-origin; the query-token form leaks by neither route, because the
- * Location replaces the URL and the `?token=` goes with it. There is no cookie
- * credential in this SDK, so the cookie-forwarding hazard a sibling SDK
- * measured has no analogue here.
+ * ⚠️ Read the last row before the first three. On THIS libcurl, `Tamga-OTP` --
+ * which carries a one-time password -- was forwarded to a DIFFERENT HOST,
+ * while `Authorization` was stripped there. So the credential most exposed is
+ * the one not called `Authorization`, which is the opposite of where attention
+ * naturally goes.
  *
- * The leak is therefore real but scoped: it needs a same-origin redirect,
- * which is exactly the shape the server's `s3_endpoint` +
- * `s3_force_path_style` settings produce when storage is served from the API's
- * own origin. Do not generalise any of it -- CURLOPT_UNRESTRICTED_AUTH's
- * default has varied across libcurl versions, and a caller-registered
- * transport follows whatever rule its own stack implements. One sibling SDK
- * strips Authorization on every redirect including same-origin; another strips
- * only cross-origin. Three runtimes, three behaviours.
+ * Resist turning that into a rule. It is tempting to conclude that platforms
+ * protect the header NAMED `Authorization` rather than credentials by nature,
+ * and across this SDK family that generalisation has already failed: five
+ * runtimes were measured and produced five distinct behaviours, including one
+ * that strips a directly-set `Cookie` cross-origin and one that strips
+ * `Authorization` even same-origin. The only claim that survived every
+ * measurement is the negative one -- YOU CANNOT KNOW WHAT A REDIRECT FORWARDS
+ * WITHOUT WATCHING IT -- which is precisely why the design here does not
+ * depend on the answer.
+ *
+ * The query-token form leaks by neither route, because the Location replaces
+ * the URL and the `?token=` goes with it. There is no cookie credential in
+ * this SDK.
+ *
+ * One more thing that measurement turned up: because non-GET requests go out
+ * through CURLOPT_CUSTOMREQUEST, a followed 303 was re-sent as POST rather
+ * than converted to GET as 303 requires -- so a POST carrying an OTP would be
+ * REPLAYED against the redirect target. Another reason the safe state is not
+ * following at all.
+ *
+ * So the Authorization leak needs a same-origin redirect -- exactly the shape
+ * the server's `s3_endpoint` + `s3_force_path_style` settings produce when
+ * storage is served from the API's own origin -- while the OTP leak needs no
+ * such thing. Do not generalise any of it: CURLOPT_UNRESTRICTED_AUTH's default
+ * has varied across libcurl versions, and a caller-registered transport
+ * follows whatever rule its own stack implements. Five runtimes measured across
+ * this SDK family produced five distinct behaviours, so the table above is
+ * data about one libcurl build and not a prediction about anything else.
  *
  * With FOLLOWLOCATION at 0 -- what this repo actually ships, and what the same
  * probe confirms -- no redirect is followed at all, so the question does not

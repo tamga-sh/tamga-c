@@ -150,6 +150,12 @@ static bool tamga_curl_restrict_protocols(CURL *handle) {
      * replacement and takes a comma-separated list. */
     return curl_easy_setopt(handle, CURLOPT_PROTOCOLS_STR, "http,https") == CURLE_OK;
 #else
+    /* Pre-7.85: the deprecated bitmask, which is the only form those builds
+     * have. This branch was FORCED ON and re-measured rather than assumed --
+     * it refuses `file:` and still allows `http:`, exactly as the branch above
+     * does. A version guard whose fallback silently did nothing would read as
+     * protection in review and be absent at runtime on every older curl, which
+     * is worse than having no guard at all. */
     return curl_easy_setopt(handle, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS)) ==
            CURLE_OK;
 #endif

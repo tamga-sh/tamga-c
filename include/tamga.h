@@ -2250,16 +2250,21 @@ TAMGA_API TamgaErrorCode tamga_client_get_artifact(TamgaClient *client, const ch
  * request's headers performs exactly the disclosure above without the caller
  * ever seeing it.
  *
- * Measured against libcurl 8.7.1 with following forced on, per auth kind: a
+ * Measured against libcurl 8.7.1 with following forced on, per credential: a
  * SAME-ORIGIN redirect carried `Authorization` intact for
  * `TAMGA_AUTH_LICENSE`, `TAMGA_AUTH_BEARER` and the `TAMGA_AUTH_BASIC_*`
  * forms, while a CROSS-ORIGIN one arrived with it stripped;
  * `TAMGA_AUTH_QUERY_TOKEN` was carried by neither, because the `Location`
- * replaces the URL and the `?token=` goes with it. Same-origin is what the
- * server's `s3_endpoint` plus `s3_force_path_style` settings produce when
- * storage is served from the API's own origin, so the hazard is real and
- * scoped rather than universal — and it is not the same for every credential,
- * which is why it was measured for each rather than reasoned about once.
+ * replaces the URL and the `?token=` goes with it.
+ *
+ * ⚠️ And the `Tamga-OTP` header — a one-time password — was forwarded on BOTH
+ * hops, including to a different host, on the same build that stripped
+ * `Authorization` there. So the most exposed credential is the one NOT called
+ * `Authorization`, and the hazard is not the same for any two of them — which
+ * is why each was measured rather than reasoned about once. Do not read a rule
+ * into the pattern: across this SDK family five runtimes produced five
+ * distinct behaviours, and the only claim that survived all of them is that
+ * you cannot know what a redirect forwards without watching it.
  * Both built-in transports refuse to follow at all (`CURLOPT_FOLLOWLOCATION`
  * is left at 0; WinHTTP follows by default and is set to
  * `WINHTTP_OPTION_REDIRECT_POLICY_NEVER`), but a transport supplied through

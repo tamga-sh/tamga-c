@@ -493,13 +493,20 @@ therefore always asks for `?redirect=false` and offers no way to ask otherwise:
 the URL comes back in the body, in `redirectUrl`, and you fetch it yourself
 **with no credentials attached** — it carries its own signature and needs none.
 
-Measured against libcurl 8.7.1 with following forced on, per credential, the
-leak is real but scoped: a **same-origin** redirect carries `Authorization`
-intact for the licence-key, bearer and basic forms, while a **cross-origin**
-one arrives with it stripped, and `TAMGA_AUTH_QUERY_TOKEN` is carried by
-neither. Same-origin is exactly what the server's `s3_endpoint` +
-`s3_force_path_style` settings produce when storage is served from the API's
-own origin. Both built-in
+Measured against libcurl 8.7.1 with following forced on, per credential: a
+**same-origin** redirect carries `Authorization` intact for the licence-key,
+bearer and basic forms, while a **cross-origin** one arrives with it stripped,
+and `TAMGA_AUTH_QUERY_TOKEN` is carried by neither. Same-origin is exactly what
+the server's `s3_endpoint` + `s3_force_path_style` settings produce when
+storage is served from the API's own origin.
+
+But the header worth watching is not that one: `Tamga-OTP`, which carries a
+one-time password, was forwarded **to a different host** on the same build that
+stripped `Authorization` there. Do not read a rule into that — across this SDK
+family five runtimes produced five distinct behaviours, and every attempt to
+generalise them has failed. The only claim that has held is the negative one:
+you cannot know what a redirect forwards without watching it, which is why this
+SDK does not follow one. Both built-in
 transports refuse to follow at all (`CURLOPT_FOLLOWLOCATION` is left at `0`;
 WinHTTP follows by default and is set to
 `WINHTTP_OPTION_REDIRECT_POLICY_NEVER`), so the question does not arise for

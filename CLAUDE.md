@@ -493,23 +493,46 @@ credential is not a rule about another. Driving this repo's own curl transport
 at a local 303 server with `CURLOPT_FOLLOWLOCATION` forced to `1`
 (libcurl 8.7.1):
 
-| auth kind | same-origin hop | cross-origin hop |
+| credential | same-origin hop | cross-origin hop |
 |---|---|---|
 | `TAMGA_AUTH_LICENSE` | **sent intact** | stripped |
 | `TAMGA_AUTH_BEARER` | **sent intact** | stripped |
 | `TAMGA_AUTH_BASIC_*` | **sent intact** | stripped |
 | `TAMGA_AUTH_QUERY_TOKEN` | not sent | not sent |
+| **`Tamga-OTP` header** | **sent intact** | **SENT INTACT** |
 
-So all three `Authorization` forms leak same-origin and none leaks
-cross-origin; the query-token form leaks by neither route, because the
-`Location` replaces the URL and the `?token=` goes with it. There is no cookie
-credential here, so the cookie-forwarding hazard a sibling SDK measured has no
-analogue. The leak needs a same-origin redirect -- exactly what `s3_endpoint` +
-`s3_force_path_style` produce when storage is served from the API's own origin.
+⚠️ **Read the last row first.** On this libcurl, `Tamga-OTP` -- which carries a
+one-time password -- was forwarded **to a different host**, while
+`Authorization` was stripped there. The most exposed credential is the one not
+called `Authorization`, which is the opposite of where attention naturally
+goes.
 
-Do not generalise any of it: `CURLOPT_UNRESTRICTED_AUTH`'s default has varied
-across libcurl versions, and sibling SDKs measured three different behaviours
-across three runtimes. Re-measure before relying on it.
+⚠️ **Do not turn that into a rule.** "Platforms protect the header *named*
+`Authorization`, not credentials by nature" is the obvious generalisation, it
+was proposed across this SDK family on four measurements, and the fifth broke
+it: one runtime strips a directly-set `Cookie` cross-origin. Five runtimes,
+five distinct behaviours, no surviving rule. The table above is data about one
+libcurl build, not a prediction about any other stack.
+
+The only claim that survived every measurement is the negative one: **you
+cannot know what a redirect forwards without watching it.** Which is the whole
+reason the design here does not depend on the answer. When adding any header
+that carries a secret, assume it is forwarded until you have measured
+otherwise -- not because a rule says so, but because no rule does.
+
+The query-token form leaks by neither route -- the `Location` replaces the URL
+and the `?token=` goes with it. There is no cookie credential here. The
+`Authorization` leak needs a same-origin redirect (what `s3_endpoint` +
+`s3_force_path_style` produce when storage is on the API's own origin); the OTP
+leak needs no such thing.
+
+Also measured: non-GET requests go out through `CURLOPT_CUSTOMREQUEST`, so a
+followed `303` was re-sent as **POST** rather than converted to GET as 303
+requires -- a POST carrying an OTP would be *replayed* against the redirect
+target.
+
+`CURLOPT_UNRESTRICTED_AUTH`'s default has also varied across libcurl versions.
+Re-measure before relying on any of this.
 
 At the shipped `FOLLOWLOCATION` of `0` no redirect is followed at all, so the
 question does not arise; `transport_winhttp.c` sets
@@ -567,9 +590,19 @@ failure is a local-file read driven by a remote value, handed back as a
 response body. A sibling SDK found its own "is this an absolute URI" check
 accepting `/relative/path` and `C:\x\y` as `file:` URIs.
 
-There is deliberately **no unit test** for this: `transport_curl.c` needs a live
-handle, and this repo's rule is that a fake test for it would measure nothing.
-It was verified with a throwaway probe instead, both directions.
+⚠️ **Both branches of the version guard were proved, not assumed.**
+`CURLOPT_PROTOCOLS_STR` arrived in 7.85.0, so the `#else` uses the deprecated
+`CURLOPT_PROTOCOLS` bitmask -- and a guard that silently does nothing on an
+older build reads as protection in review and is absent at runtime. The
+fallback branch was forced on (`#if 0`) and re-measured: it also refuses
+`file:` and still allows `http:`. The setopt result is checked rather than
+discarded, so an unsupported option fails the request instead of quietly
+widening it.
+
+There is deliberately **no unit test** for any of this: `transport_curl.c`
+needs a live handle, and this repo's rule is that a fake test for it would
+measure nothing. It was verified with throwaway probes instead, both branches
+and both directions.
 
 ### A fingerprint is canonicalised, never generated
 

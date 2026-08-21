@@ -404,6 +404,119 @@ TT_TEST(a_shorter_label_sorts_by_its_bytes_not_by_its_length) {
 }
 
 /*
+ * All SIX trimmed characters, each on its own, and the ones that must NOT be
+ * trimmed.
+ *
+ * ⚠️ The published vectors reach only three of the six -- `whitespace_trimmed`
+ * uses space, tab and LF -- so an implementation that omitted VT (0x0B), FF
+ * (0x0C) or CR (0x0D) from its set reproduces every digest in the file. That
+ * is the same shape of gap a sibling SDK hit from the other direction: its
+ * trim test used a character its runtime did not classify as whitespace, so
+ * the test could not distinguish the two candidate sets at all. Each character
+ * is therefore asserted separately, against the bare value.
+ *
+ * The negatives matter as much. A control character in the MIDDLE must be
+ * rejected rather than removed -- that is what makes this trimming rather than
+ * stripping, and stripping would map two different inputs onto one seat. And a
+ * non-ASCII space must survive: U+00A0 is whitespace to a human and to most
+ * Unicode-aware trimmers, and trimming it here would be a rule the ports
+ * cannot agree on without the Unicode tables this library refuses to carry.
+ */
+TT_TEST(every_trimmed_character_is_trimmed_and_no_others) {
+    static const char *const L[] = {"id"};
+    /* space, tab, CR, LF, VT, FF -- and nothing else. */
+    static const char WS[] = {' ', '\t', '\r', '\n', '\v', '\f'};
+    static const char *const BARE_V[] = {"abc123"};
+    char *bare = NULL;
+    size_t i;
+
+    TT_ASSERT_EQ_INT(tamga_fingerprint_canonical(L, BARE_V, 1u, &bare), TAMGA_OK);
+
+    for (i = 0u; i < sizeof(WS); i++) {
+        char padded[16];
+        const char *values[1];
+        char *got = NULL;
+
+        /* <ws><ws>abc123<ws> -- leading and trailing, same character. */
+        padded[0] = WS[i];
+        padded[1] = WS[i];
+        memcpy(padded + 2, "abc123", 6u);
+        padded[8] = WS[i];
+        padded[9] = '\0';
+        values[0] = padded;
+
+        if (tamga_fingerprint_canonical(L, values, 1u, &got) != TAMGA_OK) {
+            tt_failures_++;
+            (void)fprintf(stderr, "FAIL %s: 0x%02X was not accepted\n", tt_current_,
+                          (unsigned)(unsigned char)WS[i]);
+            continue;
+        }
+        if (strcmp(got, bare) != 0) {
+            tt_failures_++;
+            (void)fprintf(stderr, "FAIL %s: 0x%02X was not trimmed\n", tt_current_,
+                          (unsigned)(unsigned char)WS[i]);
+        }
+        tamga_string_free(got);
+    }
+
+    /* Trimming is at the ENDS only: the same byte in the middle is a control
+     * character, and control characters are refused rather than removed. */
+    for (i = 0u; i < sizeof(WS); i++) {
+        char inner[16];
+        const char *values[1];
+        char *got = tt_sentinel;
+
+        if (WS[i] == ' ') {
+            continue; /* a space is legal inside a value, being no control. */
+        }
+        memcpy(inner, "abc", 3u);
+        inner[3] = WS[i];
+        memcpy(inner + 4, "123", 3u);
+        inner[7] = '\0';
+        values[0] = inner;
+
+        if (tamga_fingerprint_canonical(L, values, 1u, &got) !=
+            TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT) {
+            tt_failures_++;
+            (void)fprintf(stderr, "FAIL %s: interior 0x%02X was not refused\n", tt_current_,
+                          (unsigned)(unsigned char)WS[i]);
+        }
+        if (got != tt_sentinel) {
+            tt_failures_++;
+            (void)fprintf(stderr, "FAIL %s: interior 0x%02X wrote an out-parameter\n", tt_current_,
+                          (unsigned)(unsigned char)WS[i]);
+        }
+    }
+
+    /* An interior space really is legal, so the loop above skipped it for a
+     * reason rather than to avoid a failure. */
+    {
+        static const char *const SPACED[] = {"abc 123"};
+        char *got = NULL;
+        TT_ASSERT_EQ_INT(tamga_fingerprint_canonical(L, SPACED, 1u, &got), TAMGA_OK);
+        TT_ASSERT_EQ_STR(got, "tamga-fingerprint-v1\x1F"
+                              "id=abc 123");
+        tamga_string_free(got);
+    }
+
+    /* U+00A0 NO-BREAK SPACE, as its UTF-8 bytes. Not ASCII, so not trimmed and
+     * not a control character -- accepted, and it changes the fingerprint. */
+    {
+        static const char *const NBSP[] = {"\xC2\xA0"
+                                           "abc123"};
+        char *got = NULL;
+        TT_ASSERT_EQ_INT(tamga_fingerprint_canonical(L, NBSP, 1u, &got), TAMGA_OK);
+        TT_ASSERT(strcmp(got, bare) != 0);
+        TT_ASSERT_EQ_STR(got, "tamga-fingerprint-v1\x1F"
+                              "id=\xC2\xA0"
+                              "abc123");
+        tamga_string_free(got);
+    }
+
+    tamga_string_free(bare);
+}
+
+/*
  * The sort key is the WHOLE `label=value` component, not the label alone.
  *
  * The published vectors cannot tell the two apart: their labels are all
@@ -521,6 +634,7 @@ int main(void) {
     TT_RUN(the_three_invariants_hold_between_the_vector_pairs);
     TT_RUN(non_ascii_bytes_pass_through_the_sort_untouched);
     TT_RUN(a_shorter_label_sorts_by_its_bytes_not_by_its_length);
+    TT_RUN(every_trimmed_character_is_trimmed_and_no_others);
     TT_RUN(the_sort_key_is_the_whole_component_not_just_the_label);
     TT_RUN(the_sort_is_case_sensitive);
     TT_RUN(null_arguments_are_told_apart_from_bad_components);
