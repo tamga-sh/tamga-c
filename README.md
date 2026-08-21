@@ -19,6 +19,8 @@ HTTP half needs a transport, which is either an operating-system component
 - verify and decode a machine file across all four signing schemes
 - verify a machine offline proof
 - derive the two AES keys those formats use
+- survive a signing-key rotation: verify a file against the key its own `kid`
+  claim names, from a set of keys you already trust
 
 **Over HTTP:**
 
@@ -31,6 +33,7 @@ HTTP half needs a transport, which is either an operating-system component
 - register, list and dispose of components and processes
 - list and query entitlements
 - ask whether a newer release is available
+- read the account's signing keys, retired ones included
 - probe the server's health, for when nothing else works
 
 Everything the [Rust reference SDK](https://github.com/tamga-sh/tamga-rust)
@@ -259,6 +262,63 @@ zero-padding the licence key rather than from HKDF.
 period, keep a server-supplied timestamp and check the file's expiry against
 that instead of the system clock.
 
+**A rotated signing key does not have to lock anyone out.** When an account
+rotates its Ed25519 key, a file checked out *before* the rotation is still
+authentic — but against the one key an application has embedded it fails with
+exactly the error a forged file produces. Verify through a key set instead and
+the two become different answers:
+
+```c
+TamgaSigningKeySet *keys = NULL;
+tamga_signing_key_set_new(&keys);
+
+/* Keys you pin in your own binary. Their kid is computed locally, so this
+   needs no network -- which matters, because a licence-key credential is
+   refused GET /signing-keys outright. */
+tamga_signing_key_set_add_public_key(keys, current_key_b64);
+tamga_signing_key_set_add_public_key(keys, previous_key_b64);
+
+TamgaLicenseFile *file = NULL;
+switch (tamga_license_file_verify_with_key_set(pem, pem_len, keys, NULL, &file)) {
+case TAMGA_OK:
+    break;
+case TAMGA_ERR_UNKNOWN_SIGNING_KEY:
+    /* Not a forgery. The key set has not caught up with a rotation --
+       refresh it, or ship an update. */
+    break;
+case TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED:
+    /* This account never published an Ed25519 public key, so no key set can
+       ever match. Refetching will not help. */
+    break;
+case TAMGA_ERR_SIGNATURE_INVALID:
+    /* The kid resolved and the signature still failed. Refuse the file. */
+    break;
+default:
+    break;
+}
+```
+
+A `kid` is `SHA-256` of the public key's **base64 string** — not of the 32
+bytes it decodes to — truncated to eight bytes and hex-encoded.
+`tamga_signing_key_id()` computes it, but you rarely need to: a key set fetched
+with `tamga_client_list_signing_keys()` is already indexed by `kid`, because on
+that route the resource `id` *is* the `kid`.
+
+⚠️ Two limits, both the server's. `GET /signing-keys` needs `account.read`,
+which a licence key does not carry, and there is no second route to the same
+resource — so an embedded client must be *given* the key set rather than fetch
+it. And a machine file signed under an RSA or ECDSA scheme cannot be matched by
+`kid` at all: the server computes that claim from the account's Ed25519 key
+whatever scheme signed the file. Those get
+`TAMGA_ERR_KEY_ID_NOT_APPLICABLE`; verify them with
+`tamga_machine_file_verify()`. Nothing is lost, because only the Ed25519 key is
+ever rotated.
+
+**An empty key set is a healthy account.** `GET /signing-keys` answers
+`{"data": []}` for an account that has never rotated — the table is written
+only by the rotation handler. Read that as "nothing has rotated yet", not as a
+fault.
+
 **Machine files need the fingerprint.** An encrypted machine file's key is
 derived from the licence key *and* the machine's fingerprint, so a file issued
 for one machine cannot be decrypted on another even by someone holding the
@@ -392,6 +452,87 @@ because refusing the second explicitly would leak "a newer version exists but
 you cannot have it". There is no client-side way to tell them apart and there
 is not meant to be — so do not report a `204` as "you are up to date". The
 accurate wording is *there is no update available to you*.
+
+**Canonicalise the fingerprint before you send it.** The server stores
+`fingerprint TEXT NOT NULL` with no length limit, no `CHECK` and no
+normalisation, unique per `(license_id, fingerprint)` — so `"ABC-123"`,
+`"abc-123"` and `" ABC-123 "` are three machines on three seats.
+`tamga_fingerprint_compute()` takes labelled components you choose and returns
+one stable 64-character string: order-independent, whitespace-trimmed,
+case-preserving, and rejecting rather than repairing anything it cannot
+canonicalise.
+
+```c
+const char *labels[] = {"machine-id", "disk"};
+const char *values[] = {"abc123", "SN-9"};
+char *fp = NULL;
+if (tamga_fingerprint_compute(labels, values, 2, &fp) == TAMGA_OK) {
+    tamga_client_activate_machine(client, license_id, fp, NULL, NULL, true, &response);
+    tamga_string_free(fp);
+}
+```
+
+It deliberately does **not** read hardware identifiers, and will not grow the
+ability to. What identifies a machine is a product decision — a cloned VM
+template shares them, a container has none, a replaced motherboard changes them
+— and no default is right for both a desktop application and a Kubernetes
+sidecar. Values are also **not** Unicode-normalised: NFC would mean a
+dependency, and a rule the eight SDKs cannot implement identically would give
+one machine two fingerprints depending on which SDK the app was written in.
+Normalise before calling if your values can arrive in more than one form. And
+note that changing the component set changes the fingerprint, which the server
+reads as a new machine against the seat limit — choose it once, at the point
+you ship.
+
+**Never let an artifact download follow its redirect.**
+`GET /artifacts/{id}/actions/download` answers `303 See Other` with a
+short-lived presigned URL on the object store. An HTTP client that follows
+that redirect while still attaching the request's `Authorization` header hands
+your licence key to the storage host. `tamga_client_get_artifact_download_url()`
+therefore always asks for `?redirect=false` and offers no way to ask otherwise:
+the URL comes back in the body, in `redirectUrl`, and you fetch it yourself
+**with no credentials attached** — it carries its own signature and needs none.
+
+Measured against libcurl 8.7.1 with following forced on, per credential: a
+**same-origin** redirect carries `Authorization` intact for the licence-key,
+bearer and basic forms, while a **cross-origin** one arrives with it stripped,
+and `TAMGA_AUTH_QUERY_TOKEN` is carried by neither. Same-origin is exactly what
+the server's `s3_endpoint` + `s3_force_path_style` settings produce when
+storage is served from the API's own origin.
+
+But the header worth watching is not that one: `Tamga-OTP`, which carries a
+one-time password, was forwarded **to a different host** on the same build that
+stripped `Authorization` there. Do not read a rule into that — across this SDK
+family five runtimes produced five distinct behaviours, and every attempt to
+generalise them has failed. The only claim that has held is the negative one:
+you cannot know what a redirect forwards without watching it, which is why this
+SDK does not follow one. Both built-in
+transports refuse to follow at all (`CURLOPT_FOLLOWLOCATION` is left at `0`;
+WinHTTP follows by default and is set to
+`WINHTTP_OPTION_REDIRECT_POLICY_NEVER`), so the question does not arise for
+them — but a transport you register through `tamga_client_set_transport()` is
+your own HTTP stack, and most follow redirects out of the box.
+
+A second reason holds regardless of headers: following the redirect streams the
+artifact's **bytes** into the response buffer, which is capped, before anything
+can reject them. A real artifact routinely exceeds any sane cap.
+
+**An artifact's timestamps are `created` and `updated`, not `createdAt`.**
+`ArtifactAttributes` is `rename_all = "camelCase"` — which is why the
+neighbouring field really is `redirectUrl` — but carries explicit
+`#[serde(rename)]` attributes overriding it for exactly those two. Applying one
+rule to the whole resource compiles, runs, and reads nothing.
+
+**A `403` on an artifact download is not necessarily an auth problem.** The
+download runs the owning release through the same four gates `GET /releases/{id}`
+applies — distribution strategy, suspension, expiry, entitlement — on top of
+the `artifact.download` permission. So a caller holding the permission is still
+refused the binary of a release its licence is not entitled to. That gate is on
+the download action *alone*: `tamga_client_get_artifact()` and
+`tamga_client_list_release_artifacts()` check the permission only, so an
+artifact whose metadata reads perfectly well can still refuse to hand over its
+bytes. Publishing is out of reach in any case — `Role::LicenseToken` carries
+`artifact.read` and `artifact.download` and none of create, update or delete.
 
 **`tamga_client_health()` is the only call that skips the account prefix.**
 `/v1/health` is public, sits outside the account router, and bypasses the

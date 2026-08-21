@@ -382,6 +382,334 @@ bool tamga_response_heartbeat_window_secs(const TamgaResponse *response, int64_t
     return true;
 }
 
+/* The `data` array of a signing-key listing, or NULL when this is not one. */
+static const TamgaJson *tamga_response_signing_keys(const TamgaResponse *response) {
+    const TamgaJson *data;
+
+    if (response == NULL || response->json == NULL) {
+        return NULL;
+    }
+    data = tamga_json_object_get(response->json, "data");
+    if (data == NULL || tamga_json_type(data) != TAMGA_JSON_ARRAY) {
+        return NULL;
+    }
+    return data;
+}
+
+uintptr_t tamga_response_signing_key_count(const TamgaResponse *response) {
+    tamga_error_clear();
+    /*
+     * Zero for an error document or the wrong response, and zero for an
+     * account that has simply never rotated -- which is the ordinary state of
+     * a healthy one, not a fault. The two are told apart by
+     * tamga_response_status(), not here.
+     */
+    return (uintptr_t)tamga_json_array_len(tamga_response_signing_keys(response));
+}
+
+bool tamga_response_signing_key_at(const TamgaResponse *response, uintptr_t index,
+                                   const char **out_key_id, const char **out_algorithm,
+                                   const char **out_public_key, const char **out_status,
+                                   const char **out_created, const char **out_retired) {
+    const TamgaJson *data;
+    const TamgaJson *resource;
+    const TamgaJson *attributes;
+    const char *key_id;
+    const char *algorithm;
+    const char *public_key;
+    const char *status;
+    const char *created;
+    const char *retired;
+
+    tamga_error_clear();
+    data = tamga_response_signing_keys(response);
+    if (data == NULL || (size_t)index >= tamga_json_array_len(data)) {
+        return false;
+    }
+    resource = tamga_json_array_at(data, (size_t)index);
+    if (resource == NULL || tamga_json_type(resource) != TAMGA_JSON_OBJECT) {
+        return false;
+    }
+    attributes = tamga_json_object_get(resource, "attributes");
+
+    /* ⚠️ On this route the resource `id` IS the `kid` -- not a UUID like every
+     * other resource this SDK reads. It is the same value an offline file's
+     * claim carries, which is what makes matching a file to its key a lookup
+     * rather than a computation. */
+    key_id = tamga_json_as_string(tamga_json_object_get(resource, "id"), NULL);
+    algorithm = tamga_json_as_string(tamga_json_object_get(attributes, "algorithm"), NULL);
+    /* ⚠️ `publicKey` is the ONE camelCase field on an otherwise snake_case
+     * resource. The three around it are bare. */
+    public_key = tamga_json_as_string(tamga_json_object_get(attributes, "publicKey"), NULL);
+    status = tamga_json_as_string(tamga_json_object_get(attributes, "status"), NULL);
+    created = tamga_json_as_string(tamga_json_object_get(attributes, "created"), NULL);
+    /* Absent, not null, while a key is still active: the server skips the
+     * field entirely. So its absence is the documented "not retired" state and
+     * NOT a reason to refuse the whole row. */
+    retired = tamga_json_as_string(tamga_json_object_get(attributes, "retired"), NULL);
+
+    if (key_id == NULL || algorithm == NULL || public_key == NULL || status == NULL ||
+        created == NULL) {
+        return false;
+    }
+
+    /* All five required fields read before any is stored, so a caller that
+     * ignores the return value cannot act on a half-filled set -- an entry
+     * carrying an id but no key would be indexed and then verify nothing. */
+    if (out_key_id != NULL) {
+        *out_key_id = key_id;
+    }
+    if (out_algorithm != NULL) {
+        *out_algorithm = algorithm;
+    }
+    if (out_public_key != NULL) {
+        *out_public_key = public_key;
+    }
+    if (out_status != NULL) {
+        *out_status = status;
+    }
+    if (out_created != NULL) {
+        *out_created = created;
+    }
+    if (out_retired != NULL) {
+        *out_retired = retired;
+    }
+    return true;
+}
+
+/* --- artifacts ----------------------------------------------------------- */
+
+/*
+ * The artifact resource an accessor should read at `index`.
+ *
+ * Deliberately accepts BOTH document shapes. `GET .../releases/{id}/artifacts`
+ * answers a `data` array, while `GET .../artifacts/{id}` and the download
+ * action answer a single `data` object -- and a caller picking a build out of
+ * a listing and then re-reading it after the download action would otherwise
+ * need two families of accessors for one resource. A single-resource document
+ * is read as a one-element collection: `index` 0 and nothing else.
+ *
+ * `type` is checked because of that leniency, not in spite of it. Every other
+ * single-resource response this SDK returns -- a machine, a licence, a policy
+ * -- also has a `data` object, and without the check the first artifact
+ * accessor called on one would start reading its attributes by name and report
+ * whatever happened to be missing as an unreadable artifact rather than as the
+ * wrong response.
+ */
+static const TamgaJson *tamga_response_artifact(const TamgaResponse *response, uintptr_t index) {
+    const TamgaJson *data;
+    const TamgaJson *resource;
+
+    if (response == NULL || response->json == NULL) {
+        return NULL;
+    }
+    data = tamga_json_object_get(response->json, "data");
+    if (data == NULL) {
+        return NULL;
+    }
+    if (tamga_json_type(data) == TAMGA_JSON_ARRAY) {
+        if ((size_t)index >= tamga_json_array_len(data)) {
+            return NULL;
+        }
+        resource = tamga_json_array_at(data, (size_t)index);
+    } else if (tamga_json_type(data) == TAMGA_JSON_OBJECT && index == 0u) {
+        resource = data;
+    } else {
+        return NULL;
+    }
+    if (resource == NULL || tamga_json_type(resource) != TAMGA_JSON_OBJECT) {
+        return NULL;
+    }
+    {
+        const char *type = tamga_json_as_string(tamga_json_object_get(resource, "type"), NULL);
+        if (type == NULL || strcmp(type, "artifacts") != 0) {
+            return NULL;
+        }
+    }
+    return resource;
+}
+
+uintptr_t tamga_response_artifact_count(const TamgaResponse *response) {
+    const TamgaJson *data;
+
+    tamga_error_clear();
+    if (response == NULL || response->json == NULL) {
+        return 0u;
+    }
+    data = tamga_json_object_get(response->json, "data");
+    if (data == NULL) {
+        return 0u;
+    }
+    /*
+     * The array's length, NOT the number of rows that turn out to be readable.
+     * `index` addresses the i-th element of `data`, so filtering here would
+     * shift every index off the row it names -- and a listing with one
+     * malformed row in the middle would silently truncate to the rows before
+     * it. Whether a given row can be read is tamga_response_artifact_at()'s
+     * answer, exactly as it is for a signing key.
+     */
+    if (tamga_json_type(data) == TAMGA_JSON_ARRAY) {
+        return (uintptr_t)tamga_json_array_len(data);
+    }
+    /*
+     * A single-resource document has no index to iterate, so the count is the
+     * only place the `type` check can report "this is not an artifact
+     * response" -- which is why this half filters and the array half does not.
+     */
+    return (tamga_response_artifact(response, 0u) != NULL) ? 1u : 0u;
+}
+
+bool tamga_response_artifact_at(const TamgaResponse *response, uintptr_t index, const char **out_id,
+                                const char **out_filename, const char **out_filetype,
+                                const char **out_platform, const char **out_arch,
+                                const char **out_status) {
+    const TamgaJson *resource;
+    const TamgaJson *attributes;
+    const char *id;
+    const char *filename;
+    const char *filetype;
+    const char *platform;
+    const char *arch;
+    const char *status;
+
+    tamga_error_clear();
+    resource = tamga_response_artifact(response, index);
+    if (resource == NULL) {
+        return false;
+    }
+    attributes = tamga_json_object_get(resource, "attributes");
+
+    id = tamga_json_as_string(tamga_json_object_get(resource, "id"), NULL);
+    filename = tamga_json_as_string(tamga_json_object_get(attributes, "filename"), NULL);
+    status = tamga_json_as_string(tamga_json_object_get(attributes, "status"), NULL);
+    /* Option<String> server-side with no skip_serializing_if, so these arrive
+     * as JSON null rather than being omitted -- and null is the ordinary state
+     * of a build that targets no particular platform. NULL with a true return,
+     * never a refusal of the row. */
+    filetype = tamga_json_as_string(tamga_json_object_get(attributes, "filetype"), NULL);
+    platform = tamga_json_as_string(tamga_json_object_get(attributes, "platform"), NULL);
+    arch = tamga_json_as_string(tamga_json_object_get(attributes, "arch"), NULL);
+
+    if (id == NULL || filename == NULL || status == NULL) {
+        return false;
+    }
+
+    /* The three required fields are read before any of the six is stored, so a
+     * caller that ignores the return value cannot act on a half-filled set --
+     * a row carrying a platform but no filename would be matched and then
+     * downloaded by name. */
+    if (out_id != NULL) {
+        *out_id = id;
+    }
+    if (out_filename != NULL) {
+        *out_filename = filename;
+    }
+    if (out_filetype != NULL) {
+        *out_filetype = filetype;
+    }
+    if (out_platform != NULL) {
+        *out_platform = platform;
+    }
+    if (out_arch != NULL) {
+        *out_arch = arch;
+    }
+    if (out_status != NULL) {
+        *out_status = status;
+    }
+    return true;
+}
+
+bool tamga_response_artifact_integrity_at(const TamgaResponse *response, uintptr_t index,
+                                          const char **out_checksum, const char **out_signature,
+                                          const char **out_created, const char **out_updated) {
+    const TamgaJson *resource;
+    const TamgaJson *attributes;
+    const char *checksum;
+    const char *signature;
+    const char *created;
+    const char *updated;
+
+    tamga_error_clear();
+    resource = tamga_response_artifact(response, index);
+    if (resource == NULL) {
+        return false;
+    }
+    attributes = tamga_json_object_get(resource, "attributes");
+
+    checksum = tamga_json_as_string(tamga_json_object_get(attributes, "checksum"), NULL);
+    signature = tamga_json_as_string(tamga_json_object_get(attributes, "signature"), NULL);
+    /* ⚠️ `created` and `updated`, NOT `createdAt`/`updatedAt`. ArtifactAttributes
+     * is `rename_all = "camelCase"` -- which is what makes the neighbouring
+     * `redirectUrl` camelCase -- but carries explicit
+     * `#[serde(rename = "created")]` and `#[serde(rename = "updated")]` that
+     * override it for exactly these two. Applying the container rule to the
+     * whole resource reads NULL for both and takes the row down with them. */
+    created = tamga_json_as_string(tamga_json_object_get(attributes, "created"), NULL);
+    updated = tamga_json_as_string(tamga_json_object_get(attributes, "updated"), NULL);
+
+    if (created == NULL || updated == NULL) {
+        return false;
+    }
+
+    if (out_checksum != NULL) {
+        *out_checksum = checksum;
+    }
+    if (out_signature != NULL) {
+        *out_signature = signature;
+    }
+    if (out_created != NULL) {
+        *out_created = created;
+    }
+    if (out_updated != NULL) {
+        *out_updated = updated;
+    }
+    return true;
+}
+
+bool tamga_response_artifact_filesize_at(const TamgaResponse *response, uintptr_t index,
+                                         int64_t *out_bytes) {
+    const TamgaJson *resource;
+    const TamgaJson *filesize;
+    int64_t bytes = 0;
+
+    tamga_error_clear();
+    if (out_bytes == NULL) {
+        return false;
+    }
+    resource = tamga_response_artifact(response, index);
+    if (resource == NULL) {
+        return false;
+    }
+    /* `Option<i64>`, so an artifact whose row was created before its bytes were
+     * uploaded carries a JSON null here. That is "not recorded yet", which is
+     * why absence is a false return rather than a zero written into the
+     * out-parameter: a caller comparing a downloaded length against zero would
+     * reject every real file. */
+    filesize = tamga_json_object_get(tamga_json_object_get(resource, "attributes"), "filesize");
+    if (filesize == NULL || tamga_json_is_null(filesize) || !tamga_json_as_int(filesize, &bytes)) {
+        return false;
+    }
+    *out_bytes = bytes;
+    return true;
+}
+
+const char *tamga_response_artifact_download_url(const TamgaResponse *response) {
+    const TamgaJson *resource;
+
+    tamga_error_clear();
+    resource = tamga_response_artifact(response, 0u);
+    if (resource == NULL) {
+        return NULL;
+    }
+    /* ⚠️ `redirectUrl`, camelCase, and `skip_serializing_if = "Option::is_none"`
+     * -- so it is ABSENT rather than null on a listing or a plain read, and
+     * present only on the download action. NULL here therefore means "this
+     * response is not a download", which is a different thing from a download
+     * that failed. */
+    return tamga_json_as_string(
+        tamga_json_object_get(tamga_json_object_get(resource, "attributes"), "redirectUrl"), NULL);
+}
+
 /* --- request construction ------------------------------------------------ */
 
 static bool tamga_client_auth_header(const TamgaClient *client, char **out_name, char **out_value) {
@@ -564,6 +892,19 @@ static TamgaErrorCode tamga_map_api_error(TamgaResponse *response) {
             return TAMGA_ERR_LICENSE_KEY_MISSING;
         }
         if (strcmp(code, "TTL_INVALID") == 0) {
+            return TAMGA_ERR_TTL_INVALID;
+        }
+        /* The artifact download route spells it differently -- `PRESIGN_TTL_INVALID`
+         * from artifacts/service.rs:33, against the [1min, 1week] presign range,
+         * where the checkout routes raise `TTL_INVALID` against [1s, 365d]
+         * (check_out_license.rs:48). Same condition, so the same code: mapping
+         * only the first would hand a caller TAMGA_ERR_API for one route and
+         * TAMGA_ERR_TTL_INVALID for the other, and force a second branch for a
+         * fault whose remedy is identical. It also has to agree with the local
+         * bounds check in tamga_client_get_artifact_download_url(), which
+         * already returns TAMGA_ERR_TTL_INVALID -- otherwise the code would
+         * depend on which side happened to catch it. */
+        if (strcmp(code, "PRESIGN_TTL_INVALID") == 0) {
             return TAMGA_ERR_TTL_INVALID;
         }
         if (strcmp(code, "SCHEME_NOT_SUPPORTED") == 0) {

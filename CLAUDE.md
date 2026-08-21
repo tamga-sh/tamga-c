@@ -34,7 +34,8 @@ tamga-c/
 │   ├── tamga_api.c         # the public entry points: marshalling and handle ownership
 │   ├── tamga_error.c       # the per-thread last-error slot
 │   ├── tamga_mem.c         # overflow-checked allocation, DSE-resistant erase
-│   ├── util/               # buf, base64, hex, uuid, rfc3339, json (parse + two writers)
+│   ├── util/               # buf, base64, hex, uuid, rfc3339, fingerprint,
+│   │                       #   json (parse + two writers)
 │   ├── crypto/             # sha256/512, hmac, hkdf, aes, gcm, ed25519+fe25519,
 │   │                       #   bn, rsa, p256, ecdsa, der, ct
 │   ├── checkout/           # pem, cert, claims, license_file, machine_file
@@ -139,6 +140,82 @@ exponential form keeps its explicit `+` (`1e+16`, not `1e16`); the
 decimal/exponential threshold is ryu's, not printf's `%g`; and `serde_json`'s
 *parser* is one ULP off on at least one input, while its writer agrees with
 this one given identical bits.
+
+### A `kid` hashes the base64 STRING, and a machine file's names the wrong key
+
+`key_id()` (`tamga-api/src/shared/crypto/license_file.rs`) takes a `&str` and
+digests `.as_bytes()`, so a `kid` is
+`lowercase_hex(SHA-256(<the base64 text>)[0..8])` — sixteen characters from
+**eight** bytes. Hashing the 32 decoded bytes instead is the natural assumption
+and it is wrong silently: it yields an equally well-formed sixteen-character id
+that matches nothing the server ever issued, so every genuine file reports an
+unknown signing key and the bug reads as a rotation problem rather than a
+hashing one.
+
+Pinned twice, from two unrelated sources.
+`tests/fixtures/signing-keys/signing-key-ids.json` carries a **negative**
+vector — the same key yields `905f28def18eaac0` correctly and
+`630dcd2966c43366` decoded-first — and it was produced outside this SDK
+family. `tests/fixtures/server-machine-files/manifest.json` was produced by the
+server's own encoder and agrees, which
+`signing_key_test.c::the_servers_own_machine_file_manifest_agrees_with_the_hash_rule`
+asserts.
+
+⚠️ But that manifest may be used for the hash rule and **nothing else**. Its
+generator derived each `kid` from the file's *own* signing key, so its RSA and
+ECDSA entries carry four distinct kids where the live server emits one. Both
+live checkout handlers compute the claim from
+`account.ed25519_public_key.unwrap_or_default()` **whatever scheme signed the
+bytes** (`check_out_license.rs:92-94`, `check_out_machine.rs:125-127`), while
+the machine file's signing key is chosen by the licence's scheme
+(`check_out_machine.rs:83-96`).
+
+Three consequences, and each one silently breaks the obvious implementation:
+
+- **A `kid` can only select a key for a licence file or an Ed25519 machine
+  file.** For RSA and ECDSA the claim names a key that had no part in the
+  signature, so a scheme-agnostic `kid`-to-key lookup would report an authentic
+  file as forged — reintroducing the very defect in a new place.
+  `tamga_machine_file_verify_with_key_set()` refuses them by name with
+  `TAMGA_ERR_KEY_ID_NOT_APPLICABLE`. Nothing is lost: `rotate_ed25519` is the
+  only rotation there is, so no other scheme has one to survive.
+- **`unwrap_or_default()` means the empty string is a real input.** An account
+  whose key column was never populated stamps `e3b0c44298fc1c14` —
+  `SHA-256("")` — into every file it signs. `TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED`
+  exists so that this is not reported as a stale key set: refetching the keys
+  will never produce a match, however many times it is tried.
+  `tamga_signing_key_id()` therefore validates nothing about its input, or that
+  value would be out of reach.
+- **A licence key cannot fetch the key set.** `GET /signing-keys` needs
+  `account.read`, which `Role::LicenseToken` lacks, and unlike `policy.read`
+  there is no second route to the same resource. So the key set is built from
+  bytes (`tamga_signing_key_set_add_json`) or from pinned keys
+  (`tamga_signing_key_set_add_public_key`), never from a client — otherwise
+  offline verification would stop being offline.
+
+The resource `id` on that route **is** the `kid`, not a UUID, so a fetched set
+is indexed by the served id and the local computation is only a cross-check;
+`tamga_signing_key_set_add_json` counts a disagreement in `*out_mismatched`
+and still adds the key under the served id, because that is what a file names.
+Retired keys are kept for the same reason — filtering them out reinstates the
+whole defect.
+
+Lookup matches the **served id alone**, never the computed one as a fallback.
+`tamga-swift` documents the lenient rule (either id matches); `tamga-rust` and
+`tamga-dotnet` match the served id, and so does this one. It is not a security
+difference — the signature still has to verify against that key's bytes, so a
+wrong selection fails closed — but a fallback would swallow the very signal
+`*out_mismatched` exists to raise, and would invent a matching rule the wire
+does not have. `a_fetched_key_set_indexes_by_the_served_id_not_the_computed_one`
+pins the absence of the second path.
+
+⚠️ Choosing a key by `kid` inverts this format's usual order: the `kid` lives
+inside `enc`, so `enc` is decoded (and decrypted) **before** the signature is
+checked. That is sound only because the `kid` can select from keys the caller
+already trusts and can never introduce one, and because there is deliberately
+no "try every key" fallback — which would accept the same files while
+destroying the distinction the whole feature exists to draw. The single-key
+entry points keep the old order and are unchanged.
 
 ### The two key derivations are not interchangeable
 
@@ -272,9 +349,16 @@ proof is forged". Use `tamga_base64_decode_alloc_why` and
 `TamgaErrorCode`.
 
 `tests/unit/alloc_failure_test.c` walks every allocation on the offline path
-and in three request builders, failing them one at a time -- 586 injections --
-and asserts each run either succeeds or returns `TAMGA_ERR_OUT_OF_MEMORY`,
-with no blocks left outstanding. Every misreport above was found by it.
+and in three request builders, failing them one at a time -- 943 injections
+across five offline operations, plus the request builders -- and asserts each
+run either succeeds or returns `TAMGA_ERR_OUT_OF_MEMORY`, with no blocks left
+outstanding. Every misreport above was found by it.
+
+The key-set walk is there for a reason of its own: on that path a failed
+`strdup` of a key id would leave the set short of the key a genuine file names,
+and the caller would read the resulting `TAMGA_ERR_UNKNOWN_SIGNING_KEY` as
+"this file belongs to another licence". The walk asserts that no allocation
+failure can produce a verdict -- only `TAMGA_OK` or `TAMGA_ERR_OUT_OF_MEMORY`.
 
 ### The same over-limit activation is reported two different ways
 
@@ -396,6 +480,168 @@ routes do.
 The durable form of the rule is narrower than "write": a response is only
 guaranteed not to say `DEAD` when the write it was built from set
 `last_heartbeat_at` itself. Ping, reset and create qualify. PATCH does not.
+
+### An artifact download must never be allowed to follow its redirect
+
+`GET /artifacts/{id}/actions/download` answers `303 See Other` to a short-lived
+presigned URL on the object store. A client that follows that redirect with the
+request's `Authorization` header still attached hands the licence key to the
+storage host.
+
+⚠️ **Measured, not assumed**, and measured per auth kind -- a rule about one
+credential is not a rule about another. Driving this repo's own curl transport
+at a local 303 server with `CURLOPT_FOLLOWLOCATION` forced to `1`
+(libcurl 8.7.1):
+
+| credential | same-origin hop | cross-origin hop |
+|---|---|---|
+| `TAMGA_AUTH_LICENSE` | **sent intact** | stripped |
+| `TAMGA_AUTH_BEARER` | **sent intact** | stripped |
+| `TAMGA_AUTH_BASIC_*` | **sent intact** | stripped |
+| `TAMGA_AUTH_QUERY_TOKEN` | not sent | not sent |
+| **`Tamga-OTP` header** | **sent intact** | **SENT INTACT** |
+
+⚠️ **Read the last row first.** On this libcurl, `Tamga-OTP` -- which carries a
+one-time password -- was forwarded **to a different host**, while
+`Authorization` was stripped there. The most exposed credential is the one not
+called `Authorization`, which is the opposite of where attention naturally
+goes.
+
+⚠️ **Do not turn that into a rule.** "Platforms protect the header *named*
+`Authorization`, not credentials by nature" is the obvious generalisation, it
+was proposed across this SDK family on four measurements, and the fifth broke
+it: one runtime strips a directly-set `Cookie` cross-origin. Five runtimes,
+five distinct behaviours, no surviving rule. The table above is data about one
+libcurl build, not a prediction about any other stack.
+
+The only claim that survived every measurement is the negative one: **you
+cannot know what a redirect forwards without watching it.** Which is the whole
+reason the design here does not depend on the answer. When adding any header
+that carries a secret, assume it is forwarded until you have measured
+otherwise -- not because a rule says so, but because no rule does.
+
+The query-token form leaks by neither route -- the `Location` replaces the URL
+and the `?token=` goes with it. There is no cookie credential here. The
+`Authorization` leak needs a same-origin redirect (what `s3_endpoint` +
+`s3_force_path_style` produce when storage is on the API's own origin); the OTP
+leak needs no such thing.
+
+Also measured: non-GET requests go out through `CURLOPT_CUSTOMREQUEST`, so a
+followed `303` was re-sent as **POST** rather than converted to GET as 303
+requires -- a POST carrying an OTP would be *replayed* against the redirect
+target.
+
+`CURLOPT_UNRESTRICTED_AUTH`'s default has also varied across libcurl versions.
+Re-measure before relying on any of this.
+
+At the shipped `FOLLOWLOCATION` of `0` no redirect is followed at all, so the
+question does not arise; `transport_winhttp.c` sets
+`WINHTTP_OPTION_REDIRECT_POLICY_NEVER` for the same reason (WinHTTP follows by
+default, so that one is a correction). But a transport registered through
+`tamga_client_set_transport()` is the caller's own stack and most follow out of
+the box, so `tamga_client_get_artifact_download_url()` sends `?redirect=false`
+unconditionally and exposes no parameter for asking otherwise. Pinned by
+`the_artifact_download_never_asks_for_the_redirect`.
+
+A second reason holds whatever a transport does about headers: following
+streams the artifact's **bytes** into the capped response buffer
+(`TAMGA_TRANSPORT_FAIL_OVERSIZED`) before anything can reject them, and a real
+artifact routinely exceeds any sane cap.
+
+Three more things about that surface:
+
+- **`created`/`updated`, not `createdAt`/`updatedAt`.** `ArtifactAttributes` is
+  `rename_all = "camelCase"` -- which really does make the neighbouring field
+  `redirectUrl` -- but carries explicit `#[serde(rename)]` attributes overriding
+  the container rule for exactly those two (`artifacts/serializer.rs:20,34-37`).
+  Applying one rule to the whole resource compiles, runs and reads nothing.
+- **A `403` on the download is not necessarily an auth problem.** The handler
+  runs the owning release through `releases::service::enforce_release_access`
+  on top of the permission, so a caller holding `artifact.download` is still
+  refused a release its licence is not entitled to. That gate is on the
+  download action **alone** -- `list_artifacts` and `get_artifact` check the
+  permission only, so metadata that reads perfectly well can still refuse its
+  bytes.
+- **Read and download are the whole surface.** `Role::LicenseToken`
+  (`shared/authz/mod.rs:241-268`) carries `artifact.read` and
+  `artifact.download` and none of create, update or delete. An SDK offering
+  publication would only be offering a 403. Note that only `artifact.download`
+  (`:265`) was granted by `e6d317b` -- `artifact.read` (`:264`) predates it, so
+  the listing and metadata read were always reachable and merely had no SDK
+  method. Only the bytes were ever a 403.
+
+### The curl handle is confined to http and https
+
+`tamga_curl_restrict_protocols()` sets `CURLOPT_PROTOCOLS_STR` to `http,https`
+(falling back to `CURLOPT_PROTOCOLS` below libcurl 7.85), checked rather than
+discarded like the TLS-verification options beside it.
+
+⚠️ **This was measured to matter.** With the option removed, driving the
+transport at `file:///tmp/<a file>` on libcurl 8.7.1 **succeeded** and returned
+the file's contents as `response->body`; with it set the same call fails, while
+an `http://` control still succeeds. libcurl speaks `file:`, `scp:`, `ftp:` and
+`gopher:` and will attempt whatever scheme the URL names.
+
+Nothing builds a curl URL from a server-supplied value today --
+`tamga_client_compose_origin()` prepends `https://` to anything not already
+beginning `http://` or `https://`, and `CURLOPT_FOLLOWLOCATION` is `0` so no
+`Location` can introduce one. Both are one edit away from being untrue, and the
+failure is a local-file read driven by a remote value, handed back as a
+response body. A sibling SDK found its own "is this an absolute URI" check
+accepting `/relative/path` and `C:\x\y` as `file:` URIs.
+
+⚠️ **Both branches of the version guard were proved, not assumed.**
+`CURLOPT_PROTOCOLS_STR` arrived in 7.85.0, so the `#else` uses the deprecated
+`CURLOPT_PROTOCOLS` bitmask -- and a guard that silently does nothing on an
+older build reads as protection in review and is absent at runtime. The
+fallback branch was forced on (`#if 0`) and re-measured: it also refuses
+`file:` and still allows `http:`. The setopt result is checked rather than
+discarded, so an unsupported option fails the request instead of quietly
+widening it.
+
+There is deliberately **no unit test** for any of this: `transport_curl.c`
+needs a live handle, and this repo's rule is that a fake test for it would
+measure nothing. It was verified with throwaway probes instead, both branches
+and both directions.
+
+### A fingerprint is canonicalised, never generated
+
+`tamga_fingerprint_compute()` takes caller-chosen labelled components and
+returns `lowercase_hex(SHA-256(canonical))`. It deliberately does **not** read
+hardware identifiers, and must not grow the ability to: what identifies a
+machine is a product decision -- a cloned VM template shares them, a container
+has none, a replaced motherboard changes them -- and no default is right for
+both a desktop application and a Kubernetes sidecar.
+
+What it does fix is measured: all eight SDKs sent the caller's string byte for
+byte, and the server stores `fingerprint TEXT NOT NULL` with no length limit,
+no `CHECK` and no normalisation, unique per `(license_id, fingerprint)`. So
+`"ABC-123"`, `"abc-123"` and `" ABC-123 "` were three seats.
+
+⚠️ **Values are NOT Unicode-normalised, and that is a constraint rather than an
+oversight.** NFC here would mean ICU or hand-rolled Unicode tables inside a
+library whose defining property is having none, and a rule the eight ports
+cannot implement identically is worse than no rule: one machine would get two
+fingerprints depending on which SDK the application used. Every rule is
+ASCII-only for that reason. Do not "improve" it with a normalisation step.
+
+⚠️ **The sort is over unsigned bytes.** `memcmp`, `strcmp` and `strncmp` are
+all specified to compare as `unsigned char` (C11 7.24.4p1), so the library
+functions are safe -- the trap is a hand-rolled `a[i] - b[i]` over plain
+`char`, which on a signed-char target orders every byte above `0x7F` before
+every ASCII one and fingerprints the same machine differently on ARM than on
+x86. `src/util/fingerprint.c` uses `memcmp`, and
+`the_sort_compares_bytes_as_unsigned` pins the ordering that the published
+single-component `non_ascii_value` vector cannot reach.
+
+⚠️ **Rejections are never repairs.** Stripping a control character or
+deduplicating a repeated label maps two different inputs onto one canonical
+string -- two machines, one seat, the mirror image of the defect above. All
+eight `rejected` cases in `tests/fixtures/fingerprint/fingerprint.json` return
+`TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT`.
+
+The vectors were produced outside this SDK family. In the file the separator is
+written as the literal text `<US>` for diffability; the byte hashed is `0x1f`.
 
 ### The permission a licence key has decides which read route works
 

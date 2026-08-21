@@ -69,4 +69,19 @@ TAMGA_NODISCARD TamgaErrorCode tamga_machine_file_verify_at(
     size_t pubkey_len, const char *license_key, const char *fingerprint, int64_t now_unix,
     TamgaJson **out_resource, TamgaFileClaims *out_claims);
 
+/**
+ * As tamga_machine_file_verify_at(), choosing the key by the file's own signed
+ * `kid` claim. **Ed25519 only** -- TAMGA_ERR_KEY_ID_NOT_APPLICABLE for the
+ * other three schemes, because a machine file's `kid` names the account's
+ * Ed25519 key whatever scheme signed the bytes, so for an RSA- or ECDSA-signed
+ * file it names a key that had no part in the signature.
+ *
+ * Same pre-verification decode ordering as
+ * tamga_license_file_verify_at_with_key_set(); see there and key_set.h.
+ */
+TAMGA_NODISCARD TamgaErrorCode tamga_machine_file_verify_at_with_key_set(
+    const char *pem, size_t pem_len, uint32_t scheme, const TamgaSigningKeySet *keys,
+    const char *license_key, const char *fingerprint, int64_t now_unix, TamgaJson **out_resource,
+    TamgaFileClaims *out_claims);
+
 #endif /* TAMGA_CHECKOUT_MACHINE_FILE_H */

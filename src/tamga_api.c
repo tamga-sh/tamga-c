@@ -22,12 +22,16 @@
 
 #include <string.h>
 
+#include "checkout/key_set.h"
 #include "checkout/license_file.h"
 #include "checkout/machine_file.h"
 #include "crypto/hkdf.h"
+#include "crypto/sha256.h"
 #include "proof.h"
 #include "tamga_error.h"
 #include "tamga_mem.h"
+#include "util/fingerprint.h"
+#include "util/hex.h"
 #include "util/json.h"
 #include "util/rfc3339.h"
 
@@ -87,6 +91,109 @@ TamgaErrorCode tamga_hkdf_derive_license_file_key(const char *license_key, uint8
         return tamga_error_set(TAMGA_ERR_UNKNOWN, "key derivation failed");
     }
     return TAMGA_OK;
+}
+
+/* --- signing keys ------------------------------------------------------- */
+
+TamgaErrorCode tamga_signing_key_id(const char *ed25519_public_key, char *out_key_id) {
+    tamga_error_clear();
+
+    if (ed25519_public_key == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "ed25519_public_key must not be null");
+    }
+    if (out_key_id == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "out_key_id must not be null");
+    }
+    /*
+     * No validation of the key itself, on purpose. The server hashes whatever
+     * string its column holds, and an EMPTY one is the case a caller most
+     * needs to be able to reproduce -- it is what an account that predates the
+     * public-key backfill signs every file with. Rejecting it here would put
+     * TAMGA_UNPUBLISHED_KEY_ID out of reach of the very code that has to
+     * recognise it.
+     */
+    tamga_signing_key_id_compute(ed25519_public_key, strlen(ed25519_public_key), out_key_id);
+    return TAMGA_OK;
+}
+
+TamgaErrorCode tamga_signing_key_set_new(struct TamgaSigningKeySet **out_set) {
+    tamga_error_clear();
+
+    if (out_set == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "out_set must not be null");
+    }
+    return tamga_key_set_create(out_set);
+}
+
+void tamga_signing_key_set_free(struct TamgaSigningKeySet *set) {
+    /* Like the other free functions: the error slot is deliberately NOT
+     * cleared, because clearing it would erase a message the caller is about
+     * to print. */
+    tamga_key_set_destroy(set);
+}
+
+TamgaErrorCode tamga_signing_key_set_add_public_key(struct TamgaSigningKeySet *set,
+                                                    const char *ed25519_public_key) {
+    tamga_error_clear();
+
+    if (set == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "set must not be null");
+    }
+    if (ed25519_public_key == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "ed25519_public_key must not be null");
+    }
+    return tamga_key_set_add_public_key(set, ed25519_public_key);
+}
+
+TamgaErrorCode tamga_signing_key_set_add_json(struct TamgaSigningKeySet *set, const char *json,
+                                              uintptr_t json_len, uintptr_t *out_added,
+                                              uintptr_t *out_skipped, uintptr_t *out_mismatched) {
+    size_t added = 0u;
+    size_t skipped = 0u;
+    size_t mismatched = 0u;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+
+    if (set == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "set must not be null");
+    }
+    status = tamga_check_span(json, (size_t)json_len, "json");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+
+    status = tamga_key_set_add_json(set, json, (size_t)json_len, &added, &skipped, &mismatched);
+    if (status != TAMGA_OK) {
+        /* Not one of the three is written on a failure. A caller that read a
+         * count back from a call that failed would believe keys had been
+         * merged that were not, and would then read the resulting
+         * TAMGA_ERR_UNKNOWN_SIGNING_KEY as a rotation it had already caught up
+         * with. */
+        return status;
+    }
+    if (out_added != NULL) {
+        *out_added = (uintptr_t)added;
+    }
+    if (out_skipped != NULL) {
+        *out_skipped = (uintptr_t)skipped;
+    }
+    if (out_mismatched != NULL) {
+        *out_mismatched = (uintptr_t)mismatched;
+    }
+    return TAMGA_OK;
+}
+
+bool tamga_signing_key_set_find(const struct TamgaSigningKeySet *set, const char *key_id,
+                                uint8_t *out_ed25519_pubkey) {
+    tamga_error_clear();
+    /* A miss writes nothing, so a caller that ignores the return value reads
+     * back whatever it already had rather than a key it did not earn. */
+    return tamga_key_set_lookup(set, key_id, out_ed25519_pubkey);
+}
+
+uintptr_t tamga_signing_key_set_count(const struct TamgaSigningKeySet *set) {
+    return (uintptr_t)tamga_key_set_count(set);
 }
 
 /* --- shared handle plumbing --------------------------------------------- */
@@ -161,6 +268,53 @@ TamgaErrorCode tamga_license_file_verify(const char *pem, uintptr_t pem_len,
     return TAMGA_OK;
 }
 
+TamgaErrorCode tamga_license_file_verify_with_key_set(const char *pem, uintptr_t pem_len,
+                                                      const struct TamgaSigningKeySet *keys,
+                                                      const char *license_key,
+                                                      struct TamgaLicenseFile **out_handle) {
+    TamgaErrorCode status;
+    TamgaJson *resource = NULL;
+    struct TamgaLicenseFile *handle;
+    int64_t now_unix = 0;
+
+    tamga_error_clear();
+
+    status = tamga_check_span(pem, (size_t)pem_len, "pem");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    if (keys == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "keys must not be null");
+    }
+    if (out_handle == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "out_handle must not be null");
+    }
+    *out_handle = NULL;
+
+    if (!tamga_time_now_unix(&now_unix)) {
+        /* Refusing beats guessing: the only thing `now` is used for is the
+         * expiry check, and any substituted value silently decides it. */
+        return tamga_error_set(TAMGA_ERR_UNKNOWN,
+                               "the system clock could not be read, so the file's expiry "
+                               "could not be checked");
+    }
+
+    status = tamga_license_file_verify_at_with_key_set(pem, (size_t)pem_len, keys, license_key,
+                                                       now_unix, &resource, NULL);
+    if (status != TAMGA_OK) {
+        return status;
+    }
+
+    handle = (struct TamgaLicenseFile *)tamga_calloc(1u, sizeof(*handle));
+    if (handle == NULL) {
+        tamga_json_free(resource);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not allocate the handle");
+    }
+    handle->resource = resource;
+    *out_handle = handle;
+    return TAMGA_OK;
+}
+
 TamgaErrorCode tamga_license_file_get_json(const struct TamgaLicenseFile *handle, char **out_ptr,
                                            uintptr_t *out_len) {
     tamga_error_clear();
@@ -220,6 +374,53 @@ TamgaErrorCode tamga_machine_file_verify(const char *pem, uintptr_t pem_len, uin
      * header or a buggy binding can pass anything. It is validated inside. */
     status = tamga_machine_file_verify_at(pem, (size_t)pem_len, scheme, pubkey, (size_t)pubkey_len,
                                           license_key, fingerprint, now_unix, &resource, NULL);
+    if (status != TAMGA_OK) {
+        return status;
+    }
+
+    handle = (struct TamgaMachineFile *)tamga_calloc(1u, sizeof(*handle));
+    if (handle == NULL) {
+        tamga_json_free(resource);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not allocate the handle");
+    }
+    handle->resource = resource;
+    *out_handle = handle;
+    return TAMGA_OK;
+}
+
+TamgaErrorCode tamga_machine_file_verify_with_key_set(
+    const char *pem, uintptr_t pem_len, uint32_t scheme, const struct TamgaSigningKeySet *keys,
+    const char *license_key, const char *fingerprint, struct TamgaMachineFile **out_handle) {
+    TamgaErrorCode status;
+    TamgaJson *resource = NULL;
+    struct TamgaMachineFile *handle;
+    int64_t now_unix = 0;
+
+    tamga_error_clear();
+
+    status = tamga_check_span(pem, (size_t)pem_len, "pem");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    if (keys == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "keys must not be null");
+    }
+    if (out_handle == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "out_handle must not be null");
+    }
+    *out_handle = NULL;
+
+    if (!tamga_time_now_unix(&now_unix)) {
+        return tamga_error_set(TAMGA_ERR_UNKNOWN,
+                               "the system clock could not be read, so the file's expiry "
+                               "could not be checked");
+    }
+
+    /* `scheme` is a raw uint32_t here for the same reason it is on
+     * tamga_machine_file_verify(): a C enum has no validity range at the ABI
+     * level. It is validated inside, where the Ed25519-only rule also lives. */
+    status = tamga_machine_file_verify_at_with_key_set(
+        pem, (size_t)pem_len, scheme, keys, license_key, fingerprint, now_unix, &resource, NULL);
     if (status != TAMGA_OK) {
         return status;
     }
@@ -309,4 +510,55 @@ TamgaErrorCode tamga_offline_proof_generate(const char *rsa_privkey, const char 
                            "local proof generation is not supported: proofs are issued by "
                            "the server, and this SDK holds no signing keys. Use "
                            "tamga_client_generate_offline_proof() instead.");
+}
+
+/* --- fingerprint canonicalisation --------------------------------------- */
+
+/*
+ * Both entry points clear the error slot and validate before touching the
+ * out-parameter, so TAMGA_OK always means both that a value was written and
+ * that tamga_last_error_message() is NULL.
+ *
+ * `uintptr_t count` rather than `size_t`, matching the length parameters
+ * already frozen into this ABI. They are the wrong type for a length and stay
+ * that way; a second convention would be worse than one wrong one.
+ */
+
+TamgaErrorCode tamga_fingerprint_canonical(const char *const *labels, const char *const *values,
+                                           uintptr_t count, char **out_canonical) {
+    tamga_error_clear();
+    if (out_canonical == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "out_canonical is required");
+    }
+    return tamga_fingerprint_build_canonical(labels, values, (size_t)count, out_canonical);
+}
+
+TamgaErrorCode tamga_fingerprint_compute(const char *const *labels, const char *const *values,
+                                         uintptr_t count, char **out_fingerprint) {
+    unsigned char digest[TAMGA_SHA256_DIGEST_LEN];
+    char *canonical = NULL;
+    char *hex;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (out_fingerprint == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "out_fingerprint is required");
+    }
+    status = tamga_fingerprint_build_canonical(labels, values, (size_t)count, &canonical);
+    if (status != TAMGA_OK) {
+        return status;
+    }
+
+    /* The canonical string is hashed as its own bytes, separators included --
+     * the 0x1f is inside the digest, not a display convention. */
+    tamga_sha256(canonical, strlen(canonical), digest);
+    tamga_string_free(canonical);
+
+    hex = (char *)tamga_malloc(TAMGA_FINGERPRINT_SIZE);
+    if (hex == NULL) {
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the fingerprint");
+    }
+    tamga_hex_encode(digest, sizeof(digest), hex);
+    *out_fingerprint = hex;
+    return TAMGA_OK;
 }

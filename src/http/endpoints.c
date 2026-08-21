@@ -1610,6 +1610,38 @@ TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const char *lic
     return TAMGA_OK;
 }
 
+/* --- signing keys -------------------------------------------------------- */
+
+/*
+ * `GET /signing-keys` -- the account's whole Ed25519 key history, retired keys
+ * included, which is the point: a file checked out before a rotation names the
+ * key that signed it, and without that key it fails verification with the same
+ * error a forged file produces.
+ *
+ * Not paginated and takes no cursor. The route reads the whole
+ * `account_signing_keys` table for the account, which is a handful of rows,
+ * and answers with no `meta` -- so neither tamga_response_page() nor
+ * tamga_response_next_cursor() applies here.
+ *
+ * ⚠️ Needs `account.read`, which `Role::LicenseToken` does not carry, so a
+ * licence-key credential gets `403`. Unlike `policy.read` there is no second
+ * route to the same resource, which is why tamga_signing_key_set_add_json()
+ * takes bytes rather than a client: an embedded client has to be given the
+ * document rather than fetch it.
+ *
+ * ⚠️ `{"data": []}` is the ordinary answer for an account that has never
+ * rotated -- the table is written only by the rotation handler, which
+ * backfills the current key on its way through. Empty means "nothing has
+ * rotated yet", not "this account has no signing key".
+ */
+TamgaErrorCode tamga_client_list_signing_keys(TamgaClient *client, TamgaResponse **out_response) {
+    tamga_error_clear();
+    if (client == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "client and out_response are required");
+    }
+    return tamga_client_send(client, "GET", "/signing-keys", NULL, NULL, NULL, false, out_response);
+}
+
 /* --- releases ------------------------------------------------------------ */
 
 /*
@@ -1686,6 +1718,166 @@ TamgaErrorCode tamga_client_check_upgrade(TamgaClient *client, const char *produ
     status = tamga_client_send(client, "GET", "/releases/actions/upgrade", query, NULL, NULL, false,
                                out_response);
     tamga_string_free(query);
+    return status;
+}
+
+/* --- artifacts ----------------------------------------------------------- */
+
+/*
+ * Read and download only. `artifact.create`, `artifact.update` and
+ * `artifact.delete` are absent from Role::LicenseToken
+ * (shared/authz/mod.rs:241-268), so an embedded client cannot publish a build
+ * however the SDK asks -- those routes would be a 403 for every credential
+ * this library is meant to carry. `artifact.read` and `artifact.download` ARE
+ * on that list, which is what makes this surface reachable.
+ *
+ * Only ONE of the two is new. `artifact.read` (:264) was already there, so the
+ * listing and the metadata read were reachable all along and simply had no
+ * SDK method; e6d317b added `artifact.download` (:265) alone. So the gap this
+ * closes is not symmetric -- the metadata half was an omission on our side,
+ * and the bytes half was genuinely a 403 no client could get past.
+ */
+
+TamgaErrorCode tamga_client_list_release_artifacts(TamgaClient *client, const char *release_id,
+                                                   uint32_t limit, const char *after,
+                                                   TamgaResponse **out_response) {
+    return tamga_list(client, "/releases/", release_id, "release_id", "/artifacts", limit, after,
+                      out_response);
+}
+
+TamgaErrorCode tamga_client_get_artifact(TamgaClient *client, const char *artifact_id,
+                                         TamgaResponse **out_response) {
+    return tamga_get_resource(client, "/artifacts/", artifact_id, "artifact_id", NULL,
+                              out_response);
+}
+
+/*
+ * The download action, and the reason it is not a plain GET.
+ *
+ * By default this route answers `303 See Other` with a Location pointing at a
+ * short-lived presigned URL on the object store. A client that follows that
+ * redirect with the request's headers still attached hands the caller's
+ * licence key -- or bearer token -- to the storage host.
+ *
+ * MEASURED, against libcurl 8.7.1 driving this very transport at a local
+ * server that answers 303, with CURLOPT_FOLLOWLOCATION forced to 1. Every auth
+ * kind this SDK supports was driven separately, because a rule about one
+ * credential is not a rule about another:
+ *
+ *   credential                    same-origin hop   cross-origin hop
+ *   TAMGA_AUTH_LICENSE            SENT INTACT       stripped
+ *   TAMGA_AUTH_BEARER             SENT INTACT       stripped
+ *   TAMGA_AUTH_BASIC_*            SENT INTACT       stripped
+ *   TAMGA_AUTH_QUERY_TOKEN        not sent          not sent
+ *   Tamga-OTP header              SENT INTACT       SENT INTACT
+ *
+ * ⚠️ Read the last row before the first three. On THIS libcurl, `Tamga-OTP` --
+ * which carries a one-time password -- was forwarded to a DIFFERENT HOST,
+ * while `Authorization` was stripped there. So the credential most exposed is
+ * the one not called `Authorization`, which is the opposite of where attention
+ * naturally goes.
+ *
+ * Resist turning that into a rule. It is tempting to conclude that platforms
+ * protect the header NAMED `Authorization` rather than credentials by nature,
+ * and across this SDK family that generalisation has already failed: five
+ * runtimes were measured and produced five distinct behaviours, including one
+ * that strips a directly-set `Cookie` cross-origin and one that strips
+ * `Authorization` even same-origin. The only claim that survived every
+ * measurement is the negative one -- YOU CANNOT KNOW WHAT A REDIRECT FORWARDS
+ * WITHOUT WATCHING IT -- which is precisely why the design here does not
+ * depend on the answer.
+ *
+ * The query-token form leaks by neither route, because the Location replaces
+ * the URL and the `?token=` goes with it. There is no cookie credential in
+ * this SDK.
+ *
+ * One more thing that measurement turned up: because non-GET requests go out
+ * through CURLOPT_CUSTOMREQUEST, a followed 303 was re-sent as POST rather
+ * than converted to GET as 303 requires -- so a POST carrying an OTP would be
+ * REPLAYED against the redirect target. Another reason the safe state is not
+ * following at all.
+ *
+ * So the Authorization leak needs a same-origin redirect -- exactly the shape
+ * the server's `s3_endpoint` + `s3_force_path_style` settings produce when
+ * storage is served from the API's own origin -- while the OTP leak needs no
+ * such thing. Do not generalise any of it: CURLOPT_UNRESTRICTED_AUTH's default
+ * has varied across libcurl versions, and a caller-registered transport
+ * follows whatever rule its own stack implements. Five runtimes measured across
+ * this SDK family produced five distinct behaviours, so the table above is
+ * data about one libcurl build and not a prediction about anything else.
+ *
+ * With FOLLOWLOCATION at 0 -- what this repo actually ships, and what the same
+ * probe confirms -- no redirect is followed at all, so the question does not
+ * arise and UNRESTRICTED_AUTH is moot. transport_winhttp.c sets
+ * WINHTTP_OPTION_REDIRECT_POLICY_NEVER for the same reason; WinHTTP follows by
+ * default, so that one is a correction rather than a default.
+ *
+ * But a transport registered through tamga_client_set_transport() is the
+ * caller's own HTTP stack and most follow redirects out of the box, so the 303
+ * is never requested in the first place: `redirect=false` makes the server
+ * return the artifact resource with `redirectUrl` populated instead. The URL is
+ * then the caller's to fetch with NO credentials attached -- it carries its own
+ * signature, and adding an Authorization header to it is both unnecessary and
+ * the leak this avoids. There is deliberately no parameter for asking for the
+ * redirect form.
+ *
+ * There is a second reason that holds whatever any transport does about
+ * headers: following the redirect streams the artifact's BYTES into the
+ * response buffer before anything can reject them. Responses here are capped
+ * (TAMGA_TRANSPORT_FAIL_OVERSIZED), and a real artifact routinely exceeds any
+ * sane cap -- so a followed download either fails late having buffered a large
+ * file, or succeeds and hands back a body no accessor in this SDK can read.
+ */
+TamgaErrorCode tamga_client_get_artifact_download_url(TamgaClient *client, const char *artifact_id,
+                                                      uint32_t ttl_seconds,
+                                                      TamgaResponse **out_response) {
+    TamgaBuf query_buf;
+    char *path;
+    char *query;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (client == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "client and out_response are required");
+    }
+    status = tamga_require_uuid(artifact_id, "artifact_id");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    /*
+     * Checked here rather than left to the server, which answers `422
+     * PRESIGN_TTL_INVALID` -- a round trip that spends a request and a retry
+     * budget to learn something this side already knows.
+     * artifacts/service.rs's PRESIGN_TTL_MIN/PRESIGN_TTL_MAX are the bounds.
+     */
+    if (ttl_seconds != 0u && (ttl_seconds < TAMGA_PRESIGN_TTL_MIN_SECONDS ||
+                              ttl_seconds > TAMGA_PRESIGN_TTL_MAX_SECONDS)) {
+        return tamga_error_set(
+            TAMGA_ERR_TTL_INVALID, "ttl must be between %u seconds and %u seconds (1 week)",
+            (unsigned)TAMGA_PRESIGN_TTL_MIN_SECONDS, (unsigned)TAMGA_PRESIGN_TTL_MAX_SECONDS);
+    }
+
+    path = tamga_path("/artifacts/", artifact_id, "/actions/download");
+    if (path == NULL) {
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+
+    tamga_buf_init(&query_buf);
+    /* Always, and never from a caller-supplied flag: see the comment above. */
+    tamga_buf_append_str(&query_buf, "redirect=false");
+    if (ttl_seconds != 0u) {
+        tamga_buf_append_fmt(&query_buf, "&ttl=%lu", (unsigned long)ttl_seconds);
+    }
+    query = tamga_buf_detach_string(&query_buf, NULL);
+    tamga_buf_free(&query_buf);
+    if (query == NULL) {
+        tamga_string_free(path);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+
+    status = tamga_client_send(client, "GET", path, query, NULL, NULL, false, out_response);
+    tamga_string_free(query);
+    tamga_string_free(path);
     return status;
 }
 

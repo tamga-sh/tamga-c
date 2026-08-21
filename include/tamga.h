@@ -195,7 +195,18 @@ typedef enum TamgaErrorCode {
     TAMGA_ERR_LICENSE_NOT_ENCRYPTED = 22,
     /** Encrypted checkout was requested but the licence key is missing. */
     TAMGA_ERR_LICENSE_KEY_MISSING = 23,
-    /** The requested ttl is outside the accepted range (1 second to 365 days). */
+    /**
+     * The requested ttl is outside the accepted range for the route.
+     *
+     * The range is NOT the same everywhere. A licence or machine checkout
+     * accepts 1 second to 365 days and rejects with `TTL_INVALID`; an artifact
+     * download's presigned URL accepts
+     * [`TAMGA_PRESIGN_TTL_MIN_SECONDS`, `TAMGA_PRESIGN_TTL_MAX_SECONDS`] —
+     * one minute to one week — and rejects with `PRESIGN_TTL_INVALID`. Both
+     * server codes map here, and tamga_client_get_artifact_download_url()
+     * returns this before sending, so the code does not depend on which side
+     * caught it.
+     */
     TAMGA_ERR_TTL_INVALID = 24,
     /** The licence's scheme is not supported for this operation. */
     TAMGA_ERR_SCHEME_NOT_SUPPORTED = 25,
@@ -256,7 +267,96 @@ typedef enum TamgaErrorCode {
      * precondition. Either the policy is changed or a token credential is
      * used instead.
      */
-    TAMGA_ERR_LICENSE_NOT_ALLOWED = 36
+    TAMGA_ERR_LICENSE_NOT_ALLOWED = 36,
+
+    /* --- offline signing-key rotation, added in 1.3.3 --------------------
+     *
+     * Appended after the limit block, never interleaved with it. All three are
+     * reachable only from tamga_license_file_verify_with_key_set() and
+     * tamga_machine_file_verify_with_key_set(), which did not exist before
+     * 1.3.3 -- so no call a caller already writes can start returning one.
+     */
+
+    /**
+     * The file's signed `kid` claim names a signing key the supplied key set
+     * does not hold.
+     *
+     * ⚠️ This is NOT a forgery, and reporting it as one is the whole defect
+     * these codes exist to end. It is what an authentic file checked out
+     * before the account rotated its signing key produces against a key set
+     * that has not caught up -- a stale cache, or an application shipped with
+     * a single pinned key. A tampered file whose `kid` IS known fails as
+     * `TAMGA_ERR_SIGNATURE_INVALID` instead, and separating the two is the
+     * point of verifying through a key set at all: the first calls for
+     * refetching the keys or shipping an update, the second for refusing the
+     * file. Told apart wrongly, a paying customer holding a perfectly good
+     * licence is locked out and support is sent to look for tampering.
+     *
+     * The claimed `kid` and the number of keys held are in
+     * tamga_last_error_message().
+     */
+    TAMGA_ERR_UNKNOWN_SIGNING_KEY = 37,
+    /**
+     * The file's `kid` is `TAMGA_UNPUBLISHED_KEY_ID`, so no key set can ever
+     * match it: the account signed the file while its Ed25519 public key was
+     * unset.
+     *
+     * Both server-side checkout handlers compute the claim as
+     * `key_id(account.ed25519_public_key.unwrap_or_default())`, so an account
+     * that predates the public-key backfill hashes the empty string and stamps
+     * that one constant into every file it signs.
+     *
+     * Distinct from `TAMGA_ERR_UNKNOWN_SIGNING_KEY` because the obvious remedy
+     * for that one does not work here: refetching the key set will never
+     * produce a match, however many times it is tried, and `GET
+     * /signing-keys` on such an account answers `{"data": []}` forever. Verify
+     * with the account's own public key through tamga_license_file_verify(),
+     * and have the key published.
+     */
+    TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED = 38,
+    /**
+     * A `kid` cannot select this machine file's key, because under this
+     * signing scheme the claim does not name the key that signed it.
+     *
+     * A machine file's signing key is chosen by the licence's `scheme`, but
+     * its `kid` is computed from the account's ED25519 key whatever the scheme
+     * is -- so for an RSA- or ECDSA-signed file the claim names a key that had
+     * no part in the signature, and `GET /signing-keys` publishes Ed25519 keys
+     * only in any case. Verify those with tamga_machine_file_verify() and the
+     * account's own key for that algorithm.
+     *
+     * Nothing is lost by the restriction: `/actions/rotate-signing-key`
+     * rotates the Ed25519 key alone, so no other scheme has a rotation to
+     * survive.
+     */
+    TAMGA_ERR_KEY_ID_NOT_APPLICABLE = 39,
+
+    /* --- fingerprint canonicalisation, added in 1.3.3 --------------------
+     *
+     * Appended after the signing-key block, never interleaved with it.
+     * Reachable only from tamga_fingerprint_canonical() and
+     * tamga_fingerprint_compute(), which did not exist before 1.3.3 -- so no
+     * call a caller already writes can start returning it.
+     */
+
+    /**
+     * A fingerprint component is not something this rule can canonicalise:
+     * an empty label, a label carrying `=` or any byte outside ASCII
+     * printable, a repeated label, a value holding an ASCII control
+     * character, or no components at all.
+     *
+     * ⚠️ Every one of these is an error rather than a repair, and that is the
+     * point of the code existing. Stripping the control character or picking
+     * one of the two values for a repeated label would map two different
+     * inputs onto one canonical string -- which is two machines sharing one
+     * seat, the mirror image of the defect this helper exists to fix. A
+     * caller told which component is wrong can fix the component; a caller
+     * handed a quietly repaired fingerprint cannot.
+     *
+     * tamga_last_error_message() names the offending component's index, and
+     * its label where the label itself is not the problem.
+     */
+    TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT = 40
 } TamgaErrorCode;
 
 /* ======================================================================
@@ -294,6 +394,18 @@ typedef enum TamgaScheme {
  */
 #define TAMGA_DEFAULT_HEARTBEAT_WINDOW_SECONDS 600
 
+/**
+ * The bounds the server enforces on a presigned artifact-download URL's
+ * lifetime: one minute and one week. Mirror `PRESIGN_TTL_MIN` and
+ * `PRESIGN_TTL_MAX` in the server's `artifacts/service.rs`.
+ *
+ * A `ttl` outside this range is a `422 PRESIGN_TTL_INVALID`, so
+ * tamga_client_get_artifact_download_url() refuses it locally rather than
+ * spending a request and a slice of the retry budget to be told.
+ */
+#define TAMGA_PRESIGN_TTL_MIN_SECONDS 60u
+#define TAMGA_PRESIGN_TTL_MAX_SECONDS 604800u
+
 /* ======================================================================
  * Opaque handles
  * ====================================================================== */
@@ -313,6 +425,15 @@ typedef struct TamgaLicenseFile TamgaLicenseFile;
  * tamga_machine_file_free() exactly once.
  */
 typedef struct TamgaMachineFile TamgaMachineFile;
+
+/**
+ * Opaque handle wrapping the set of Ed25519 signing keys an offline file is
+ * allowed to have been signed by, indexed by `kid`.
+ *
+ * Obtained from tamga_signing_key_set_new(); must be freed with
+ * tamga_signing_key_set_free() exactly once. See "Signing keys" below.
+ */
+typedef struct TamgaSigningKeySet TamgaSigningKeySet;
 
 /* ======================================================================
  * Diagnostics and memory
@@ -399,6 +520,195 @@ TAMGA_API enum TamgaErrorCode tamga_hkdf_derive_license_file_key(const char *lic
                                                                  uint8_t *out_32_bytes);
 
 /* ======================================================================
+ * Signing keys and key rotation
+ *
+ * Everything here is offline. A key set is built from keys the caller already
+ * trusts -- pinned in its own binary, or read from a `GET /signing-keys`
+ * document it obtained however it likes -- and never from the file being
+ * verified.
+ *
+ * ⚠️ A licence-key credential CANNOT call `GET /signing-keys`: the route needs
+ * the `account.read` permission and `Role::LicenseToken` does not carry it, so
+ * an embedded client authenticating with a licence key gets `403`. Unlike
+ * `policy.read`, there is no second route exposing the same resource under a
+ * permission it does hold. That is why tamga_signing_key_set_add_json() takes
+ * bytes rather than a client, and why tamga_signing_key_set_add_public_key()
+ * exists at all: a key set has to be constructible with no network, or offline
+ * verification stops being offline.
+ * ====================================================================== */
+
+/**
+ * The length of a `kid` in characters, and the buffer size one needs including
+ * the terminating NUL.
+ *
+ * Sixteen characters, not sixty-four: a `kid` is the first EIGHT bytes of a
+ * SHA-256 digest rendered as lowercase hex. The truncation is the server's
+ * choice, and rendering the whole digest produces an id that matches nothing.
+ */
+#define TAMGA_KEY_ID_LENGTH 16
+#define TAMGA_KEY_ID_SIZE 17
+
+/**
+ * The `kid` every file signed by an account with no published Ed25519 public
+ * key carries: `SHA-256("")`, truncated like any other.
+ *
+ * Not a defensive constant -- a real past state of real accounts. Both
+ * server-side checkout handlers hash
+ * `account.ed25519_public_key.unwrap_or_default()`, so an account whose key
+ * column was never populated signs every file with this one id. Recognising it
+ * is the difference between telling a customer "your key set is stale" and
+ * telling them "this server published no key at all", which have different
+ * fixes -- and only one of them is the caller's to make. Reported as
+ * `TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED` rather than left for a caller to
+ * compare against by hand.
+ */
+#define TAMGA_UNPUBLISHED_KEY_ID "e3b0c44298fc1c14"
+
+/**
+ * Computes the `kid` a file signed under `ed25519_public_key` will claim: the
+ * first eight bytes of `SHA-256(ed25519_public_key)`, as TAMGA_KEY_ID_LENGTH
+ * lowercase hex characters plus a NUL.
+ *
+ * ⚠️ It hashes the base64 STRING, byte for byte as the server stores it -- NOT
+ * the 32 bytes that string decodes to. The natural assumption is the wrong
+ * one, and it is wrong silently: decoding first yields an equally well-formed
+ * sixteen-character id that matches nothing the server ever issued, so every
+ * genuine file reports an unknown signing key and the bug looks like a
+ * rotation problem rather than a hashing one. The server's `key_id()` takes a
+ * `&str` and digests `.as_bytes()`.
+ *
+ * `ed25519_public_key` is consequently NOT validated -- not as base64, not as
+ * a key, not for length. It is hashed as given, because the empty string is a
+ * meaningful input (see TAMGA_UNPUBLISHED_KEY_ID) and rejecting it would put
+ * the one value a caller most needs to recognise out of reach.
+ *
+ * Computing a `kid` is only necessary for a key the caller holds itself. A key
+ * set read from the server is already indexed by `kid` -- the resource `id` IS
+ * the `kid`, set from the same value the server writes into the file's claim
+ * -- so tamga_signing_key_set_add_json() indexes by that and uses this only as
+ * a cross-check.
+ *
+ * Parameters:
+ * - `ed25519_public_key`: the key exactly as the server stores and publishes
+ *   it, standard base64 of the raw 32 bytes. Required, may be empty.
+ * - `out_key_id`: receives TAMGA_KEY_ID_LENGTH characters plus a NUL, and only
+ *   on `TAMGA_OK`.
+ *
+ * Safety: `out_key_id` must point to at least TAMGA_KEY_ID_SIZE writable
+ * bytes.
+ */
+TAMGA_API enum TamgaErrorCode tamga_signing_key_id(const char *ed25519_public_key,
+                                                   char *out_key_id);
+
+/**
+ * Creates an empty key set.
+ *
+ * `*out_set` receives an owned handle on `TAMGA_OK`; free it with
+ * tamga_signing_key_set_free() exactly once. An empty set is a usable set --
+ * every verification through it reports `TAMGA_ERR_UNKNOWN_SIGNING_KEY`, which
+ * is the honest answer -- but it is almost always a sign that the fetch or the
+ * pinned-key list is wrong.
+ */
+TAMGA_API enum TamgaErrorCode tamga_signing_key_set_new(struct TamgaSigningKeySet **out_set);
+
+/**
+ * Frees a set obtained from tamga_signing_key_set_new(). Same contract as
+ * tamga_license_file_free(): NULL is a no-op, double-free is documented
+ * undefined behaviour and intentionally unguarded.
+ */
+TAMGA_API void tamga_signing_key_set_free(struct TamgaSigningKeySet *set);
+
+/**
+ * Adds one key the caller holds itself -- pinned in its own binary, or
+ * configured alongside it -- indexed by the `kid` computed from it.
+ *
+ * This is the path that needs no network, and on a licence-key credential it
+ * is the only one available (see the section note above).
+ *
+ * Strict on purpose, and the opposite of tamga_signing_key_set_add_json(): a
+ * value that is not standard base64 of exactly 32 bytes is
+ * `TAMGA_ERR_INVALID_BASE64` or `TAMGA_ERR_LENGTH_INVALID`, never a silently
+ * skipped entry. A typo in a key compiled into an application has to fail
+ * loudly at startup rather than produce a set that reports every genuine file
+ * in the field as signed by an unknown key.
+ *
+ * Adding the same key twice is permitted and wasteful, not an error; the first
+ * match wins.
+ */
+TAMGA_API enum TamgaErrorCode tamga_signing_key_set_add_public_key(struct TamgaSigningKeySet *set,
+                                                                   const char *ed25519_public_key);
+
+/**
+ * Adds every usable key in a `GET /signing-keys` document -- the account's
+ * whole key history, retired keys included, which is exactly what makes a
+ * rotation survivable.
+ *
+ * Takes the document's bytes rather than a client or a response so that it
+ * works for a caller who cannot make the call: a licence-key credential is
+ * refused by the route, so the JSON commonly arrives out of band, cached on
+ * disk or shipped with the application. Pass tamga_response_json()'s buffer
+ * when you did fetch it yourself.
+ *
+ * Lenient where tamga_signing_key_set_add_public_key() is strict, and for the
+ * opposite reason: this input is the server's whole history, and one unusable
+ * row -- a future non-Ed25519 algorithm, a legacy key that does not decode --
+ * must not strand every file the account has ever signed. Such rows land in
+ * `*out_skipped` instead of failing the call.
+ *
+ * Each key is indexed by the resource `id`, which IS the `kid`. The local
+ * computation still runs as a cross-check, and a row whose served id and
+ * computed id disagree is counted in `*out_mismatched` -- and is still added,
+ * under the SERVED id, because that is what an offline file actually names.
+ * Dropping it would strand precisely the files it is needed for. A non-zero
+ * `*out_mismatched` is worth a log line: it means this SDK and the server no
+ * longer agree about how a `kid` is derived.
+ *
+ * Atomic. On any non-`TAMGA_OK` return the set holds exactly what it held
+ * before and NONE of the three counters is written -- a half-merged key set is
+ * worse than an unmerged one, because it verifies some of the account's files
+ * and reports the rest as forged. All three out-parameters are optional.
+ *
+ * Returns `TAMGA_ERR_INVALID_JSON` when the bytes are not a JSON:API
+ * collection with a `data` array, `TAMGA_ERR_LENGTH_INVALID` for a zero or
+ * over-long length, and `TAMGA_ERR_OUT_OF_MEMORY` for an allocation failure --
+ * which is never reported as a skipped row, because a caller reads "skipped"
+ * as "that key was unusable" rather than as "this machine is out of memory".
+ */
+TAMGA_API enum TamgaErrorCode tamga_signing_key_set_add_json(struct TamgaSigningKeySet *set,
+                                                             const char *json, uintptr_t json_len,
+                                                             uintptr_t *out_added,
+                                                             uintptr_t *out_skipped,
+                                                             uintptr_t *out_mismatched);
+
+/**
+ * The raw 32-byte public key the set holds under `key_id`, if any.
+ *
+ * Returns false when the set holds no key under that id, and writes NOTHING in
+ * that case -- so a caller that ignores the return value reads back whatever
+ * it already had there, never a plausible-looking key it did not earn.
+ * `out_ed25519_pubkey` is optional: pass NULL to test membership alone.
+ *
+ * Matching is exact and case-sensitive; the server emits lowercase hex in the
+ * resource `id` and in the file's claim alike. The id's shape is deliberately
+ * not validated -- it is an opaque server-issued label selecting from keys the
+ * caller already trusts, so imposing a format here would buy nothing and would
+ * refuse a server that ever widened it.
+ *
+ * Safety: `out_ed25519_pubkey` must be NULL or point to at least 32 writable
+ * bytes.
+ */
+TAMGA_API bool tamga_signing_key_set_find(const struct TamgaSigningKeySet *set, const char *key_id,
+                                          uint8_t *out_ed25519_pubkey);
+
+/**
+ * How many usable keys the set holds. Zero for NULL.
+ *
+ * Compare it against the number of resources the response carried
+ * (tamga_response_signing_key_count()) to learn that something was dropped.
+ */
+TAMGA_API uintptr_t tamga_signing_key_set_count(const struct TamgaSigningKeySet *set);
+
+/* ======================================================================
  * Licence file (.lic)
  * ====================================================================== */
 
@@ -427,6 +737,44 @@ TAMGA_API enum TamgaErrorCode tamga_license_file_verify(const char *pem, uintptr
                                                         const uint8_t *ed25519_pubkey,
                                                         const char *license_key,
                                                         struct TamgaLicenseFile **out_handle);
+
+/**
+ * As tamga_license_file_verify(), selecting the public key by the file's own
+ * signed `kid` claim from a set of keys the caller already trusts.
+ *
+ * This is what makes a signing-key rotation survivable. Against one embedded
+ * key, a file checked out before the rotation reports exactly the error a
+ * forgery does; through a key set the two are separate outcomes:
+ *
+ *   - the `kid` is not in the set -> `TAMGA_ERR_UNKNOWN_SIGNING_KEY`. Refetch
+ *     the key set or ship an update, then try again.
+ *   - the `kid` is `TAMGA_UNPUBLISHED_KEY_ID` ->
+ *     `TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED`. Refetching will never help; this
+ *     server published no key at all.
+ *   - the `kid` is in the set but the signature fails ->
+ *     `TAMGA_ERR_SIGNATURE_INVALID`. Refuse the file.
+ *
+ * ⚠️ One ordering difference from tamga_license_file_verify() is worth knowing
+ * before choosing between them. Selecting a key needs the `kid`, and the `kid`
+ * lives inside `enc` -- so `enc` is decoded, and for an encrypted file
+ * decrypted under the licence key, BEFORE the signature is checked. A
+ * malformed or undecryptable file therefore reports that rather than a
+ * signature failure, and this entry point runs the JSON parser over bytes
+ * whose signature has not yet been established. Nothing from those bytes is
+ * trusted: the single value taken from them before verification is the `kid`,
+ * and it can only ever SELECT from keys the caller supplied -- it can never
+ * introduce one, and there is deliberately no "try every key" fallback, which
+ * would accept the same files while destroying the distinction above.
+ *
+ * `keys` is borrowed for the duration of the call and may be shared across
+ * threads as long as nothing mutates it concurrently. Everything else --
+ * format v2 only, the Ed25519-only rule, the 60-second skew tolerance on the
+ * signed `exp`, and the `license_key` requirement for an encrypted file -- is
+ * exactly as tamga_license_file_verify() documents it.
+ */
+TAMGA_API enum TamgaErrorCode tamga_license_file_verify_with_key_set(
+    const char *pem, uintptr_t pem_len, const struct TamgaSigningKeySet *keys,
+    const char *license_key, struct TamgaLicenseFile **out_handle);
 
 /**
  * Exposes the decoded licence resource as an owned JSON C string.
@@ -497,6 +845,39 @@ tamga_machine_file_verify(const char *pem, uintptr_t pem_len, uint32_t scheme,
                           const char *fingerprint, struct TamgaMachineFile **out_handle);
 
 /**
+ * As tamga_machine_file_verify(), selecting the public key by the file's own
+ * signed `kid` claim. **Ed25519-signed machine files only.**
+ *
+ * The restriction is the server's, not this SDK's, and it is worth stating
+ * precisely because the natural assumption is wrong. A machine file's signing
+ * key is chosen by the licence's `scheme`, but its `kid` claim is computed
+ * from `account.ed25519_public_key` WHATEVER the scheme -- so for an RSA- or
+ * ECDSA-signed file the claim names a key that had no part in the signature,
+ * and `GET /signing-keys` publishes Ed25519 keys only in any case. Passing
+ * `TAMGA_SCHEME_RSA_2048_PKCS1_SIGN`, `TAMGA_SCHEME_RSA_2048_PKCS1_PSS_SIGN`
+ * or `TAMGA_SCHEME_ECDSA_P256_SIGN` here yields
+ * `TAMGA_ERR_KEY_ID_NOT_APPLICABLE`; verify those with
+ * tamga_machine_file_verify() and the account's own key for that algorithm.
+ * Nothing is lost by it -- only the Ed25519 key is ever rotated, so no other
+ * scheme has a rotation to survive.
+ *
+ * `TAMGA_SCHEME_NONE`, `TAMGA_SCHEME_RSA_2048_JWT_RS256` and any value outside
+ * the declared range stay `TAMGA_ERR_UNSUPPORTED_SCHEME`, exactly as in
+ * tamga_machine_file_verify() -- a scheme this library refuses outright is
+ * refused the same way on both paths, rather than being reported as a `kid`
+ * problem.
+ *
+ * The same key-selection outcomes and the same pre-verification decode
+ * ordering apply as in tamga_license_file_verify_with_key_set(); see there.
+ * `license_key` and `fingerprint` are needed only for an encrypted file, and
+ * on this path they are needed BEFORE the signature is checked rather than
+ * after.
+ */
+TAMGA_API enum TamgaErrorCode tamga_machine_file_verify_with_key_set(
+    const char *pem, uintptr_t pem_len, uint32_t scheme, const struct TamgaSigningKeySet *keys,
+    const char *license_key, const char *fingerprint, struct TamgaMachineFile **out_handle);
+
+/**
  * Exposes the decoded machine resource as an owned JSON C string. Same
  * ownership contract as tamga_license_file_get_json().
  */
@@ -558,6 +939,112 @@ TAMGA_API enum TamgaErrorCode
 tamga_offline_proof_generate(const char *rsa_privkey, const char *account_id,
                              const char *machine_id, const char *fingerprint,
                              const char *dataset_json, char **out_proof_str);
+
+/* ======================================================================
+ * Fingerprint canonicalisation
+ * ====================================================================== */
+
+/**
+ * The length of a fingerprint from tamga_fingerprint_compute(): 64 lowercase
+ * hex characters, being SHA-256 of the canonical string.
+ */
+#define TAMGA_FINGERPRINT_LENGTH 64
+/** Room for a fingerprint plus its NUL. */
+#define TAMGA_FINGERPRINT_SIZE (TAMGA_FINGERPRINT_LENGTH + 1)
+
+/**
+ * Turns caller-chosen labelled components into one stable fingerprint.
+ *
+ *     fingerprint = lowercase_hex( SHA-256( UTF-8( canonical ) ) )
+ *     canonical   = "tamga-fingerprint-v1" <US>
+ *                   join(<US>, sort_bytewise([label "=" trimmed_value]))
+ *
+ * where `<US>` is U+001F, the ASCII unit separator, as the single byte `0x1f`.
+ *
+ * `labels` and `values` are parallel arrays of `count` NUL-terminated strings.
+ * On `TAMGA_OK`, `*out_fingerprint` receives an owned string of
+ * `TAMGA_FINGERPRINT_LENGTH` characters, released with tamga_string_free().
+ * Nothing is written on any other outcome.
+ *
+ * **The defect this exists to fix, measured.** Every SDK in this family sent
+ * the caller's fingerprint string byte for byte, and the server stores
+ * `fingerprint TEXT NOT NULL` — no length limit, no CHECK, no normalisation —
+ * unique per `(license_id, fingerprint)`. So `"ABC-123"`, `"abc-123"` and
+ * `" ABC-123 "` were three machines on three seats.
+ *
+ * ⚠️ **This deliberately does NOT read hardware identifiers**, and will not
+ * grow the ability to. What identifies a machine is a product decision — a
+ * cloned VM template shares them, a container has none, a replaced motherboard
+ * changes them — and no default is right for both a desktop application and a
+ * Kubernetes sidecar. You choose the components; this makes your choice
+ * stable.
+ *
+ * The rules, all of them ASCII-only:
+ *
+ * - **Order does not matter.** Components are sorted bytewise before hashing,
+ *   so listing them differently on the next run is the same machine.
+ * - **Values are trimmed** of leading and trailing ASCII whitespace (space,
+ *   tab, CR, LF, VT, FF) *before* validation — the stray newline off a
+ *   command's output is the footgun this absorbs. A value may be empty, and an
+ *   empty value is not the same as an absent component: the label still
+ *   contributes.
+ * - **Case is preserved.** Deliberately: lowercasing a base64 or hex
+ *   identifier corrupts it.
+ * - **`=` is legal in a value and illegal in a label**, so the split is
+ *   unambiguously at the first `=`.
+ * - **Labels are non-empty ASCII printable** (`0x21`–`0x7E`) excluding `=`.
+ * - **Rejections are never repairs.** A control character in a value, a
+ *   repeated label, or no components at all is
+ *   `TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT`. Stripping or deduplicating
+ *   would map two different inputs onto one seat.
+ *
+ * ⚠️ **Values are NOT Unicode-normalised, and that is a constraint rather than
+ * an oversight.** NFC would mean ICU or hand-rolled Unicode tables inside a
+ * library whose defining property is having no dependencies, and a rule the
+ * eight SDKs cannot implement identically is worse than no rule: it would
+ * yield two fingerprints for one machine depending on which SDK the
+ * application was written in, silently consuming two seats. Non-ASCII passes
+ * through as its UTF-8 bytes. If your values can arrive in more than one
+ * normal form, normalise them before calling.
+ *
+ * ⚠️ **Changing the components changes the fingerprint**, and the server has
+ * no way to know the new one is the same machine — it is a new row against the
+ * licence's seat limit. Choose the set once, at the point you ship, and treat
+ * it as part of your on-disk format.
+ *
+ * Example:
+ *
+ *     const char *labels[] = {"machine-id", "disk"};
+ *     const char *values[] = {"abc123", "SN-9"};
+ *     char *fp = NULL;
+ *     if (tamga_fingerprint_compute(labels, values, 2, &fp) == TAMGA_OK) {
+ *         tamga_client_activate_machine(client, license_id, fp, ...);
+ *         tamga_string_free(fp);
+ *     }
+ */
+TAMGA_API TamgaErrorCode tamga_fingerprint_compute(const char *const *labels,
+                                                   const char *const *values, uintptr_t count,
+                                                   char **out_fingerprint);
+
+/**
+ * The canonical string tamga_fingerprint_compute() hashes, for diagnostics.
+ *
+ * Same arguments, same rules, same rejections. On `TAMGA_OK`,
+ * `*out_canonical` receives an owned NUL-terminated string released with
+ * tamga_string_free(); nothing is written on any other outcome.
+ *
+ * This exists because when two SDKs disagree about a machine's fingerprint,
+ * comparing the 64-character digests says only *that* they disagree. Comparing
+ * the canonical strings says which component differs.
+ *
+ * ⚠️ Not printable. It contains `0x1f` separator bytes, which most terminals
+ * render as nothing at all — so a canonical string pasted into a bug report
+ * looks like the components were concatenated without any separator. Escape it
+ * before displaying it.
+ */
+TAMGA_API TamgaErrorCode tamga_fingerprint_canonical(const char *const *labels,
+                                                     const char *const *values, uintptr_t count,
+                                                     char **out_canonical);
 
 /* ======================================================================
  * HTTP client
@@ -854,6 +1341,54 @@ TAMGA_API bool tamga_response_page(const TamgaResponse *response, int64_t *out_n
  */
 TAMGA_API bool tamga_response_heartbeat_window_secs(const TamgaResponse *response,
                                                     int64_t *out_seconds);
+
+/**
+ * How many `signing-keys` resources a tamga_client_list_signing_keys()
+ * response carries. Zero for anything else, including an error document.
+ *
+ * ⚠️ Zero is the ORDINARY state of a healthy account, not a fault.
+ * `account_signing_keys` is written only by the rotation handler, which
+ * backfills the current key on its way through, so an account that has never
+ * rotated has no rows and the route answers `{"data": []}`. Read zero as
+ * "nothing has rotated yet" and fall back to the key the application already
+ * pins -- never as "this account has no signing key".
+ */
+TAMGA_API uintptr_t tamga_response_signing_key_count(const TamgaResponse *response);
+
+/**
+ * Reads one `signing-keys` resource out of a tamga_client_list_signing_keys()
+ * response.
+ *
+ * Every out-parameter is optional; pass NULL for the ones you do not want. The
+ * strings are BORROWED, like every other response accessor here: valid until
+ * the response is freed.
+ *
+ * ⚠️ `*out_key_id` is the resource `id`, and on this one route the id is NOT a
+ * UUID -- it IS the `kid`, the same sixteen-character lowercase hex string an
+ * offline file's claim carries. That is what makes matching a file to its key
+ * a lookup rather than a computation.
+ *
+ * `*out_public_key` is standard base64 of the raw 32 bytes, read from the wire
+ * name `publicKey` -- the ONE camelCase field on an otherwise snake_case
+ * resource. `algorithm`, `status` and `created` are bare, and applying
+ * camelCase to the whole resource is as wrong as applying snake_case to all of
+ * it.
+ *
+ * Returns false when `index` is out of range or the resource is unreadable,
+ * and writes NOTHING in that case -- every field is read before any is stored,
+ * so a caller that ignores the return value cannot act on a half-filled set.
+ *
+ * `*out_retired` is the exception that proves the rule: it receives NULL, with
+ * a TRUE return, for a key that is still active. The server omits the field
+ * entirely rather than sending null while a key is current, so its absence is
+ * the documented "not retired" state and not a read failure. `status` carries
+ * the same fact as a string (`"active"` / `"retired"`), and is left an open
+ * string rather than an enum so a future value decodes instead of failing.
+ */
+TAMGA_API bool tamga_response_signing_key_at(const TamgaResponse *response, uintptr_t index,
+                                             const char **out_key_id, const char **out_algorithm,
+                                             const char **out_public_key, const char **out_status,
+                                             const char **out_created, const char **out_retired);
 
 /**
  * The validation outcome code (`VALID`, `EXPIRED`, `TOO_MANY_MACHINES`, ...).
@@ -1567,6 +2102,40 @@ TAMGA_API TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const
                                                       const char *code, uint32_t limit,
                                                       bool *out_has);
 
+/* --- signing keys -------------------------------------------------------- */
+
+/**
+ * `GET /signing-keys` -- every Ed25519 signing key the account has held,
+ * retired ones included.
+ *
+ * Retired keys are the point. A `.lic` or machine file checked out before a
+ * rotation names the key that signed it, and without that key it fails
+ * verification with the same error a forged file produces. Feed the response
+ * body to tamga_signing_key_set_add_json() and verify through
+ * tamga_license_file_verify_with_key_set().
+ *
+ * One call, cacheable for the life of the process: the set only changes when
+ * the account rotates, and a rotation does not invalidate what is already
+ * cached -- it adds to it.
+ *
+ * ⚠️ Closed to a licence key, and unlike `GET /policies/{id}` there is no
+ * second route to the same resource. This one needs the `account.read`
+ * permission, which `Role::LicenseToken` does not carry, so a
+ * `TAMGA_AUTH_LICENSE` or `TAMGA_AUTH_BASIC_LICENSE` credential gets `403`
+ * here whatever the policy says. An embedded client therefore cannot fetch its
+ * own account's key set: obtain the document with a token-authenticated caller
+ * and ship or cache it, or pin the keys with
+ * tamga_signing_key_set_add_public_key().
+ *
+ * ⚠️ `{"data": []}` is the ordinary answer for an account that has never
+ * rotated -- see tamga_response_signing_key_count().
+ *
+ * The listing is not paginated and takes no cursor: an account's key history
+ * is a handful of rows.
+ */
+TAMGA_API TamgaErrorCode tamga_client_list_signing_keys(TamgaClient *client,
+                                                        TamgaResponse **out_response);
+
 /* ======================================================================
  * Releases and diagnostics
  * ====================================================================== */
@@ -1618,6 +2187,210 @@ TAMGA_API TamgaErrorCode tamga_client_check_upgrade(TamgaClient *client, const c
                                                     const char *version, const char *channel,
                                                     const char *constraint,
                                                     TamgaResponse **out_response);
+
+/* ======================================================================
+ * Artifacts
+ * ====================================================================== */
+
+/**
+ * `GET /releases/{release_id}/artifacts` — the builds attached to one release.
+ *
+ * Keyset-paginated like every listing in this SDK except `GET /machines`:
+ * `limit` (0 for the server's default of 25, clamped server-side to [1, 100])
+ * and `after`, which is the id of the last resource on the previous page.
+ * There is no `meta` object, so tamga_response_page() does not apply — derive
+ * the next cursor with tamga_response_next_cursor().
+ *
+ * Read the rows with tamga_response_artifact_count() and
+ * tamga_response_artifact_at().
+ *
+ * ⚠️ Read and download are the whole artifact surface this SDK offers, and
+ * that is a permission fact rather than a decision: `Role::LicenseToken`
+ * carries `artifact.read` and `artifact.download` and does NOT carry
+ * `artifact.create`, `artifact.update` or `artifact.delete`. Publishing a
+ * build needs an admin or product token and a different tool.
+ */
+TAMGA_API TamgaErrorCode tamga_client_list_release_artifacts(TamgaClient *client,
+                                                             const char *release_id, uint32_t limit,
+                                                             const char *after,
+                                                             TamgaResponse **out_response);
+
+/**
+ * `GET /artifacts/{artifact_id}` — one artifact's metadata.
+ *
+ * Answers the same resource a listing row carries, so the same accessors read
+ * it: tamga_response_artifact_at() with `index` 0, and its integrity and
+ * filesize companions.
+ *
+ * ⚠️ This route does NOT carry the bytes and does NOT carry a `redirectUrl`
+ * — the field is `skip_serializing_if = "Option::is_none"` server-side and is
+ * populated by the download action alone. Fetching the file is
+ * tamga_client_get_artifact_download_url() followed by a request the caller
+ * makes itself.
+ */
+TAMGA_API TamgaErrorCode tamga_client_get_artifact(TamgaClient *client, const char *artifact_id,
+                                                   TamgaResponse **out_response);
+
+/**
+ * `GET /artifacts/{artifact_id}/actions/download` — a short-lived presigned
+ * URL for the artifact's bytes.
+ *
+ * Read the URL out of the response with tamga_response_artifact_download_url()
+ * and fetch it yourself.
+ *
+ * ⚠️ Fetch it with NO credentials attached. The URL points at the object store,
+ * which is a different origin under different ownership; it carries its own
+ * signature and needs nothing else, so an `Authorization` header on that
+ * request only discloses the licence key or token to a host that has no
+ * business holding one.
+ *
+ * ⚠️ This is also why the SDK asks for `redirect=false` and offers no way to
+ * ask otherwise. The route's default answer is a `303 See Other` to that same
+ * URL, and a client that follows a redirect while still attaching the original
+ * request's headers performs exactly the disclosure above without the caller
+ * ever seeing it.
+ *
+ * Measured against libcurl 8.7.1 with following forced on, per credential: a
+ * SAME-ORIGIN redirect carried `Authorization` intact for
+ * `TAMGA_AUTH_LICENSE`, `TAMGA_AUTH_BEARER` and the `TAMGA_AUTH_BASIC_*`
+ * forms, while a CROSS-ORIGIN one arrived with it stripped;
+ * `TAMGA_AUTH_QUERY_TOKEN` was carried by neither, because the `Location`
+ * replaces the URL and the `?token=` goes with it.
+ *
+ * ⚠️ And the `Tamga-OTP` header — a one-time password — was forwarded on BOTH
+ * hops, including to a different host, on the same build that stripped
+ * `Authorization` there. So the most exposed credential is the one NOT called
+ * `Authorization`, and the hazard is not the same for any two of them — which
+ * is why each was measured rather than reasoned about once. Do not read a rule
+ * into the pattern: across this SDK family five runtimes produced five
+ * distinct behaviours, and the only claim that survived all of them is that
+ * you cannot know what a redirect forwards without watching it.
+ * Both built-in transports refuse to follow at all (`CURLOPT_FOLLOWLOCATION`
+ * is left at 0; WinHTTP follows by default and is set to
+ * `WINHTTP_OPTION_REDIRECT_POLICY_NEVER`), but a transport supplied through
+ * tamga_client_set_transport() is the caller's own stack and most HTTP
+ * libraries follow out of the box, and sibling SDKs measured three different
+ * behaviours across three runtimes. Requesting the body form removes the
+ * question rather than relying on any of those answers.
+ *
+ * A second reason holds whatever a transport does about headers: following the
+ * redirect streams the artifact's BYTES into the response buffer, which is
+ * capped, before anything can reject them — and a real artifact routinely
+ * exceeds any sane cap.
+ *
+ * `ttl_seconds` is how long the URL stays valid. Pass 0 for the server's
+ * default (five minutes); anything else must be within
+ * [`TAMGA_PRESIGN_TTL_MIN_SECONDS`, `TAMGA_PRESIGN_TTL_MAX_SECONDS`] and is
+ * refused locally with `TAMGA_ERR_TTL_INVALID` otherwise. Ask for roughly the
+ * time the transfer needs: the URL is a bearer credential for those bytes for
+ * as long as it lives.
+ *
+ * ⚠️ A `403` here is not necessarily a misconfigured credential. The handler
+ * runs the owning release through `releases::service::enforce_release_access`
+ * — distribution strategy, suspension, expiry, entitlement — on top of the
+ * `artifact.download` permission, so a caller that holds the permission is
+ * still refused the binary of a release its licence is not entitled to. That
+ * gate is on the download action ALONE: the listing and the metadata read
+ * above apply the permission only, so an artifact whose metadata reads
+ * perfectly well can still refuse to hand over its bytes, and the two answers
+ * disagreeing is the design rather than a fault.
+ *
+ * `404` means the artifact id is unknown to this account, or the release that
+ * owns it is. `422 STORAGE_UNAVAILABLE` means the deployment has no object
+ * storage configured, which is a server-side provisioning gap and will not
+ * change on retry.
+ */
+TAMGA_API TamgaErrorCode tamga_client_get_artifact_download_url(TamgaClient *client,
+                                                                const char *artifact_id,
+                                                                uint32_t ttl_seconds,
+                                                                TamgaResponse **out_response);
+
+/**
+ * How many artifact resources a response carries.
+ *
+ * A listing reports its rows; a single-artifact response — from
+ * tamga_client_get_artifact() or tamga_client_get_artifact_download_url() —
+ * reports 1, so one loop reads either. An error document reports 0.
+ *
+ * ⚠️ For a listing this is the array's LENGTH, not the number of rows that
+ * turn out to be readable, so `index` keeps addressing the row it names and
+ * one malformed row cannot truncate the page. Always check the return value of
+ * tamga_response_artifact_at() rather than assuming every index below the
+ * count yields a row.
+ */
+TAMGA_API uintptr_t tamga_response_artifact_count(const TamgaResponse *response);
+
+/**
+ * Reads the fields that identify and select one artifact.
+ *
+ * Every out-parameter is optional; pass NULL for the ones you do not want. The
+ * strings are BORROWED and valid until the response is freed.
+ *
+ * `*out_id`, `*out_filename` and `*out_status` are always present on a
+ * readable artifact. `*out_filetype`, `*out_platform` and `*out_arch` are
+ * `Option<String>` server-side with no `skip_serializing_if`, so they arrive as
+ * JSON null and are reported as NULL with a TRUE return — a build that targets
+ * no particular platform is ordinary, not unreadable.
+ *
+ * Returns false when `index` is out of range, the response is not an artifact
+ * document, or one of the three required fields is missing — and writes
+ * NOTHING in that case, so a caller that ignores the return value cannot act
+ * on a half-filled set.
+ */
+TAMGA_API bool tamga_response_artifact_at(const TamgaResponse *response, uintptr_t index,
+                                          const char **out_id, const char **out_filename,
+                                          const char **out_filetype, const char **out_platform,
+                                          const char **out_arch, const char **out_status);
+
+/**
+ * Reads the fields for checking bytes you have already fetched, plus the
+ * resource's timestamps.
+ *
+ * Same conventions as tamga_response_artifact_at(): optional out-parameters,
+ * borrowed strings, and nothing written unless the whole set can be.
+ *
+ * `*out_checksum` and `*out_signature` are optional server-side and are NULL
+ * when the artifact carries neither — which an artifact whose bytes were never
+ * uploaded will not.
+ *
+ * ⚠️ The timestamps are on the wire as `created` and `updated`, NOT
+ * `createdAt`/`updatedAt`. `ArtifactAttributes` is `rename_all = "camelCase"`
+ * — that is what makes `redirectUrl` camelCase — but carries explicit
+ * `#[serde(rename = ...)]` attributes overriding it for exactly these two
+ * fields. Applying the container rule to the whole resource is the natural
+ * assumption and it silently reads nothing.
+ */
+TAMGA_API bool tamga_response_artifact_integrity_at(const TamgaResponse *response, uintptr_t index,
+                                                    const char **out_checksum,
+                                                    const char **out_signature,
+                                                    const char **out_created,
+                                                    const char **out_updated);
+
+/**
+ * The artifact's size in bytes, when the server has recorded one.
+ *
+ * Returns false — writing nothing — when it has not. `filesize` is
+ * `Option<i64>`, and an artifact row created before its bytes were uploaded
+ * carries null. That is "not recorded yet", which is why it is a false return
+ * rather than a zero: a caller comparing a downloaded length against a written
+ * zero would reject every real file.
+ */
+TAMGA_API bool tamga_response_artifact_filesize_at(const TamgaResponse *response, uintptr_t index,
+                                                   int64_t *out_bytes);
+
+/**
+ * The presigned URL from a tamga_client_get_artifact_download_url() response.
+ * Borrowed, valid until the response is freed.
+ *
+ * ⚠️ Fetch it with no credentials — see the warning on
+ * tamga_client_get_artifact_download_url().
+ *
+ * NULL means the response is not a download: the wire field `redirectUrl` is
+ * `skip_serializing_if = "Option::is_none"`, so a listing and a plain metadata
+ * read omit it entirely. That is a different thing from a download that
+ * failed, which is reported through the return code of the call itself.
+ */
+TAMGA_API const char *tamga_response_artifact_download_url(const TamgaResponse *response);
 
 /**
  * `GET /v1/health` -- the server's liveness probe.

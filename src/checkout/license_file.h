@@ -54,4 +54,19 @@ TAMGA_NODISCARD TamgaErrorCode tamga_license_file_verify_at(const char *pem, siz
                                                             TamgaJson **out_resource,
                                                             TamgaFileClaims *out_claims);
 
+/**
+ * As tamga_license_file_verify_at(), choosing the public key by the file's own
+ * signed `kid` claim from a set the caller already trusts.
+ *
+ * ⚠️ The ORDER of the two steps differs, and that is the whole of the
+ * difference. Selecting a key needs the `kid`, and the `kid` lives inside
+ * `enc`, so `enc` is decoded -- and, when encrypted, decrypted -- before the
+ * signature is checked. Nothing from those bytes is trusted: the only value
+ * taken from them is the `kid`, and it can select from `keys` but never add to
+ * it. See checkout/key_set.h for why that is the rule that makes this sound.
+ */
+TAMGA_NODISCARD TamgaErrorCode tamga_license_file_verify_at_with_key_set(
+    const char *pem, size_t pem_len, const TamgaSigningKeySet *keys, const char *license_key,
+    int64_t now_unix, TamgaJson **out_resource, TamgaFileClaims *out_claims);
+
 #endif /* TAMGA_CHECKOUT_LICENSE_FILE_H */

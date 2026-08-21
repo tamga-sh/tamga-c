@@ -20,6 +20,7 @@ set(TAMGA_SOURCES
     src/util/json.c
     src/util/json_parse.c
     src/util/json_write.c
+    src/util/fingerprint.c
 
     # --- crypto: hashes, MAC, KDF ------------------------------------
     src/crypto/ct.c
@@ -49,6 +50,7 @@ set(TAMGA_SOURCES
     src/checkout/pem.c
     src/checkout/cert.c
     src/checkout/claims.c
+    src/checkout/key_set.c
     src/checkout/license_file.c
     src/checkout/machine_file.c
     src/proof.c

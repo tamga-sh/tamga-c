@@ -18,6 +18,8 @@
  */
 #include "tamga_test.h"
 
+#include "checkout/key_set.h"
+#include "checkout/license_file.h"
 #include "checkout/machine_file.h"
 #include "http/client.h"
 #include "support/failing_alloc.h"
@@ -85,6 +87,98 @@ static TamgaErrorCode verify_machine_file(void) {
         "TAMGA-FIXTURE-LICENSE-KEY-0001", "fixture-fingerprint-a1b2c3",
         MACHINE_FIXTURE_BEFORE_ANY_EXPIRY, &resource, NULL);
     tamga_json_free(resource);
+    return status;
+}
+
+/*
+ * The key-set path, which is the one that can turn an allocation failure into
+ * a VERDICT rather than into an error.
+ *
+ * A failed strdup of a key id would leave the set quietly short of the key a
+ * genuine file names, and the caller would then read the resulting
+ * TAMGA_ERR_UNKNOWN_SIGNING_KEY as "this file belongs to another licence" --
+ * a wrong and unactionable answer to being out of memory, and the exact shape
+ * of the defect this file found in the fingerprint lookup.
+ */
+static TamgaErrorCode build_key_set_from_json(void) {
+    static const char DOCUMENT[] =
+        "{\"data\":["
+        "{\"type\":\"signing-keys\",\"id\":\"aaaaaaaaaaaaaaaa\",\"attributes\":{"
+        "\"algorithm\":\"ed25519\","
+        "\"publicKey\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\","
+        "\"status\":\"retired\",\"created\":\"2026-01-01T00:00:00Z\"}},"
+        "{\"type\":\"signing-keys\",\"id\":\"bbbbbbbbbbbbbbbb\",\"attributes\":{"
+        "\"algorithm\":\"ed25519\","
+        "\"publicKey\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\","
+        "\"status\":\"active\",\"created\":\"2026-06-01T00:00:00Z\"}}"
+        "]}";
+    TamgaSigningKeySet *set = NULL;
+    TamgaErrorCode status = tamga_signing_key_set_new(&set);
+    uintptr_t added = 0u;
+
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    status = tamga_signing_key_set_add_json(set, DOCUMENT, (uintptr_t)strlen(DOCUMENT), &added,
+                                            NULL, NULL);
+    if (status == TAMGA_OK) {
+        /* A reported success has to be a whole one: a partially merged set
+         * would verify some of the account's files and report the rest as
+         * forged. */
+        if (added != 2u || tamga_signing_key_set_count(set) != 2u ||
+            !tamga_signing_key_set_find(set, "aaaaaaaaaaaaaaaa", NULL) ||
+            !tamga_signing_key_set_find(set, "bbbbbbbbbbbbbbbb", NULL)) {
+            status = TAMGA_ERR_UNKNOWN;
+        }
+    }
+    tamga_signing_key_set_free(set);
+    return status;
+}
+
+static TamgaErrorCode verify_licence_file_with_key_set(void) {
+    TamgaSigningKeySet *set = NULL;
+    TamgaJson *resource = NULL;
+    char *key_b64;
+    char document[512];
+    TamgaErrorCode status;
+    int written;
+
+    key_b64 = tamga_base64_encode_alloc(g_ed25519_pubkey, 32u);
+    if (key_b64 == NULL) {
+        return TAMGA_ERR_OUT_OF_MEMORY;
+    }
+    written = snprintf(document, sizeof(document),
+                       "{\"data\":[{\"type\":\"signing-keys\",\"id\":\"key-1\","
+                       "\"attributes\":{\"algorithm\":\"ed25519\",\"publicKey\":\"%s\","
+                       "\"status\":\"active\",\"created\":\"2026-01-01T00:00:00Z\"}}]}",
+                       key_b64);
+    tamga_free(key_b64);
+    if (written <= 0 || (size_t)written >= sizeof(document)) {
+        return TAMGA_ERR_UNKNOWN;
+    }
+
+    status = tamga_signing_key_set_new(&set);
+    if (status == TAMGA_OK) {
+        status =
+            tamga_signing_key_set_add_json(set, document, (uintptr_t)written, NULL, NULL, NULL);
+    }
+    if (status == TAMGA_OK) {
+        status = tamga_license_file_verify_at_with_key_set(g_pem, g_pem_len, set, NULL, 0,
+                                                           &resource, NULL);
+        /*
+         * The verdict must never be manufactured by an allocation failure. An
+         * UNKNOWN_SIGNING_KEY here would mean a failed copy had been reported
+         * as "this file was signed by a key you do not hold" -- which a caller
+         * acts on by accusing a customer.
+         */
+        if (status == TAMGA_ERR_UNKNOWN_SIGNING_KEY ||
+            status == TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED ||
+            status == TAMGA_ERR_SIGNATURE_INVALID) {
+            status = TAMGA_ERR_UNKNOWN;
+        }
+    }
+    tamga_json_free(resource);
+    tamga_signing_key_set_free(set);
     return status;
 }
 
@@ -227,6 +321,70 @@ TT_TEST(offline_proof_verification_survives_every_allocation_failure) {
     TT_ASSERT(g_rsa_pubkey_len != (size_t)-1);
 
     walk_allocations("tamga_offline_proof_verify", verify_offline_proof, TAMGA_OK);
+}
+
+/*
+ * The fingerprint helper, walked because a failed allocation here must never
+ * become a verdict about the caller's components.
+ *
+ * A strdup that failed and was reported as TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT
+ * would send the caller to inspect a component that is perfectly valid, and no
+ * amount of inspecting it would help. It also allocates per component and then
+ * again for the joined string, so a failure part-way through has a partially
+ * built array to release -- the shape that leaks.
+ */
+static TamgaErrorCode compute_fingerprint(void) {
+    static const char *const LABELS[] = {"machine-id", "disk", "board", "mac"};
+    static const char *const VALUES[] = {"abc123", "SN-9", "B-77", "00:11:22"};
+    char *fingerprint = NULL;
+    TamgaErrorCode status = tamga_fingerprint_compute(LABELS, VALUES, 4u, &fingerprint);
+
+    /* A TAMGA_OK that wrote nothing would mean the out-parameter contract had
+     * been broken by an allocation failure rather than reported. */
+    if (status == TAMGA_OK && fingerprint == NULL) {
+        return TAMGA_ERR_UNKNOWN;
+    }
+    tamga_string_free(fingerprint);
+    return status;
+}
+
+/*
+ * The rejection path walked separately, because it returns before the join and
+ * therefore has a different set of allocations outstanding when it does. A
+ * rejection must stay a rejection under injection right up until the
+ * allocation that fails is the one that would have built the offending
+ * component -- so either code is acceptable here, and nothing may leak.
+ */
+static TamgaErrorCode reject_duplicate_label(void) {
+    static const char *const LABELS[] = {"id", "id"};
+    static const char *const VALUES[] = {"a", "b"};
+    char *fingerprint = NULL;
+    TamgaErrorCode status = tamga_fingerprint_compute(LABELS, VALUES, 2u, &fingerprint);
+
+    if (fingerprint != NULL) {
+        tamga_string_free(fingerprint);
+        return TAMGA_ERR_UNKNOWN;
+    }
+    return status;
+}
+
+TT_TEST(fingerprint_canonicalisation_survives_every_allocation_failure) {
+    walk_allocations("tamga_fingerprint_compute", compute_fingerprint, TAMGA_OK);
+    walk_allocations("tamga_fingerprint_compute (duplicate label)", reject_duplicate_label,
+                     TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT);
+}
+
+TT_TEST(key_set_construction_survives_every_allocation_failure) {
+    walk_allocations("tamga_signing_key_set_add_json", build_key_set_from_json, TAMGA_OK);
+}
+
+TT_TEST(key_set_verification_survives_every_allocation_failure) {
+    g_pem_len = tt_read_fixture("offline/license_plain.lic", (unsigned char *)g_pem, sizeof(g_pem));
+    TT_ASSERT(g_pem_len != (size_t)-1);
+    TT_ASSERT_EQ_SIZE(tt_read_fixture("offline/ed25519_pubkey.bin", g_ed25519_pubkey, 32u), 32u);
+
+    walk_allocations("tamga_license_file_verify_at_with_key_set", verify_licence_file_with_key_set,
+                     TAMGA_OK);
 }
 
 /* --- the HTTP request builders --------------------------------------------
@@ -417,6 +575,8 @@ static TamgaErrorCode activate_machine_limit_and_free(void) {
 #define ALLOC_MACHINE_ID "01926b3e-0000-7000-8000-000000000002"
 #define ALLOC_PRODUCT_ID "01926b3e-0000-7000-8000-000000000006"
 #define ALLOC_PROCESS_ID "01926b3e-0000-7000-8000-000000000003"
+#define ALLOC_ARTIFACT_ID "01926b3e-0000-7000-8000-000000000007"
+#define ALLOC_RELEASE_ID "01926b3e-0000-7000-8000-000000000008"
 
 /* One page holding the machine the lookups below are asked for. */
 #define ALLOC_MACHINE_PAGE                                                                         \
@@ -429,6 +589,13 @@ static TamgaErrorCode activate_machine_limit_and_free(void) {
     "\"title\":\"Conflict\",\"detail\":\"already activated\"}]}"
 
 #define ALLOC_VALIDATION "{\"data\":{},\"meta\":{\"valid\":true,\"code\":\"VALID\"}}"
+
+#define ALLOC_ARTIFACT                                                                             \
+    "{\"data\":{\"type\":\"artifacts\",\"id\":\"" ALLOC_ARTIFACT_ID "\",\"attributes\":{"          \
+    "\"filename\":\"app.dmg\",\"filetype\":\"dmg\",\"filesize\":10,\"checksum\":null,"             \
+    "\"platform\":\"macos\",\"arch\":\"arm64\",\"signature\":null,\"status\":\"UPLOADED\","        \
+    "\"metadata\":{},\"redirectUrl\":\"https://storage.example.com/o\","                           \
+    "\"created\":\"2026-08-01T10:00:00Z\",\"updated\":\"2026-08-01T10:00:00Z\"}}}"
 
 static TamgaErrorCode update_machine(void) {
     TamgaResponse *response = NULL;
@@ -454,6 +621,30 @@ static TamgaErrorCode check_upgrade(void) {
     TamgaErrorCode status =
         tamga_client_check_upgrade(g_client, ALLOC_PRODUCT_ID, "darwin-aarch64", "dmg", "1.2.0",
                                    "beta", ">=1.2, <2", &response);
+    status = response_must_be_usable(status, response);
+    tamga_response_free(response);
+    return status;
+}
+
+/*
+ * The download builder allocates twice -- a path and a query -- and the second
+ * failing after the first succeeded is the shape that leaks. A reply that is
+ * reported as anything other than OUT_OF_MEMORY would mean an allocation
+ * failure had been turned into a verdict about the artifact.
+ */
+static TamgaErrorCode get_artifact_download_url(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status =
+        tamga_client_get_artifact_download_url(g_client, ALLOC_ARTIFACT_ID, 3600u, &response);
+    status = response_must_be_usable(status, response);
+    tamga_response_free(response);
+    return status;
+}
+
+static TamgaErrorCode list_release_artifacts(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status = tamga_client_list_release_artifacts(g_client, ALLOC_RELEASE_ID, 10u,
+                                                                ALLOC_ARTIFACT_ID, &response);
     status = response_must_be_usable(status, response);
     tamga_response_free(response);
     return status;
@@ -538,6 +729,20 @@ TT_TEST(the_added_endpoints_survive_every_allocation_failure) {
          check_upgrade,
          200,
          "{\"data\":{\"id\":\"" ALLOC_MACHINE_ID "\"}}",
+         TAMGA_OK,
+         {NULL, NULL, NULL},
+         {0, 0, 0}},
+        {"tamga_client_get_artifact_download_url",
+         get_artifact_download_url,
+         200,
+         ALLOC_ARTIFACT,
+         TAMGA_OK,
+         {NULL, NULL, NULL},
+         {0, 0, 0}},
+        {"tamga_client_list_release_artifacts",
+         list_release_artifacts,
+         200,
+         "{\"data\":[]}",
          TAMGA_OK,
          {NULL, NULL, NULL},
          {0, 0, 0}},
@@ -722,6 +927,9 @@ int main(void) {
     TT_RUN(licence_file_verification_survives_every_allocation_failure);
     TT_RUN(machine_file_verification_survives_every_allocation_failure);
     TT_RUN(offline_proof_verification_survives_every_allocation_failure);
+    TT_RUN(key_set_construction_survives_every_allocation_failure);
+    TT_RUN(key_set_verification_survives_every_allocation_failure);
+    TT_RUN(fingerprint_canonicalisation_survives_every_allocation_failure);
     TT_RUN(request_builders_survive_every_allocation_failure);
     TT_RUN(the_added_endpoints_survive_every_allocation_failure);
     return TT_SUMMARY();
