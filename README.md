@@ -50,7 +50,7 @@ exposes is here.
 include(FetchContent)
 FetchContent_Declare(tamga
     GIT_REPOSITORY https://github.com/tamga-sh/tamga-c
-    GIT_TAG        v1.3.2)
+    GIT_TAG        v1.3.3)
 FetchContent_MakeAvailable(tamga)
 
 target_link_libraries(your_app PRIVATE tamga::tamga)
