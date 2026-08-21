@@ -3,7 +3,11 @@
 # that was auto-fixable locally, then opens a pull request for it -- or pushes
 # to the one it already has.
 #
-#   sh scripts/mr.sh [target-branch]      (default: main)
+#   sh Scripts/mr.sh [target-branch]
+#
+# Target defaults to the pull request's own base when one is open, and to
+# main otherwise. Note the capital S: it is the only capitalised top-level
+# directory here, and a lowercase scripts/ resolves on macOS but not Linux.
 #
 # There is no package manager in this repository, so this is the entry point --
 # see README.md. Never call `gh pr create` or `git push` directly: the push is
@@ -182,7 +186,14 @@ if [ -n "$MR_TITLE" ]; then
     fi
     SUBJECT=$MR_TITLE
 fi
-echo "  title: $SUBJECT"
+if [ -n "$PR_NUMBER" ]; then
+    # Printed, not applied: on the update path this is only the yardstick the
+    # drift check below measures the existing title against.
+    echo "  branch contains: $SUBJECT"
+    echo "  title (unchanged): $PR_TITLE"
+else
+    echo "  title: $SUBJECT"
+fi
 
 # On the update path the title is already set and is not ours to rewrite -- it
 # may well have been written by hand, and this script auto-fixes nothing. But
