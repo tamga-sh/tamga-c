@@ -801,6 +801,145 @@ TT_TEST(the_policy_response_carries_the_heartbeat_window) {
 }
 
 /*
+ * A stored window of zero or less is refused, and `*out_seconds` is left
+ * exactly as the caller had it.
+ *
+ * Not a defensive formality: `policies.heartbeat_duration` is a bare nullable
+ * INTEGER with no CHECK constraint, and neither create_policy nor
+ * update_policy range-checks the attribute before binding it -- each
+ * validates only its enum-typed string fields. So `0` and negatives are
+ * storable, and `effective_heartbeat_duration_secs()` hands them straight
+ * back, because its fallback to 600 keys off NULL alone.
+ *
+ * Both halves of the promise are pinned here. Answering true with a zero
+ * would turn a heartbeat loop into a busy loop against the server, and a
+ * negative window is already in the past on every comparison that uses it.
+ * Writing to `*out_seconds` on the way out would be just as bad: the refusal
+ * only helps if a caller that ignored the return value cannot find a
+ * plausible-looking number waiting in its variable. The sibling test above
+ * covers the readable cases, and every one of its assertions stays green if
+ * the `<= 0` guard is deleted -- which is what makes this test the one
+ * holding the documented contract up.
+ */
+TT_TEST(a_non_positive_heartbeat_window_is_refused_without_writing) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    int64_t window;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"policies\",\"id\":\"p\","
+               "\"attributes\":{\"heartbeat_duration\":0,\"require_heartbeat\":true}}}");
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"policies\",\"id\":\"p\","
+               "\"attributes\":{\"heartbeat_duration\":-1,\"require_heartbeat\":true}}}");
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"policies\",\"id\":\"p\","
+               "\"attributes\":{\"heartbeat_duration\":\"600\",\"require_heartbeat\":true}}}");
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"policies\",\"id\":\"p\","
+               "\"attributes\":{\"heartbeat_duration\":120,\"require_heartbeat\":true}}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    /* Zero -- storable upstream, and a schedule computed from it never
+     * sleeps. */
+    window = -7;
+    TT_ASSERT_EQ_INT(tamga_client_get_policy(client, POLICY_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_heartbeat_window_secs(response, &window));
+    TT_ASSERT_EQ_INT((int)window, -7);
+    tamga_response_free(response);
+    response = NULL;
+
+    /* Negative -- equally storable, and every deadline built from it has
+     * already passed. */
+    window = -7;
+    TT_ASSERT_EQ_INT(tamga_client_get_policy(client, POLICY_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_heartbeat_window_secs(response, &window));
+    TT_ASSERT_EQ_INT((int)window, -7);
+    tamga_response_free(response);
+    response = NULL;
+
+    /* Present, non-null, and not a number. The value even looks right, which
+     * is exactly why it is worth pinning: the guard is a type check as well
+     * as a range check. */
+    window = -7;
+    TT_ASSERT_EQ_INT(tamga_client_get_policy(client, POLICY_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_heartbeat_window_secs(response, &window));
+    TT_ASSERT_EQ_INT((int)window, -7);
+    tamga_response_free(response);
+    response = NULL;
+
+    /* `out_seconds` is NOT optional here: a perfectly readable window is
+     * still a refusal when there is nowhere to put it. Pinned because
+     * tamga_response_page(), two declarations up in the header, says every
+     * one of ITS out-parameters may be NULL -- so this is the asymmetry a
+     * reader is most likely to carry the wrong way. */
+    TT_ASSERT_EQ_INT(tamga_client_get_policy(client, POLICY_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_heartbeat_window_secs(response, NULL));
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * `false` from tamga_response_validation_is_valid() is not by itself proof
+ * that the server rejected the licence.
+ *
+ * tamga_json_bool_or() returns its fallback for an absent key and a
+ * wrong-typed one alike, so a response carrying no readable `valid` flag --
+ * the wrong response passed, or an error document -- reads exactly like a
+ * licence the server refused. Failing closed is the right default and this
+ * test does not argue with it; what it pins is the remedy the header now
+ * points at, because a conflation is only safe while the documented way out
+ * of it keeps working. tamga_response_validation_code() answers NULL where
+ * there is no verdict to report and a code string where there is, so the two
+ * cases that look identical through `is_valid` stay distinguishable.
+ */
+TT_TEST(an_unreadable_validation_flag_reads_as_invalid) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, "{\"data\":{\"type\":\"machines\",\"id\":\"m\",\"attributes\":{}}}");
+    mock_reply(&mock, 200,
+               "{\"ts\":\"2026-08-20T00:00:00Z\",\"valid\":false,"
+               "\"detail\":\"has expired\",\"code\":\"EXPIRED\"}");
+    mock_reply(&mock, 200,
+               "{\"ts\":\"2026-08-20T00:00:00Z\",\"valid\":\"true\",\"code\":\"VALID\"}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    /* No verdict anywhere in the document: false, and the code is NULL. That
+     * NULL is the whole remedy -- it is what separates this from the refusal
+     * immediately below. */
+    TT_ASSERT_EQ_INT(tamga_client_get_machine(client, MACHINE_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_validation_is_valid(response));
+    TT_ASSERT_NULL(tamga_response_validation_code(response));
+    TT_ASSERT_EQ_INT(tamga_response_validation_code_enum(response), TAMGA_VALIDATION_UNKNOWN);
+    tamga_response_free(response);
+    response = NULL;
+
+    /* A licence the server really did reject: identical `is_valid`, but a
+     * code that says so. */
+    TT_ASSERT_EQ_INT(tamga_client_quick_validate(client, LICENSE_ID, NULL, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_validation_is_valid(response));
+    TT_ASSERT_EQ_STR(tamga_response_validation_code(response), "EXPIRED");
+    tamga_response_free(response);
+    response = NULL;
+
+    /* `valid` present but a string. It spells "true", and it still reads
+     * false -- tamga_json_bool_or() takes the fallback on a type mismatch
+     * rather than coercing, so a server that ever quoted the field would fail
+     * closed instead of waving every licence through. */
+    TT_ASSERT_EQ_INT(tamga_client_quick_validate(client, LICENSE_ID, NULL, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_validation_is_valid(response));
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
  * Nothing on the server deletes a process row -- its reaper is dead code --
  * so a client that never disposes of one leaks a seat against
  * TOO_MANY_PROCESSES until a later, innocent run fails.
@@ -1214,6 +1353,8 @@ int main(void) {
     TT_RUN(identifiers_are_normalised_into_the_path);
     TT_RUN(the_licence_and_policy_reads_hit_their_routes);
     TT_RUN(the_policy_response_carries_the_heartbeat_window);
+    TT_RUN(a_non_positive_heartbeat_window_is_refused_without_writing);
+    TT_RUN(an_unreadable_validation_flag_reads_as_invalid);
     TT_RUN(deleting_a_process_is_a_bare_delete);
     TT_RUN(listing_machine_processes_is_keyset_paginated);
     TT_RUN(machine_reads_and_updates_hit_their_routes);
