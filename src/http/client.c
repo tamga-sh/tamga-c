@@ -99,9 +99,23 @@ bool tamga_header_value_is_safe(const char *value) {
 }
 
 bool tamga_request_is_retryable(const char *method, const char *path) {
+    /*
+     * `/actions/ping-heartbeat` and `/actions/reset-heartbeat` are listed
+     * explicitly and are not covered by `/actions/ping`: matching is by whole
+     * suffix, so `/actions/ping` matches only the process ping route.
+     *
+     * Both heartbeat actions are bare idempotent state writes -- the server's
+     * ping is an unconditional `last_heartbeat_at = NOW()` with no seat cost
+     * and no resurrection check -- so repeating one is unconditionally safe.
+     * Leaving them out was the more dangerous choice: the rate limiter keys
+     * on the route pattern rather than the caller, so an entire fleet shares
+     * one bucket on `/actions/ping-heartbeat` and throttles itself, and a
+     * heartbeat dropped on a 429 is a machine the server culls.
+     */
     static const char *const retryable_suffixes[] = {
-        "/actions/validate",  "/actions/validate-key", "/actions/check-in",
-        "/actions/check-out", "/actions/ping",
+        "/actions/validate",        "/actions/validate-key", "/actions/check-in",
+        "/actions/check-out",       "/actions/ping",         "/actions/ping-heartbeat",
+        "/actions/reset-heartbeat",
     };
     size_t i;
     size_t path_len;
@@ -284,6 +298,90 @@ const char *tamga_response_validation_detail(const TamgaResponse *response) {
     return tamga_json_as_string(tamga_response_meta_field(response, "detail"), NULL);
 }
 
+bool tamga_response_page(const TamgaResponse *response, int64_t *out_number, int64_t *out_size,
+                         int64_t *out_total, int64_t *out_total_pages) {
+    static const struct {
+        const char *key;
+        size_t slot;
+    } FIELDS[] = {{"number", 0u}, {"size", 1u}, {"total", 2u}, {"totalPages", 3u}};
+    int64_t values[4] = {0, 0, 0, 0};
+    const TamgaJson *meta;
+    const TamgaJson *page;
+    size_t i;
+
+    tamga_error_clear();
+    if (response == NULL || response->json == NULL) {
+        return false;
+    }
+    meta = tamga_json_object_get(response->json, "meta");
+    page = tamga_json_object_get(meta, "page");
+    if (page == NULL || tamga_json_type(page) != TAMGA_JSON_OBJECT) {
+        return false;
+    }
+    /*
+     * All four or none. A partially-decoded page object would hand the caller
+     * a zero for a field it could not read, and a zero `totalPages` reads as
+     * "there is nothing here" -- which would stop a paging loop on its first
+     * iteration against a server whose metadata this SDK simply failed to
+     * understand. Refusing outright sends the caller to the raw body instead.
+     */
+    for (i = 0u; i < (sizeof(FIELDS) / sizeof(FIELDS[0])); i++) {
+        if (!tamga_json_as_int(tamga_json_object_get(page, FIELDS[i].key),
+                               &values[FIELDS[i].slot])) {
+            return false;
+        }
+    }
+
+    /* Written only once every field has been read, so a caller that ignores
+     * the return value cannot act on a half-filled set. */
+    if (out_number != NULL) {
+        *out_number = values[0];
+    }
+    if (out_size != NULL) {
+        *out_size = values[1];
+    }
+    if (out_total != NULL) {
+        *out_total = values[2];
+    }
+    if (out_total_pages != NULL) {
+        *out_total_pages = values[3];
+    }
+    return true;
+}
+
+bool tamga_response_heartbeat_window_secs(const TamgaResponse *response, int64_t *out_seconds) {
+    const TamgaJson *attributes;
+    const TamgaJson *duration;
+    int64_t seconds = 0;
+
+    tamga_error_clear();
+    if (out_seconds == NULL || response == NULL || response->json == NULL) {
+        return false;
+    }
+    attributes = tamga_json_object_get(tamga_json_object_get(response->json, "data"), "attributes");
+    duration = tamga_json_object_get(attributes, "heartbeat_duration");
+    if (duration == NULL) {
+        /* Not a policy resource. Answering 600 here would be indistinguishable
+         * from a policy that genuinely leaves the window unset, so a caller
+         * that passed the wrong response would silently ping on the default
+         * schedule instead of being told it asked the wrong question. */
+        return false;
+    }
+    /* `heartbeat_duration` is `Option<i32>` server-side with no
+     * skip_serializing_if, so the key is always present and an unset window
+     * arrives as JSON null -- which is the 600-second fallback, not an error.
+     * Mirrors Policy::effective_heartbeat_duration_secs(). */
+    if (tamga_json_is_null(duration)) {
+        *out_seconds = TAMGA_DEFAULT_HEARTBEAT_WINDOW_SECONDS;
+        return true;
+    }
+    if (!tamga_json_as_int(duration, &seconds) || seconds <= 0) {
+        return false;
+    }
+    *out_seconds = seconds;
+    return true;
+}
+
 /* --- request construction ------------------------------------------------ */
 
 static bool tamga_client_auth_header(const TamgaClient *client, char **out_name, char **out_value) {
@@ -366,7 +464,7 @@ static bool tamga_client_auth_header(const TamgaClient *client, char **out_name,
 
 /* Percent-encodes everything outside the unreserved set, so a token or a
  * licence key carried in the query string cannot inject a parameter. */
-static char *tamga_url_encode(const char *value) {
+char *tamga_url_encode(const char *value) {
     static const char hex[] = "0123456789ABCDEF";
     TamgaBuf buf;
     size_t i;
@@ -393,14 +491,14 @@ static char *tamga_url_encode(const char *value) {
     return result;
 }
 
-static char *tamga_client_build_url(const TamgaClient *client, const char *path,
-                                    const char *query) {
+static char *tamga_client_build_url(const TamgaClient *client, TamgaPathScope scope,
+                                    const char *path, const char *query) {
     TamgaBuf buf;
     bool has_query = false;
     char *url;
 
     tamga_buf_init(&buf);
-    tamga_buf_append_str(&buf, client->base_url);
+    tamga_buf_append_str(&buf, (scope == TAMGA_PATH_ORIGIN) ? client->origin : client->base_url);
     tamga_buf_append_str(&buf, path);
 
     if (query != NULL && query[0] != '\0') {
@@ -480,6 +578,47 @@ static TamgaErrorCode tamga_map_api_error(TamgaResponse *response) {
         if (strcmp(code, "PID_TAKEN") == 0) {
             return TAMGA_ERR_PID_TAKEN;
         }
+        /*
+         * The five limit codes below are raised at CREATION time, which the
+         * server does enforce -- the outcome depends on the policy's overage
+         * strategy, so the same request either fails here or succeeds and
+         * reports the limit at the next validation instead. Without these,
+         * a strict-strategy rejection arrived as a bare TAMGA_ERR_API and
+         * was indistinguishable from any other 422.
+         */
+        if (strcmp(code, "MACHINE_LIMIT_EXCEEDED") == 0) {
+            return TAMGA_ERR_MACHINE_LIMIT_EXCEEDED;
+        }
+        if (strcmp(code, "CORE_LIMIT_EXCEEDED") == 0) {
+            return TAMGA_ERR_CORE_LIMIT_EXCEEDED;
+        }
+        if (strcmp(code, "MEMORY_LIMIT_EXCEEDED") == 0) {
+            return TAMGA_ERR_MEMORY_LIMIT_EXCEEDED;
+        }
+        if (strcmp(code, "DISK_LIMIT_EXCEEDED") == 0) {
+            return TAMGA_ERR_DISK_LIMIT_EXCEEDED;
+        }
+        if (strcmp(code, "TOO_MANY_PROCESSES") == 0) {
+            return TAMGA_ERR_TOO_MANY_PROCESSES;
+        }
+        /*
+         * These three arrive as 401 and would otherwise collapse into the
+         * generic TAMGA_ERR_UNAUTHORIZED below, which reads as "the
+         * credential was wrong" and invites a re-prompt. None of them is:
+         * the credential is exactly right and the licence, or its policy,
+         * refuses it. LICENSE_NOT_ALLOWED in particular is a provisioning
+         * precondition -- authentication_strategy defaults to TOKEN -- and no
+         * amount of retrying or re-entering a key changes it.
+         */
+        if (strcmp(code, "LICENSE_SUSPENDED") == 0) {
+            return TAMGA_ERR_LICENSE_SUSPENDED;
+        }
+        if (strcmp(code, "LICENSE_EXPIRED") == 0) {
+            return TAMGA_ERR_LICENSE_EXPIRED;
+        }
+        if (strcmp(code, "LICENSE_NOT_ALLOWED") == 0) {
+            return TAMGA_ERR_LICENSE_NOT_ALLOWED;
+        }
     }
 
     /* Falling back on the status keeps 401 and 403 distinct: a missing
@@ -547,6 +686,14 @@ static TamgaResponse *tamga_response_from_http(TamgaHttpResponse *http) {
 TamgaErrorCode tamga_client_send(TamgaClient *client, const char *method, const char *path,
                                  const char *query, const char *body, const char *otp,
                                  bool json_api_body, TamgaResponse **out_response) {
+    return tamga_client_send_scoped(client, TAMGA_PATH_ACCOUNT, method, path, query, body, otp,
+                                    json_api_body, out_response);
+}
+
+TamgaErrorCode tamga_client_send_scoped(TamgaClient *client, TamgaPathScope scope,
+                                        const char *method, const char *path, const char *query,
+                                        const char *body, const char *otp, bool json_api_body,
+                                        TamgaResponse **out_response) {
     /* Authorization, Tamga-Version, Accept, Content-Type, Tamga-OTP: five at
      * most. The assertion is here so adding a sixth fails to compile rather
      * than overrunning -- re-counting branches is not a bound. */
@@ -589,7 +736,7 @@ TamgaErrorCode tamga_client_send(TamgaClient *client, const char *method, const 
     if (!tamga_client_auth_header(client, &auth_name, &auth_value)) {
         return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the auth header");
     }
-    url = tamga_client_build_url(client, path, query);
+    url = tamga_client_build_url(client, scope, path, query);
     version = tamga_sanitize_api_version(client->api_version);
     if (url == NULL || version == NULL) {
         status = tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
@@ -711,14 +858,14 @@ cleanup:
 /* --- lifecycle and configuration ---------------------------------------- */
 
 /*
- * Builds https://{host}/v1/accounts/{account_id}.
+ * Builds https://{host}, with no path.
  *
  * An explicit http:// is preserved rather than upgraded. Production is always
  * HTTPS, but keeping the scheme the caller gave is what lets the same client
  * point at a local mock server without a test-only code path -- and silently
  * rewriting a URL is worse than honouring it.
  */
-static char *tamga_client_compose_base_url(const char *host, const char *account_id) {
+static char *tamga_client_compose_origin(const char *host) {
     TamgaBuf buf;
     const char *trimmed = host;
     size_t len;
@@ -743,6 +890,20 @@ static char *tamga_client_compose_base_url(const char *host, const char *account
         tamga_buf_append_str(&buf, "https://");
     }
     tamga_buf_append(&buf, trimmed, len);
+
+    result = tamga_buf_detach_string(&buf, NULL);
+    tamga_buf_free(&buf);
+    return result;
+}
+
+/* Builds {origin}/v1/accounts/{account_id} -- the prefix every account-scoped
+ * route resolves against. */
+static char *tamga_client_compose_base_url(const char *origin, const char *account_id) {
+    TamgaBuf buf;
+    char *result;
+
+    tamga_buf_init(&buf);
+    tamga_buf_append_str(&buf, origin);
     tamga_buf_append_str(&buf, "/v1/accounts/");
     tamga_buf_append_str(&buf, account_id);
 
@@ -774,13 +935,15 @@ TamgaErrorCode tamga_client_new(const char *account_id, const char *host,
     client->account_id = tamga_strdup(account_id);
     client->host = tamga_strdup(host);
     client->api_version = tamga_strdup(TAMGA_DEFAULT_API_VERSION);
-    client->base_url = tamga_client_compose_base_url(host, account_id);
+    client->origin = tamga_client_compose_origin(host);
+    client->base_url =
+        (client->origin != NULL) ? tamga_client_compose_base_url(client->origin, account_id) : NULL;
     client->timeout_ms = TAMGA_DEFAULT_TIMEOUT_MS;
     client->max_retries = TAMGA_DEFAULT_MAX_RETRIES;
     client->auth_configured = false;
 
     if (client->account_id == NULL || client->host == NULL || client->api_version == NULL ||
-        client->base_url == NULL) {
+        client->origin == NULL || client->base_url == NULL) {
         tamga_client_free(client);
         return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not allocate the client");
     }
@@ -802,6 +965,7 @@ void tamga_client_free(TamgaClient *client) {
     tamga_string_free(client->account_id);
     tamga_string_free(client->host);
     tamga_string_free(client->api_version);
+    tamga_string_free(client->origin);
     tamga_string_free(client->base_url);
     /* Credentials, so erased rather than merely released. */
     tamga_string_free(client->auth_primary);

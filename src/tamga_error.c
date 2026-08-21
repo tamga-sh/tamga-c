@@ -119,6 +119,22 @@ const char *tamga_error_name(TamgaErrorCode code) {
         return "TAMGA_ERR_DATASET_INVALID";
     case TAMGA_ERR_PID_TAKEN:
         return "TAMGA_ERR_PID_TAKEN";
+    case TAMGA_ERR_MACHINE_LIMIT_EXCEEDED:
+        return "TAMGA_ERR_MACHINE_LIMIT_EXCEEDED";
+    case TAMGA_ERR_CORE_LIMIT_EXCEEDED:
+        return "TAMGA_ERR_CORE_LIMIT_EXCEEDED";
+    case TAMGA_ERR_MEMORY_LIMIT_EXCEEDED:
+        return "TAMGA_ERR_MEMORY_LIMIT_EXCEEDED";
+    case TAMGA_ERR_DISK_LIMIT_EXCEEDED:
+        return "TAMGA_ERR_DISK_LIMIT_EXCEEDED";
+    case TAMGA_ERR_TOO_MANY_PROCESSES:
+        return "TAMGA_ERR_TOO_MANY_PROCESSES";
+    case TAMGA_ERR_LICENSE_SUSPENDED:
+        return "TAMGA_ERR_LICENSE_SUSPENDED";
+    case TAMGA_ERR_LICENSE_EXPIRED:
+        return "TAMGA_ERR_LICENSE_EXPIRED";
+    case TAMGA_ERR_LICENSE_NOT_ALLOWED:
+        return "TAMGA_ERR_LICENSE_NOT_ALLOWED";
     default:
         return "TAMGA_ERR_UNKNOWN";
     }

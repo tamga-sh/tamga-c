@@ -227,16 +227,21 @@ TT_TEST(only_safe_requests_are_retryable) {
     TT_ASSERT(tamga_request_is_retryable("POST", "/processes/x/actions/ping"));
 
     /*
-     * The two the shared contract calls out by name, because a substring match
-     * gets them wrong: `/actions/ping-heartbeat` and `/actions/reset-heartbeat`
-     * each carry a retryable suffix as a prefix of their own, and neither is
-     * idempotent. Only `POST /processes/{id}/actions/ping` is meant to match
-     * `/actions/ping`.
+     * Both heartbeat actions are retryable, and each needs its own entry:
+     * matching is by whole suffix, so `/actions/ping` covers only the process
+     * ping route and never `/actions/ping-heartbeat`.
+     *
+     * They belong in the list because both are bare idempotent state writes
+     * with no seat cost, and because the rate limiter buckets by route
+     * pattern rather than by caller -- a fleet of machines shares one budget
+     * on `/actions/ping-heartbeat` and throttles itself. A heartbeat dropped
+     * on a 429 is not a lost request; it is a machine the server culls.
      */
-    TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/machines/x/actions/ping-heartbeat"));
-    TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/machines/x/actions/reset-heartbeat"));
+    TT_ASSERT(tamga_request_is_retryable("POST", "/machines/x/actions/ping-heartbeat"));
+    TT_ASSERT(tamga_request_is_retryable("POST", "/machines/x/actions/reset-heartbeat"));
     /* A suffix appearing mid-path is not a match either. */
     TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/actions/check-out/extra"));
+    TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/machines/x/actions/ping-heartbeat/x"));
 
     TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/machines"));
     TT_ASSERT_FALSE(tamga_request_is_retryable("POST", "/components"));
@@ -409,6 +414,57 @@ TT_TEST(json_api_error_codes_map_to_typed_results) {
         {409, "{\"errors\":[{\"code\":\"FINGERPRINT_TAKEN\"}]}", TAMGA_ERR_FINGERPRINT_TAKEN},
         {422, "{\"errors\":[{\"code\":\"DATASET_INVALID\"}]}", TAMGA_ERR_DATASET_INVALID},
         {409, "{\"errors\":[{\"code\":\"PID_TAKEN\"}]}", TAMGA_ERR_PID_TAKEN},
+        /*
+         * The five limit codes the server raises at creation time under a
+         * strict overage strategy. Written with the wire shape the server
+         * actually sends -- `status` is a JSON:API STRING, not a number, and
+         * a test that uses 422 as an integer here is not testing the real
+         * document. The mapping reads `code` and never `status`, which is
+         * exactly why this must be pinned: a future reader "fixing" the
+         * quotes would not notice.
+         */
+        {422,
+         "{\"errors\":[{\"id\":\"01926b3e-0000-7000-8000-00000000000f\",\"status\":\"422\","
+         "\"code\":\"MACHINE_LIMIT_EXCEEDED\",\"title\":\"Unprocessable Entity\","
+         "\"detail\":\"machine limit exceeded\",\"source\":{\"pointer\":\"/data\"}}]}",
+         TAMGA_ERR_MACHINE_LIMIT_EXCEEDED},
+        {422, "{\"errors\":[{\"status\":\"422\",\"code\":\"CORE_LIMIT_EXCEEDED\"}]}",
+         TAMGA_ERR_CORE_LIMIT_EXCEEDED},
+        {422, "{\"errors\":[{\"status\":\"422\",\"code\":\"MEMORY_LIMIT_EXCEEDED\"}]}",
+         TAMGA_ERR_MEMORY_LIMIT_EXCEEDED},
+        {422, "{\"errors\":[{\"status\":\"422\",\"code\":\"DISK_LIMIT_EXCEEDED\"}]}",
+         TAMGA_ERR_DISK_LIMIT_EXCEEDED},
+        {422, "{\"errors\":[{\"status\":\"422\",\"code\":\"TOO_MANY_PROCESSES\"}]}",
+         TAMGA_ERR_TOO_MANY_PROCESSES},
+        /*
+         * The three licence-state rejections. All arrive as 401 and would
+         * otherwise collapse into the generic TAMGA_ERR_UNAUTHORIZED below,
+         * which reads as "wrong credential" and invites a re-prompt. The
+         * credential is right in every one of these cases.
+         *
+         * LICENSE_NOT_ALLOWED is the one that will actually be hit: the
+         * policy's authentication_strategy defaults to TOKEN, so licence-key
+         * auth is off unless somebody set it to LICENSE or MIXED.
+         */
+        {401,
+         "{\"errors\":[{\"status\":\"401\",\"code\":\"LICENSE_NOT_ALLOWED\","
+         "\"title\":\"Unauthorized\",\"detail\":\"license authentication is not allowed for this "
+         "license\"}]}",
+         TAMGA_ERR_LICENSE_NOT_ALLOWED},
+        {401, "{\"errors\":[{\"status\":\"401\",\"code\":\"LICENSE_SUSPENDED\"}]}",
+         TAMGA_ERR_LICENSE_SUSPENDED},
+        {401, "{\"errors\":[{\"status\":\"401\",\"code\":\"LICENSE_EXPIRED\"}]}",
+         TAMGA_ERR_LICENSE_EXPIRED},
+        /*
+         * `scope.version` / `scope.checksum` fail the whole validate call.
+         * This SDK has no dedicated code for it; the point of the assertion
+         * is that the outcome is still usable -- the server's own string
+         * survives on the response, which the next test covers.
+         */
+        {422,
+         "{\"errors\":[{\"status\":\"422\",\"code\":\"SCOPE_NOT_SUPPORTED\","
+         "\"source\":{\"pointer\":\"/meta/scope\"}}]}",
+         TAMGA_ERR_API},
         /* 401 and 403 stay distinct: a missing credential and an insufficient
          * one are different states, and conflating them makes a caller
          * re-prompt for something that will not help. */

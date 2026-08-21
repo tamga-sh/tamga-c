@@ -48,6 +48,7 @@ set(TAMGA_SOURCES
     # --- offline verification ------------------------------------------
     src/checkout/pem.c
     src/checkout/cert.c
+    src/checkout/claims.c
     src/checkout/license_file.c
     src/checkout/machine_file.c
     src/proof.c

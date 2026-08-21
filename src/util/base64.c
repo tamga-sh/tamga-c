@@ -385,6 +385,22 @@ unsigned char *tamga_base64_decode_alloc_why(const char *in, size_t in_len, size
         tamga_secure_free(buf, cap);
         return NULL;
     }
+    /*
+     * The capacity is the worst case for `in_len` characters; padding makes
+     * the real decode up to two bytes shorter. Callers release the buffer
+     * with tamga_secure_free(buf, decoded_len) -- the length they were
+     * handed -- so those trailing bytes are freed without being erased, and
+     * on a recycled heap they can still hold whatever the previous owner put
+     * there. Zeroing them here means the whole allocation is erased by the
+     * time it is freed no matter which length the caller passes, and it
+     * costs at most two bytes per decode.
+     *
+     * Found by the security review of the Turn 2 machine-file work; the
+     * shape predates it.
+     */
+    if (cap > decoded_len) {
+        tamga_secure_zero(buf + decoded_len, cap - decoded_len);
+    }
     *out_len = decoded_len;
     return buf;
 }

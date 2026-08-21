@@ -90,6 +90,56 @@ static TamgaErrorCode tamga_parse_optional_object(const char *json, const char *
     return TAMGA_OK;
 }
 
+/* GETs one resource: "<prefix><id><suffix>", with `id` normalised. */
+static TamgaErrorCode tamga_get_resource(TamgaClient *client, const char *prefix, const char *id,
+                                         const char *what, const char *suffix,
+                                         TamgaResponse **out_response) {
+    char *path;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (client == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "client and out_response are required");
+    }
+    status = tamga_require_uuid(id, what);
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    path = tamga_path(prefix, id, suffix);
+    if (path == NULL) {
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    status = tamga_client_send(client, "GET", path, NULL, NULL, NULL, false, out_response);
+    tamga_string_free(path);
+    return status;
+}
+
+/*
+ * Appends "name=<percent-encoded value>" to a query buffer, with the
+ * separator the position needs.
+ *
+ * `name` is a literal from this file and goes in verbatim, including the
+ * percent-encoded brackets of a `filter[...]`/`page[...]` key; `value` is
+ * caller input and is always encoded, so a fingerprint containing `&` cannot
+ * add a parameter of its own.
+ */
+static bool tamga_query_add(TamgaBuf *buf, bool *first, const char *name, const char *value) {
+    char *encoded = tamga_url_encode(value);
+
+    if (encoded == NULL) {
+        return false;
+    }
+    if (!*first) {
+        tamga_buf_append_byte(buf, '&');
+    }
+    *first = false;
+    tamga_buf_append_str(buf, name);
+    tamga_buf_append_byte(buf, '=');
+    tamga_buf_append_str(buf, encoded);
+    tamga_string_free(encoded);
+    return true;
+}
+
 /* --- licence validation -------------------------------------------------- */
 
 TamgaErrorCode tamga_client_validate_by_key(TamgaClient *client, const char *license_key,
@@ -238,6 +288,53 @@ TamgaErrorCode tamga_client_check_in(TamgaClient *client, const char *license_id
     status = tamga_client_send(client, "POST", path, NULL, NULL, NULL, true, out_response);
     tamga_string_free(path);
     return status;
+}
+
+/* --- licence and policy reads -------------------------------------------- */
+
+/*
+ * ⚠️ Neither of the two licence reads below is confined to the licence the
+ * credential belongs to.
+ *
+ * `require_license_scope` -- the server-side check that stops a licence key
+ * being used against a different licence's id -- is applied to validate,
+ * quick-validate, validate-key and check-out. It is NOT applied to
+ * `GET /licenses/{id}` or `GET /licenses/{id}/policy`
+ * (tamga-api `src/features/licenses/get_license.rs`,
+ * `get_license_policy.rs`), which gate on the `license.read` permission
+ * alone -- and `Role::LicenseToken` carries `license.read` by default. The
+ * licence resource's `attributes.key` is the plaintext licence key.
+ *
+ * So a caller holding one licence key can read every other licence's key in
+ * the same account by id. That is the server's behaviour, reported upstream;
+ * an SDK cannot fix it, and this note exists so that nobody reads these two
+ * functions as a scoped, safe surface. Do not build a feature that hands an
+ * end user's licence key to code that only needs to know its policy.
+ */
+
+TamgaErrorCode tamga_client_get_license(TamgaClient *client, const char *license_id,
+                                        TamgaResponse **out_response) {
+    return tamga_get_resource(client, "/licenses/", license_id, "license_id", NULL, out_response);
+}
+
+TamgaErrorCode tamga_client_get_license_policy(TamgaClient *client, const char *license_id,
+                                               TamgaResponse **out_response) {
+    return tamga_get_resource(client, "/licenses/", license_id, "license_id", "/policy",
+                              out_response);
+}
+
+/*
+ * `GET /policies/{policy_id}` gates on the `policy.read` permission, which
+ * `Role::LicenseToken` does NOT carry (tamga-api
+ * `src/shared/authz/mod.rs`, the LicenseToken default-permission list). A
+ * licence-key credential therefore gets `403` here, whatever the policy's
+ * authentication strategy. Reaching a policy from a licence key is what
+ * tamga_client_get_license_policy() is for: it gates on `license.read`,
+ * which a licence key does carry, and returns the identical policy resource.
+ */
+TamgaErrorCode tamga_client_get_policy(TamgaClient *client, const char *policy_id,
+                                       TamgaResponse **out_response) {
+    return tamga_get_resource(client, "/policies/", policy_id, "policy_id", NULL, out_response);
 }
 
 /* --- checkout ------------------------------------------------------------ */
@@ -545,6 +642,110 @@ TamgaErrorCode tamga_client_delete_machine(TamgaClient *client, const char *mach
     return status;
 }
 
+TamgaErrorCode tamga_client_get_machine(TamgaClient *client, const char *machine_id,
+                                        TamgaResponse **out_response) {
+    return tamga_get_resource(client, "/machines/", machine_id, "machine_id", NULL, out_response);
+}
+
+TamgaErrorCode tamga_client_update_machine(TamgaClient *client, const char *machine_id,
+                                           const char *attributes_json,
+                                           TamgaResponse **out_response) {
+    TamgaJson *attributes_in = NULL;
+    TamgaJson *root;
+    TamgaJson *data;
+    TamgaJson *attributes;
+    char *path;
+    char *text;
+    TamgaErrorCode status;
+    size_t i;
+    /* The same allowlist as creation, minus `fingerprint`: the server's
+     * UpdateMachineAttributes has no such field, and a machine's fingerprint
+     * is the identity the licence's seat is bound to. */
+    static const char *const updatable_fields[] = {"name",  "ip",     "hostname", "platform",
+                                                   "cores", "memory", "disk",     "metadata"};
+
+    tamga_error_clear();
+    if (client == NULL || attributes_json == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT,
+                               "client, attributes_json and out_response are required");
+    }
+    status = tamga_require_uuid(machine_id, "machine_id");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    status = tamga_parse_optional_object(attributes_json, "attributes_json", &attributes_in);
+    if (status != TAMGA_OK) {
+        return status;
+    }
+
+    /* Enveloped, like creation and unlike the two flat creates -- and `type`
+     * is required, not decorative: the server's UpdateMachineData declares it
+     * as a non-optional String, so a body without it is rejected at
+     * deserialization with 422 before the handler runs. */
+    root = tamga_json_new_object();
+    data = tamga_json_new_object();
+    attributes = tamga_json_new_object();
+    if (root == NULL || data == NULL || attributes == NULL) {
+        tamga_json_free(root);
+        tamga_json_free(data);
+        tamga_json_free(attributes);
+        tamga_json_free(attributes_in);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    /* Each child is attached before the next is populated, so a failure
+     * part-way is covered by the single tamga_json_free(root) -- see the note
+     * in tamga_client_validate_by_id. */
+    if (!tamga_json_object_set(root, "data", data)) {
+        tamga_json_free(root);
+        tamga_json_free(attributes);
+        tamga_json_free(attributes_in);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    if (!tamga_json_object_set(data, "type", tamga_json_new_string("machines", 8u))) {
+        tamga_json_free(root);
+        tamga_json_free(attributes);
+        tamga_json_free(attributes_in);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    if (!tamga_json_object_set(data, "attributes", attributes)) {
+        tamga_json_free(root);
+        tamga_json_free(attributes_in);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+
+    status = TAMGA_OK;
+    for (i = 0u; attributes_in != NULL && status == TAMGA_OK &&
+                 i < (sizeof(updatable_fields) / sizeof(updatable_fields[0]));
+         i++) {
+        const TamgaJson *value = tamga_json_object_get(attributes_in, updatable_fields[i]);
+        if (value != NULL) {
+            TamgaJson *copy = tamga_json_clone(value);
+            if (copy == NULL || !tamga_json_object_set(attributes, updatable_fields[i], copy)) {
+                status = TAMGA_ERR_OUT_OF_MEMORY;
+            }
+        }
+    }
+    tamga_json_free(attributes_in);
+    if (status != TAMGA_OK) {
+        tamga_json_free(root);
+        return tamga_error_set(status, "could not build the request");
+    }
+
+    text = tamga_json_write(root, NULL);
+    tamga_json_free(root);
+    path = tamga_path("/machines/", machine_id, NULL);
+    if (text == NULL || path == NULL) {
+        tamga_string_free(text);
+        tamga_string_free(path);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+
+    status = tamga_client_send(client, "PATCH", path, NULL, text, NULL, true, out_response);
+    tamga_string_free(text);
+    tamga_string_free(path);
+    return status;
+}
+
 TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *license_id,
                                              const char *fingerprint, const char *options_json,
                                              const char *scope_json, bool auto_delete_on_overage,
@@ -561,10 +762,46 @@ TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *li
 
     status = tamga_client_create_machine(client, license_id, fingerprint, options_json, &created);
     if (status != TAMGA_OK || created == NULL) {
-        /* A successful send always yields a response, but the machine id is
+        /*
+         * Creation DOES enforce the licence's limits, and under a strict
+         * overage strategy it is where an over-limit activation is rejected:
+         * 422 with MACHINE_LIMIT_EXCEEDED, CORE_LIMIT_EXCEEDED,
+         * MEMORY_LIMIT_EXCEEDED or DISK_LIMIT_EXCEEDED, now mapped to their
+         * own error codes. There is no machine row in that case, so there is
+         * nothing to validate and -- critically -- nothing to delete: issuing
+         * the rollback DELETE here would address a machine that was never
+         * created.
+         *
+         * On that path ALONE the creation response is handed back, so the
+         * caller can read the server's own code and status off it and feed
+         * the returned code to tamga_validation_code_from_error(). Every
+         * other creation failure keeps the pre-1.3.1 behaviour exactly:
+         * `created` is freed here and `*out_response` stays NULL.
+         *
+         * ⚠️ That is deliberately narrower than the validate-failure path
+         * below, which hands its response back on every outcome. The
+         * asymmetry is known and is not an oversight to tidy away. Widening
+         * this branch would start handing a response to callers that have
+         * read `*out_response == NULL` as "activation failed, nothing to
+         * free" since 1.3.0 -- leaking one TamgaResponse per failed
+         * activation in code that did not change, on a patch upgrade. The
+         * limit codes are new in 1.3.1, so no caller can hold an expectation
+         * about them; widening the rest is a contract change and belongs in a
+         * release that announces one.
+         *
+         * A successful send always yields a response, but the machine id is
          * read out of it below, and a null there would be a crash rather than
-         * an error -- so the invariant is checked, not assumed. */
-        tamga_response_free(created);
+         * an error -- so the invariant is checked, not assumed.
+         */
+        bool is_create_time_limit =
+            (created != NULL) &&
+            (tamga_validation_code_from_error(status) != TAMGA_VALIDATION_UNKNOWN);
+
+        if (out_response != NULL && is_create_time_limit) {
+            *out_response = created;
+        } else {
+            tamga_response_free(created);
+        }
         return (status != TAMGA_OK)
                    ? status
                    : tamga_error_set(TAMGA_ERR_UNKNOWN,
@@ -573,10 +810,10 @@ TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *li
     }
 
     /*
-     * Creation does not enforce seat limits -- they surface here. This is the
-     * only way to find out whether an activation was one too many, which is
-     * why create and validate are composed rather than left to the caller to
-     * remember to pair.
+     * Under ALLOW_ACCESS or ALLOW_1_25X_OVERAGE the creation above succeeded
+     * despite the licence being over its limit, and this is where that
+     * surfaces. Composing create with validate rather than leaving the pair
+     * to the caller is what makes both strategies produce a usable answer.
      */
     status = tamga_client_validate_by_id(client, license_id, scope_json, false, NULL, &validated);
 
@@ -611,6 +848,292 @@ TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *li
         tamga_response_free(validated);
     }
     return status;
+}
+
+/* --- the machine collection, and the way out of FINGERPRINT_TAKEN --------
+ *
+ * `GET /machines` is the one list in this domain that is NOT keyset-
+ * paginated. It goes through the server's shared offset paginator
+ * (tamga-api `src/shared/list_query.rs`), so it takes `page[number]` and
+ * `page[size]` and answers with `meta.page{number,size,total,totalPages}`.
+ * tamga_response_next_cursor() is the wrong tool here and would loop on the
+ * first page forever; tamga_response_page() is the right one.
+ */
+
+/* The server's own ceiling (MAX_PAGE_SIZE); asking for more is clamped. */
+#define TAMGA_MACHINE_PAGE_SIZE 100u
+
+/*
+ * How many pages tamga_client_find_machine_by_fingerprint() will walk.
+ *
+ * The search below is a substring match, not an equality filter, so in
+ * principle several machines can come back for one fingerprint and the exact
+ * one can sit past the first page. Ten pages of a hundred is far past any
+ * real licence, and a bound is what keeps a lookup from turning into an
+ * unbounded request loop against a hostile or broken `total`.
+ */
+#define TAMGA_MACHINE_LOOKUP_MAX_PAGES 10u
+
+TamgaErrorCode tamga_client_list_machines(TamgaClient *client, const char *license_id,
+                                          const char *search, uint32_t page_number,
+                                          uint32_t page_size, TamgaResponse **out_response) {
+    TamgaBuf query_buf;
+    bool first = true;
+    bool built = true;
+    char *query;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (client == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "client and out_response are required");
+    }
+    if (license_id != NULL) {
+        status = tamga_require_uuid(license_id, "license_id");
+        if (status != TAMGA_OK) {
+            return status;
+        }
+    }
+
+    tamga_buf_init(&query_buf);
+    if (page_number > 0u) {
+        tamga_buf_append_fmt(&query_buf, "page%%5Bnumber%%5D=%lu", (unsigned long)page_number);
+        first = false;
+    }
+    if (page_size > 0u) {
+        if (!first) {
+            tamga_buf_append_byte(&query_buf, '&');
+        }
+        tamga_buf_append_fmt(&query_buf, "page%%5Bsize%%5D=%lu", (unsigned long)page_size);
+        first = false;
+    }
+    if (license_id != NULL) {
+        char canonical[TAMGA_UUID_STRING_SIZE];
+        /* tamga_require_uuid above already parsed this same string with the
+         * same parser, so this cannot fail -- but it is checked rather than
+         * discarded, both because GCC rejects (void) as a suppression for a
+         * warn_unused_result function and because an invariant that is
+         * enforced survives the earlier call being moved. */
+        if (!tamga_uuid_normalize(license_id, canonical)) {
+            tamga_buf_free(&query_buf);
+            return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "license_id must be a UUID");
+        }
+        built = tamga_query_add(&query_buf, &first, "filter%5Blicense%5D", canonical);
+    }
+    /* `filter[q]` is a case-insensitive SUBSTRING search across the machine's
+     * name, hostname and fingerprint (tamga-api `list_filter.rs`, ILIKE
+     * '%term%'), not an equality filter -- there is no `filter[fingerprint]`.
+     * Anything matching an exact value has to be re-checked by the caller;
+     * tamga_client_find_machine_by_fingerprint() below is that check. */
+    if (built && search != NULL) {
+        built = tamga_query_add(&query_buf, &first, "filter%5Bq%5D", search);
+    }
+
+    /* Detached unconditionally and checked -- see the note in tamga_list for
+     * why gating on the buffer's length instead would silently send the
+     * server's default page. */
+    query = tamga_buf_detach_string(&query_buf, NULL);
+    tamga_buf_free(&query_buf);
+    if (!built || query == NULL) {
+        tamga_string_free(query);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+
+    status = tamga_client_send(client, "GET", "/machines", query, NULL, NULL, false, out_response);
+    tamga_string_free(query);
+    return status;
+}
+
+/*
+ * The exact-fingerprint match on one page of machines, copied out before the
+ * response that owns the string is released.
+ *
+ * `*out_id` is NULL when this page holds no match; that is TAMGA_OK, because
+ * a page without the machine is a normal step in the walk. A failed copy is
+ * NOT: returning NULL for it would turn "out of memory" into "this machine is
+ * not activated", and the caller above would report the fingerprint as
+ * belonging to somebody else's licence.
+ */
+static TamgaErrorCode tamga_machine_page_exact_match(const TamgaResponse *response,
+                                                     const char *fingerprint, char **out_id) {
+    const TamgaJson *data;
+    size_t count;
+    size_t i;
+
+    *out_id = NULL;
+    data = tamga_json_object_get(response->json, "data");
+    count = tamga_json_array_len(data);
+    for (i = 0u; i < count; i++) {
+        const TamgaJson *machine = tamga_json_array_at(data, i);
+        const TamgaJson *attributes = tamga_json_object_get(machine, "attributes");
+        const char *value =
+            tamga_json_as_string(tamga_json_object_get(attributes, "fingerprint"), NULL);
+        if (value != NULL && strcmp(value, fingerprint) == 0) {
+            const char *id = tamga_json_as_string(tamga_json_object_get(machine, "id"), NULL);
+            if (id != NULL) {
+                *out_id = tamga_strdup(id);
+                return (*out_id != NULL) ? TAMGA_OK : TAMGA_ERR_OUT_OF_MEMORY;
+            }
+        }
+    }
+    return TAMGA_OK;
+}
+
+TamgaErrorCode tamga_client_find_machine_by_fingerprint(TamgaClient *client, const char *license_id,
+                                                        const char *fingerprint,
+                                                        char **out_machine_id) {
+    uint32_t page;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (client == NULL || fingerprint == NULL || out_machine_id == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT,
+                               "client, fingerprint and out_machine_id are required");
+    }
+    *out_machine_id = NULL;
+    status = tamga_require_uuid(license_id, "license_id");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+
+    for (page = 1u; page <= TAMGA_MACHINE_LOOKUP_MAX_PAGES; page++) {
+        TamgaResponse *response = NULL;
+        char *found;
+        int64_t total_pages = 0;
+        bool has_page_meta;
+
+        status = tamga_client_list_machines(client, license_id, fingerprint, page,
+                                            TAMGA_MACHINE_PAGE_SIZE, &response);
+        if (status != TAMGA_OK || response == NULL) {
+            tamga_response_free(response);
+            return (status != TAMGA_OK)
+                       ? status
+                       : tamga_error_set(TAMGA_ERR_UNKNOWN,
+                                         "the machine listing returned no response");
+        }
+
+        status = tamga_machine_page_exact_match(response, fingerprint, &found);
+        has_page_meta = tamga_response_page(response, NULL, NULL, NULL, &total_pages);
+        tamga_response_free(response);
+        if (status != TAMGA_OK) {
+            return tamga_error_set(status, "could not read the machine listing");
+        }
+
+        if (found != NULL) {
+            *out_machine_id = found;
+            return TAMGA_OK;
+        }
+        /* Stop at the server's own page count. Without `meta.page` -- which
+         * only an unexpected body shape would omit -- one page is all that
+         * can be justified, because there is nothing to say a second exists. */
+        if (!has_page_meta || (int64_t)page >= total_pages) {
+            return TAMGA_OK;
+        }
+    }
+    /* The cap was reached with no exact match. Reported as "not found" rather
+     * than as an error: the caller's next move is the same either way, and
+     * the alternative -- a code meaning "there may be more pages" -- would be
+     * a branch nobody can act on. */
+    return TAMGA_OK;
+}
+
+TamgaErrorCode tamga_client_activate_machine_idempotent(
+    TamgaClient *client, const char *license_id, const char *fingerprint, const char *options_json,
+    const char *scope_json, bool auto_delete_on_overage, TamgaResponse **out_response) {
+    char *existing_id = NULL;
+    TamgaErrorCode status;
+    TamgaErrorCode lookup;
+
+    tamga_error_clear();
+    if (out_response != NULL) {
+        *out_response = NULL;
+    }
+
+    status = tamga_client_activate_machine(client, license_id, fingerprint, options_json,
+                                           scope_json, auto_delete_on_overage, out_response);
+    if (status != TAMGA_ERR_FINGERPRINT_TAKEN) {
+        return status;
+    }
+    /*
+     * The creation was refused because this fingerprint is already activated.
+     * The server's own comment on that branch (tamga-api
+     * `src/features/machines/service.rs`) says the conflict means "already
+     * activated, carry on" -- it checks uniqueness BEFORE the seat limits
+     * precisely so a re-activation is not reported as "buy more seats". This
+     * is the carrying on.
+     *
+     * `tamga_client_activate_machine` has already freed the creation response
+     * and left *out_response NULL on this path, so there is nothing to
+     * reclaim before the lookup.
+     */
+    /*
+     * The lookup is scoped to the licence being activated, using the server's
+     * own `filter[license]`, and that scope is the correctness argument for
+     * this whole function. Widening it to the account would be a seat-sharing
+     * bug, not a better diagnostic.
+     *
+     * The conflict is raised under the policy's `machine_uniqueness_strategy`,
+     * and all three of its scopes are SUPERSETS of "a machine on this licence
+     * with this fingerprint" -- every one of the EXISTS checks in
+     * tamga-api `machines/service.rs` includes the caller's own licence rows:
+     * UNIQUE_PER_LICENSE matches on `license_id = $2` directly,
+     * UNIQUE_PER_POLICY joins licences on the policy this licence already
+     * has, and UNIQUE_PER_ACCOUNT covers every machine in the account.
+     *
+     * So a genuine re-activation raises the conflict under all three, and a
+     * licence-scoped lookup finds it under all three. What an account-wide
+     * lookup would add is exactly the cross-licence case -- and that is the
+     * case the server refuses on purpose: its comment says the wider scopes
+     * exist to stop a customer registering one fingerprint against N licences
+     * and sharing seats. Returning that machine and reporting success would
+     * leave the caller heartbeating and checking out a machine its licence
+     * does not own, with its own machines_count still zero, and no way to
+     * notice because the resource carries no licence id.
+     *
+     * The scoped lookup therefore hits in exactly the cases where carrying on
+     * is legitimate and misses in exactly the cases where it is not. A caller
+     * that wants to know WHICH licence holds the fingerprint can ask
+     * account-wide with tamga_client_list_machines(client, NULL, fingerprint,
+     * ...); that is a diagnostic, and it is deliberately a separate call.
+     *
+     * The machine resource carries no licence id and no relationships, so
+     * asking the server to filter is also the only way to establish this at
+     * all.
+     */
+    lookup =
+        tamga_client_find_machine_by_fingerprint(client, license_id, fingerprint, &existing_id);
+    if (lookup == TAMGA_ERR_OUT_OF_MEMORY) {
+        return lookup;
+    }
+    if (lookup != TAMGA_OK) {
+        /* The lookup itself failed -- most often 403, because the credential
+         * carries no `machine.read`. The activation genuinely did not happen,
+         * so the conflict is still the answer, but the reason it could not be
+         * resolved is named rather than folded into the branch below. */
+        tamga_string_free(existing_id);
+        return tamga_error_set(TAMGA_ERR_FINGERPRINT_TAKEN,
+                               "the fingerprint is already activated, and the existing machine "
+                               "could not be looked up (%s)",
+                               tamga_error_name(lookup));
+    }
+    if (existing_id == NULL) {
+        /* This licence really has no machine with that fingerprint, so the
+         * conflict belongs to another licence under a wider uniqueness scope.
+         * It stands, unchanged. */
+        return tamga_error_set(TAMGA_ERR_FINGERPRINT_TAKEN,
+                               "the fingerprint is already activated on a different licence "
+                               "under the policy's uniqueness scope");
+    }
+
+    /*
+     * The machine already existed, so this call created nothing and rolls
+     * nothing back. `auto_delete_on_overage` governed the creation attempt
+     * above and is deliberately not applied here: deleting on an over-limit
+     * verdict would destroy a seat that was already paid for and already in
+     * use, on a call whose whole purpose is to be a no-op when the machine is
+     * present.
+     */
+    tamga_string_free(existing_id);
+    return tamga_client_validate_by_id(client, license_id, scope_json, false, NULL, out_response);
 }
 
 static TamgaErrorCode tamga_machine_action(TamgaClient *client, const char *machine_id,
@@ -854,6 +1377,16 @@ TamgaErrorCode tamga_client_list_components(TamgaClient *client, const char *mac
                       out_response);
 }
 
+/* Keyset, unlike GET /machines: this nested list keeps its own hand-written
+ * cursor query server-side (`limit` + `page[after]`), so
+ * tamga_response_next_cursor() is the right accessor here. */
+TamgaErrorCode tamga_client_list_machine_processes(TamgaClient *client, const char *machine_id,
+                                                   uint32_t limit, const char *after,
+                                                   TamgaResponse **out_response) {
+    return tamga_list(client, "/machines/", machine_id, "machine_id", "/processes", limit, after,
+                      out_response);
+}
+
 TamgaErrorCode tamga_client_create_process(TamgaClient *client, const char *machine_id,
                                            const char *pid, const char *metadata_json,
                                            TamgaResponse **out_response) {
@@ -928,6 +1461,43 @@ TamgaErrorCode tamga_client_ping_process(TamgaClient *client, const char *proces
         return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
     }
     status = tamga_client_send(client, "POST", path, NULL, NULL, NULL, true, out_response);
+    tamga_string_free(path);
+    return status;
+}
+
+/*
+ * Deleting a process is not optional housekeeping.
+ *
+ * The server has a process reaper, but it is dead code -- nothing calls it
+ * (reported upstream) -- so no process row is ever removed automatically. A
+ * row that is never deleted keeps counting towards the licence's process
+ * total, and the count is what `TOO_MANY_PROCESSES` is checked against. An
+ * application that registers a process per run and never disposes of one
+ * therefore works until it does not, and the failure lands on a later,
+ * innocent run.
+ *
+ * Pair every tamga_client_create_process() with this on the way out,
+ * including on the error paths. It answers `204` whether or not the row was
+ * there, so a duplicate call at shutdown is harmless.
+ */
+TamgaErrorCode tamga_client_delete_process(TamgaClient *client, const char *process_id,
+                                           TamgaResponse **out_response) {
+    char *path;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (client == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "client and out_response are required");
+    }
+    status = tamga_require_uuid(process_id, "process_id");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    path = tamga_path("/processes/", process_id, NULL);
+    if (path == NULL) {
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+    status = tamga_client_send(client, "DELETE", path, NULL, NULL, NULL, false, out_response);
     tamga_string_free(path);
     return status;
 }
@@ -1038,4 +1608,115 @@ TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const char *lic
 
     tamga_response_free(response);
     return TAMGA_OK;
+}
+
+/* --- releases ------------------------------------------------------------ */
+
+/*
+ * `204 No Content` from this route means TWO things, and the server cannot
+ * tell them apart on purpose:
+ *
+ *   - there is no newer release (upgrade_release.rs, the `else` on
+ *     `result.next_release`); or
+ *   - there IS a newer release and this licence is not entitled to it,
+ *     because the licence has expired under an expiration strategy that
+ *     stops new builds. The server's own comment says why it answers 204
+ *     rather than denying: a denial would leak "a newer version exists but
+ *     you cannot have it".
+ *
+ * So a `204` must NOT be reported to a user as "you are up to date". The
+ * honest wording is "there is no update available to you". There is no
+ * client-side way to separate the two and there is not meant to be.
+ *
+ * A `403` is separate again and does not mean either of those: a suspended
+ * licence, or a product whose distribution strategy excludes this caller.
+ */
+TamgaErrorCode tamga_client_check_upgrade(TamgaClient *client, const char *product_id,
+                                          const char *platform, const char *filetype,
+                                          const char *version, const char *channel,
+                                          const char *constraint, TamgaResponse **out_response) {
+    TamgaBuf query_buf;
+    bool first = true;
+    bool built;
+    char canonical[TAMGA_UUID_STRING_SIZE];
+    char *query;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (client == NULL || platform == NULL || filetype == NULL || version == NULL ||
+        out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT,
+                               "client, platform, filetype, version and out_response are "
+                               "required");
+    }
+    status = tamga_require_uuid(product_id, "product_id");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    /* tamga_require_uuid above already parsed this same string with the same
+     * parser, so this cannot fail -- but it is checked rather than discarded,
+     * both because GCC rejects (void) as a suppression for a
+     * warn_unused_result function and because an invariant that is enforced
+     * survives the earlier call being moved. */
+    if (!tamga_uuid_normalize(product_id, canonical)) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "product_id must be a UUID");
+    }
+
+    /* All four of product/platform/filetype/version are required server-side:
+     * UpgradeQuery declares them as non-Option fields, so omitting one is a
+     * 400 at extraction rather than a defaulted search. */
+    tamga_buf_init(&query_buf);
+    built = tamga_query_add(&query_buf, &first, "product", canonical) &&
+            tamga_query_add(&query_buf, &first, "platform", platform) &&
+            tamga_query_add(&query_buf, &first, "filetype", filetype) &&
+            tamga_query_add(&query_buf, &first, "version", version);
+    if (built && channel != NULL) {
+        built = tamga_query_add(&query_buf, &first, "channel", channel);
+    }
+    if (built && constraint != NULL) {
+        built = tamga_query_add(&query_buf, &first, "constraint", constraint);
+    }
+    query = tamga_buf_detach_string(&query_buf, NULL);
+    tamga_buf_free(&query_buf);
+    if (!built || query == NULL) {
+        tamga_string_free(query);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+
+    status = tamga_client_send(client, "GET", "/releases/actions/upgrade", query, NULL, NULL, false,
+                               out_response);
+    tamga_string_free(query);
+    return status;
+}
+
+/* --- health -------------------------------------------------------------- */
+
+/*
+ * The one route in this SDK that is not account-scoped.
+ *
+ * `/v1/health` is registered outside the account router, is on the server's
+ * public-route allowlist, and bypasses the host-header middleware. Every URL
+ * builder in this SDK family unconditionally prepended
+ * `/v1/accounts/{account_id}`, which is why no SDK could call it -- the
+ * restriction was ours, not the server's.
+ *
+ * Its diagnostic value is exactly that combination: if every ordinary call
+ * answers `403` with "The Host header does not match any configured host"
+ * while this one succeeds, the problem is the deployment's
+ * `TAMGA_ALLOWED_HOSTS`, not the caller's credential.
+ *
+ * The body is a flat `{status, version, uptime_secs}` -- NOT a JSON:API
+ * document. Do not put it through anything that expects a `data` envelope.
+ *
+ * A credential is still sent, because this client has no unauthenticated
+ * mode and tamga_client_set_auth() is a precondition of every request. The
+ * route ignores it.
+ */
+TamgaErrorCode tamga_client_health(TamgaClient *client, TamgaResponse **out_response) {
+    tamga_error_clear();
+    if (client == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "client and out_response are required");
+    }
+    return tamga_client_send_scoped(client, TAMGA_PATH_ORIGIN, "GET", "/v1/health", NULL, NULL,
+                                    NULL, false, out_response);
 }

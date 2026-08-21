@@ -98,3 +98,37 @@ bool tamga_validation_code_is_overage(TamgaValidationCode code) {
     }
     return false;
 }
+
+TamgaValidationCode tamga_validation_code_from_error(TamgaErrorCode code) {
+    /*
+     * The server reports the same over-limit condition two different ways
+     * depending on the policy's overage strategy: as a creation-time 422 with
+     * an `*_LIMIT_EXCEEDED` error code under a strict strategy, or as a
+     * validation `meta.code` under ALLOW_ACCESS / ALLOW_1_25X_OVERAGE. This
+     * folds the first vocabulary onto the second so a caller writes one
+     * branch instead of two.
+     *
+     * A table for the same reason as above -- -Wswitch-enum would demand all
+     * 37 error codes be listed to say something about five of them.
+     */
+    static const struct {
+        TamgaErrorCode error;
+        TamgaValidationCode validation;
+    } LIMITS[] = {
+        {TAMGA_ERR_MACHINE_LIMIT_EXCEEDED, TAMGA_VALIDATION_TOO_MANY_MACHINES},
+        {TAMGA_ERR_CORE_LIMIT_EXCEEDED, TAMGA_VALIDATION_TOO_MANY_CORES},
+        {TAMGA_ERR_MEMORY_LIMIT_EXCEEDED, TAMGA_VALIDATION_TOO_MUCH_MEMORY},
+        {TAMGA_ERR_DISK_LIMIT_EXCEEDED, TAMGA_VALIDATION_TOO_MUCH_DISK},
+        {TAMGA_ERR_TOO_MANY_PROCESSES, TAMGA_VALIDATION_TOO_MANY_PROCESSES},
+    };
+    size_t i;
+
+    for (i = 0u; i < (sizeof(LIMITS) / sizeof(LIMITS[0])); i++) {
+        if (LIMITS[i].error == code) {
+            return LIMITS[i].validation;
+        }
+    }
+    /* Including TAMGA_OK. "Not a limit" is never "valid" -- a caller that
+     * read it that way would treat every non-limit failure as a pass. */
+    return TAMGA_VALIDATION_UNKNOWN;
+}

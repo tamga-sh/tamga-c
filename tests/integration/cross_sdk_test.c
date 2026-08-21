@@ -16,11 +16,15 @@
  */
 #include "tamga_test.h"
 
+#include "checkout/cert.h"
 #include "checkout/license_file.h"
 #include "checkout/machine_file.h"
+#include "checkout/pem.h"
+#include "crypto/rsa.h"
 #include "proof.h"
 #include "tamga_error.h"
 #include "tamga_mem.h"
+#include "util/base64.h"
 #include "util/json.h"
 
 #define CAP 4096
@@ -94,8 +98,22 @@ TT_TEST(decrypts_an_encrypted_licence_file_from_another_sdk) {
                      TAMGA_ERR_DECRYPTION_FAILED);
 }
 
-static void verifies_machine_file(const char *fixture, const char *key_fixture, uint32_t scheme,
-                                  const char *license_key, const char *fingerprint) {
+/*
+ * tamga-go's machine files are all offline format v1.
+ *
+ * Every one of them declares `alg` without the mandatory `+v2` segment --
+ * `base64+ed25519`, `aes-256-gcm+ecdsa-p256`, and so on -- which is the same
+ * shape this repository's own generator produced, and the same shape the
+ * server stopped emitting. Three implementations agreeing on a wrong reading
+ * of the format is exactly the case the cross-SDK set cannot catch, and it is
+ * why tests/fixtures/server-machine-files/ exists.
+ *
+ * They are asserted as refused rather than deleted. "We skipped that one"
+ * loses the finding, and if a future change made one of these verify, this
+ * SDK would be accepting v1 again.
+ */
+static void refuses_a_v1_machine_file(const char *fixture, const char *key_fixture, uint32_t scheme,
+                                      const char *license_key, const char *fingerprint) {
     unsigned char pem[CAP];
     unsigned char pubkey[CAP];
     size_t pem_len = load(fixture, pem, sizeof(pem));
@@ -107,39 +125,33 @@ static void verifies_machine_file(const char *fixture, const char *key_fixture, 
         return;
     }
 
-    status = tamga_machine_file_verify_into((const char *)pem, pem_len, scheme, pubkey, pubkey_len,
-                                            license_key, fingerprint, &resource);
-    if (status != TAMGA_OK) {
+    status = tamga_machine_file_verify_at((const char *)pem, pem_len, scheme, pubkey, pubkey_len,
+                                          license_key, fingerprint, NOW, &resource, NULL);
+    if (status != TAMGA_ERR_UNSUPPORTED_SCHEME) {
         tt_failures_++;
-        (void)fprintf(stderr, "FAIL %s: %s rejected with %s (%s)\n", tt_current_, fixture,
-                      tamga_error_name(status),
+        (void)fprintf(stderr, "FAIL %s: %s should be refused as format v1, got %s (%s)\n",
+                      tt_current_, fixture, tamga_error_name(status),
                       tamga_last_error_message() ? tamga_last_error_message() : "");
-        return;
     }
-    {
-        const TamgaJson *attributes = tamga_json_object_get(resource, "attributes");
-        const char *value =
-            tamga_json_as_string(tamga_json_object_get(attributes, "fingerprint"), NULL);
-        if (value == NULL || strcmp(value, FINGERPRINT) != 0) {
-            tt_failures_++;
-            (void)fprintf(stderr, "FAIL %s: %s decoded the wrong machine\n", tt_current_, fixture);
-        }
+    if (resource != NULL) {
+        tt_failures_++;
+        (void)fprintf(stderr, "FAIL %s: %s left a resource behind\n", tt_current_, fixture);
+        tamga_json_free(resource);
     }
-    tamga_json_free(resource);
 }
 
-TT_TEST(verifies_every_machine_file_scheme_from_another_sdk) {
-    verifies_machine_file("cross-sdk/machine_file_ed25519.machine", "cross-sdk/ed25519_pubkey.bin",
-                          (uint32_t)TAMGA_SCHEME_ED25519_SIGN, NULL, NULL);
-    verifies_machine_file("cross-sdk/machine_file_rsa_pkcs1.machine",
-                          "cross-sdk/rsa_pkcs1_pubkey.der",
-                          (uint32_t)TAMGA_SCHEME_RSA_2048_PKCS1_SIGN, NULL, NULL);
-    /* RSA-PSS is deliberately absent -- see
-     * rejects_a_pss_signature_with_a_salt_the_reference_rejects below. */
-    /* The ECDSA fixture is the encrypted variant, so this one covers the
-     * machine-file HKDF derivation as well as the signature. */
-    verifies_machine_file("cross-sdk/machine_file_ecdsa.machine", "cross-sdk/ecdsa_point.bin",
-                          (uint32_t)TAMGA_SCHEME_ECDSA_P256_SIGN, LICENCE_KEY, FINGERPRINT);
+TT_TEST(refuses_every_v1_machine_file_from_another_sdk) {
+    refuses_a_v1_machine_file("cross-sdk/machine_file_ed25519.machine",
+                              "cross-sdk/ed25519_pubkey.bin", (uint32_t)TAMGA_SCHEME_ED25519_SIGN,
+                              NULL, NULL);
+    refuses_a_v1_machine_file("cross-sdk/machine_file_rsa_pkcs1.machine",
+                              "cross-sdk/rsa_pkcs1_pubkey.der",
+                              (uint32_t)TAMGA_SCHEME_RSA_2048_PKCS1_SIGN, NULL, NULL);
+    refuses_a_v1_machine_file("cross-sdk/machine_file_rsa_pss.machine",
+                              "cross-sdk/rsa_pss_pubkey.der",
+                              (uint32_t)TAMGA_SCHEME_RSA_2048_PKCS1_PSS_SIGN, NULL, NULL);
+    refuses_a_v1_machine_file("cross-sdk/machine_file_ecdsa.machine", "cross-sdk/ecdsa_point.bin",
+                              (uint32_t)TAMGA_SCHEME_ECDSA_P256_SIGN, LICENCE_KEY, FINGERPRINT);
 }
 
 /*
@@ -156,25 +168,52 @@ TT_TEST(verifies_every_machine_file_scheme_from_another_sdk) {
  * digest length is the fleet's convention, and this SDK matching the
  * reference is correct while being stricter than tamga-go's verifier.
  *
- * Asserted rather than deleted, because "we skipped that one" loses the
- * finding. If a future change made this file verify, this SDK would be
- * accepting signatures the reference rejects -- which is a divergence worth
- * failing a test over, whichever direction it runs in.
+ * The assertion goes straight at tamga_rsa_verify_pss_sha256() rather than
+ * through the machine-file entry point, because that file is also format v1
+ * and would now be refused on its alg before any signature was checked --
+ * which would quietly turn this into a test of the version marker and lose
+ * the salt finding entirely.
  */
 TT_TEST(rejects_a_pss_signature_with_a_salt_the_reference_rejects) {
     unsigned char pem[CAP];
     unsigned char pubkey[CAP];
     size_t pem_len = load("cross-sdk/machine_file_rsa_pss.machine", pem, sizeof(pem));
     size_t pubkey_len = load("cross-sdk/rsa_pss_pubkey.der", pubkey, sizeof(pubkey));
-    TamgaJson *resource = NULL;
+    char *body = NULL;
+    size_t body_len = 0u;
+    TamgaCert cert;
+    unsigned char *signature;
+    size_t signature_len = 0u;
+    bool verified;
 
     TT_ASSERT(pem_len != (size_t)-1 && pubkey_len != (size_t)-1);
+    TT_ASSERT_EQ_INT(tamga_pem_extract((const char *)pem, pem_len, "-----BEGIN MACHINE FILE-----",
+                                       "-----END MACHINE FILE-----", &body, &body_len),
+                     TAMGA_OK);
+    TT_ASSERT_EQ_INT(tamga_cert_parse(body, body_len, &cert), TAMGA_OK);
+    tamga_string_free(body);
 
-    TT_ASSERT_EQ_INT(tamga_machine_file_verify_into((const char *)pem, pem_len,
-                                                    (uint32_t)TAMGA_SCHEME_RSA_2048_PKCS1_PSS_SIGN,
-                                                    pubkey, pubkey_len, NULL, NULL, &resource),
-                     TAMGA_ERR_SIGNATURE_INVALID);
-    TT_ASSERT_NULL(resource);
+    signature = tamga_base64_decode_alloc(cert.sig, cert.sig_len, &signature_len);
+    if (signature == NULL) {
+        tt_failures_++;
+        (void)fprintf(stderr, "FAIL %s: the signature did not decode\n", tt_current_);
+        tamga_cert_free(&cert);
+        return;
+    }
+
+    /* Over enc's base64 STRING bytes, as the format requires. */
+    verified = tamga_rsa_verify_pss_sha256(pubkey, pubkey_len, (const unsigned char *)cert.enc,
+                                           cert.enc_len, signature, signature_len);
+    tamga_free(signature);
+    tamga_cert_free(&cert);
+
+    if (verified) {
+        tt_failures_++;
+        (void)fprintf(stderr,
+                      "FAIL %s: a 222-byte-salt PSS signature verified; the reference "
+                      "implementation rejects it\n",
+                      tt_current_);
+    }
 }
 
 /*
@@ -289,7 +328,7 @@ TT_TEST(reproduces_another_sdks_canonical_payload_exactly) {
 int main(void) {
     TT_RUN(verifies_a_plain_licence_file_from_another_sdk);
     TT_RUN(decrypts_an_encrypted_licence_file_from_another_sdk);
-    TT_RUN(verifies_every_machine_file_scheme_from_another_sdk);
+    TT_RUN(refuses_every_v1_machine_file_from_another_sdk);
     TT_RUN(rejects_a_pss_signature_with_a_salt_the_reference_rejects);
     TT_RUN(verifies_an_offline_proof_from_another_sdk);
     TT_RUN(reproduces_another_sdks_canonical_payload_exactly);

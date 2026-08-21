@@ -1,10 +1,16 @@
 # The pre-1.3 C ABI harness, kept as the compatibility gate.
 #
-# The three test_*.c sources here are byte-for-byte unchanged across the
-# native rewrite, fixtures included: they were written against v1.x's public
-# header and nothing else. If they still compile and pass, the ABI genuinely
-# did not break -- which is a stronger statement than any assertion this
-# rewrite could make about itself.
+# These test_*.c sources were written against v1.x's public header and nothing
+# else. If they still compile and pass, the ABI genuinely did not break --
+# which is a stronger statement than any assertion this rewrite could make
+# about itself.
+#
+# test_machine_file.c is the one file no longer byte-for-byte identical, and
+# the reason is recorded at the top of it: the machine file it shipped with is
+# offline format v1, which is now refused. That is a change in what a v1 file
+# means, not a change in the ABI -- every signature, enum value and ownership
+# rule it exercises is unchanged, and it still drives only tamga.h. Its
+# original bytes are kept in the file as the negative case.
 #
 # They link the SHARED library on purpose. It is built with hidden visibility,
 # so only the exported entry points are reachable through it; a test that

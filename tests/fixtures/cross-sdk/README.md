@@ -26,10 +26,10 @@ in `proof_params.txt` (account id, machine id, fingerprint, one per line).
 |---|---|
 | `license_file_plain.lic` | `base64+ed25519+v2` |
 | `license_file_encrypted.lic` | `aes-256-gcm+ed25519+v2` |
-| `machine_file_ed25519.machine` | `base64+ed25519` |
-| `machine_file_rsa_pkcs1.machine` | `base64+rsa-sha256` |
-| `machine_file_rsa_pss.machine` | `base64+rsa-pss-sha256` — see the divergence below |
-| `machine_file_ecdsa.machine` | `aes-256-gcm+ecdsa-p256` (the encrypted variant) |
+| `machine_file_ed25519.machine` | `base64+ed25519` — **format v1, refused** |
+| `machine_file_rsa_pkcs1.machine` | `base64+rsa-sha256` — **format v1, refused** |
+| `machine_file_rsa_pss.machine` | `base64+rsa-pss-sha256` — **format v1**; see the divergence below |
+| `machine_file_ecdsa.machine` | `aes-256-gcm+ecdsa-p256` — **format v1, refused** |
 | `ed25519_pubkey.bin` | 32 raw bytes |
 | `rsa_pkcs1_pubkey.der`, `rsa_pss_pubkey.der` | SubjectPublicKeyInfo |
 | `ecdsa_point.bin` | 65-byte uncompressed point |
@@ -40,6 +40,16 @@ in `proof_params.txt` (account id, machine id, fingerprint, one per line).
 character by character localises a canonical-JSON divergence to the
 serializer, instead of leaving it as "the signature did not verify" — which
 could equally be the hash or the RSA arithmetic.
+
+## tamga-go's machine files are format v1 too
+
+None of them carries the `+v2` segment the server now emits, so all four are
+refused, and `cross_sdk_test.c` asserts that rather than skipping them. This
+is the limitation the note above predicted out loud: "a format detail all
+three got wrong the same way would still slip through". It did, for two years.
+`../server-machine-files/` is the fixture set that closes it.
+
+The two licence files are unaffected — both are `+v2` and both still verify.
 
 ## The RSA-PSS divergence
 
@@ -58,6 +68,11 @@ The test asserts the rejection rather than skipping the file. "We skipped that
 one" loses the finding; and if a future change made this file verify, this SDK
 would be accepting signatures the reference rejects — a divergence worth
 failing a test over, whichever direction it runs in.
+
+Because the file is also format v1, the assertion goes straight at
+`tamga_rsa_verify_pss_sha256()` rather than through the machine-file entry
+point, which would now refuse it on its `alg` before any signature was checked
+and quietly turn this into a test of the version marker.
 
 ## Regenerating
 

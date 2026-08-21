@@ -24,10 +24,14 @@ HTTP half needs a transport, which is either an operating-system component
 
 - validate a licence by key or by id, with or without a scope
 - check in, and check out `.lic` and machine files
-- register, activate, heartbeat and delete machines
+- register, activate, heartbeat, read, update and delete machines
+- re-activate a machine that already holds a seat, without an error
+- read a licence, and the policy behind it
 - generate an offline proof
-- register components and processes
+- register, list and dispose of components and processes
 - list and query entitlements
+- ask whether a newer release is available
+- probe the server's health, for when nothing else works
 
 Everything the [Rust reference SDK](https://github.com/tamga-sh/tamga-rust)
 exposes is here.
@@ -84,6 +88,8 @@ TamgaClient *client = NULL;
 TamgaResponse *response = NULL;
 
 tamga_client_new("<account-id>", "api.tamga.sh", &client);
+/* Licence-key auth needs the policy's authentication_strategy set to LICENSE
+   or MIXED -- the default TOKEN answers 401 LICENSE_NOT_ALLOWED. */
 tamga_client_set_auth(client, TAMGA_AUTH_LICENSE, "<licence-key>", NULL);
 
 if (tamga_client_validate_by_key(client, "<licence-key>", NULL, &response) == TAMGA_OK) {
@@ -158,14 +164,25 @@ one will disagree with the gate.
 ### Opening a pull request
 
 ```sh
-sh scripts/mr.sh              # target: main
-sh scripts/mr.sh some-branch  # another target
+sh Scripts/mr.sh              # target: main, or the pull request's own base
+sh Scripts/mr.sh some-branch  # another target
 ```
+
+The directory is capitalised. It is the only top-level one that is, and a
+lowercase `scripts/` works on macOS only because the filesystem is
+case-insensitive — on Linux it fails outright.
 
 This runs the checks CI runs — formatting, build, the full suite, and the
 `TAMGA_HTTP=none` build whenever the library itself changed — and only then
-pushes and opens the pull request. Use it rather than `gh pr create` directly:
-the push is its last step, not its purpose.
+pushes. Use it rather than `gh pr create` or `git push` directly: the push is
+its last step, not its purpose.
+
+It handles a branch that **already has an open pull request**, which is most
+of a branch's life: it runs the same checks and pushes to that pull request
+instead of trying to open a second one. It also takes the base branch from the
+pull request itself, so a stacked branch does not need the target spelled out
+— pass one only to override, and it will refuse if it disagrees with the pull
+request rather than guess.
 
 It also **derives the pull-request title** from the branch's commits, taking
 the highest semver-relevant conventional type actually present. That is not
@@ -223,11 +240,18 @@ thread — copy it if you need it longer.
 `NULL` on that thread. A failing call always sets one. No error message ever
 contains a licence key, token or password.
 
-**Offline files expire.** A `.lic` file carries a signed expiry, enforced with
-sixty seconds of clock skew and reported as `TAMGA_ERR_EXPIRED` rather than as
-a signature failure — a caller that cannot tell "expired" from "forged" either
-accuses the user of tampering when their trial ends, or treats a forgery as a
-renewal prompt. A file checked out with no `ttl` never expires.
+**Offline files expire.** Both a `.lic` file and a machine file carry a signed
+expiry, enforced with sixty seconds of clock skew and reported as
+`TAMGA_ERR_EXPIRED` rather than as a signature failure — a caller that cannot
+tell "expired" from "forged" either accuses the user of tampering when their
+trial ends, or treats a forgery as a renewal prompt. A file checked out with
+no `ttl` never expires; the server omits the claim entirely, and its absence
+is not an error.
+
+**Offline files are format v2 only.** Both formats' `alg` must end in `+v2`,
+and a v1 file is rejected with `TAMGA_ERR_UNSUPPORTED_SCHEME` and no fallback.
+In v1 the expiry lived outside the signature, and the encryption key came from
+zero-padding the licence key rather than from HKDF.
 
 **The client's clock is the user's clock.** For a stricter offline grace
 period, keep a server-supplied timestamp and check the file's expiry against
@@ -236,12 +260,169 @@ that instead of the system clock.
 **Machine files need the fingerprint.** An encrypted machine file's key is
 derived from the licence key *and* the machine's fingerprint, so a file issued
 for one machine cannot be decrypted on another even by someone holding the
-licence key.
+licence key. Its payload is framed differently from a licence file's, too:
+`"<nonce_b64>.<ciphertext_b64>"`, two halves encoded separately, where the
+licence file uses a single `base64(nonce||ciphertext||tag)` blob. Both are
+handled internally; the distinction only matters if you are reading the bytes
+yourself.
 
-**Registering a machine does not check seat limits.** Creation succeeds even
-when a licence is at its maximum; the limit surfaces on the next validation.
-Use `tamga_client_activate_machine()`, which composes the two and can undo an
-over-limit activation.
+**Licence-key authentication is off by default.** `TAMGA_AUTH_LICENSE` only
+works when the licence's policy sets `authentication_strategy` to `LICENSE` or
+`MIXED`. The column defaults to `TOKEN`, and `NONE` refuses licence keys too —
+either one answers `401 LICENSE_NOT_ALLOWED`
+(`TAMGA_ERR_LICENSE_NOT_ALLOWED`) on *every* call. That is a provisioning
+precondition, not a transient failure and not a bad key, so retrying or
+re-prompting for the key never helps. Two calls stay closed to a licence key
+whatever the strategy: `tamga_client_reset_heartbeat()` and
+`tamga_client_generate_offline_proof()` are role-gated to admin, developer,
+product and environment tokens and always answer `403`.
+
+**An over-limit activation is reported two different ways.** Registering a
+machine *does* check the licence's limits, and what happens next is the
+policy's overage strategy. Under a strict strategy the creation itself is
+rejected with `422` and one of the `TAMGA_ERR_*_LIMIT_EXCEEDED` codes. Under
+`ALLOW_ACCESS` or `ALLOW_1_25X_OVERAGE` it succeeds and the same limit only
+appears on the next validation. Use `tamga_client_activate_machine()`, which
+handles both: it returns the limit code directly on a rejected creation, and
+undoes an accepted-then-over-limit one. `tamga_validation_code_from_error()`
+folds the first vocabulary onto the second so one branch covers both.
+
+**`memory` and `disk` are megabytes.** Not bytes. The server sums them into
+the licence's running memory and disk totals, which the limits are checked
+against — reporting 16 GiB as `17179869184` instead of `16384` inflates that
+total by a factor of a million and trips `MEMORY_LIMIT_EXCEEDED` on somebody
+else's activation.
+
+**Re-activating an already-activated machine is normal, and there are two
+calls for it.** `tamga_client_activate_machine()` reports the server's `409
+FINGERPRINT_TAKEN` as an error, which is right for a first activation and
+wrong for the restart of an installed application.
+`tamga_client_activate_machine_idempotent()` treats it the way the server
+intends: it looks the existing machine up on the same licence and validates
+it. The server checks fingerprint uniqueness *before* the seat limits
+precisely so that a re-activation is reported as a conflict rather than as
+"buy more seats" — its own comment on that branch says the conflict means
+"already activated, carry on".
+
+The conflict still stands when it is real. A policy set to
+`UNIQUE_PER_POLICY` or `UNIQUE_PER_ACCOUNT` refuses a fingerprint already
+registered anywhere in that scope, so the machine holding it can belong to a
+*different* licence. The lookup is therefore scoped to the licence being
+activated, server-side — a machine resource carries no licence id, so there is
+no way to check it locally — and that scope is the point rather than a
+limitation: returning the other licence's machine would leave you holding a
+machine id whose seat belongs to that licence, with this one's machine count
+never incremented, which is the arrangement those strategies exist to forbid.
+
+To find out *which* licence holds a fingerprint, search account-wide with
+`tamga_client_list_machines(client, NULL, fingerprint, ...)`. That is a
+diagnostic, and deliberately a separate call.
+
+**No machine route is scoped to your licence.** The server applies its
+`require_license_scope` check to the licence validate and check-out routes and
+to no machine route at all, while a licence-key credential carries
+`machine.read`, `machine.update` and `machine.delete` by default. So a licence
+key can read, update and delete *any* machine in the account by id. Reported
+upstream; noted here so nothing in this SDK reads as a scoped surface.
+
+**The machine collection is the one listing that is not keyset-paginated.**
+`tamga_client_list_machines()` goes through the server's offset paginator:
+`page[number]`, `page[size]`, and `meta.page{number,size,total,totalPages}`,
+read with `tamga_response_page()`. Every other listing here is keyset-based
+and uses `tamga_response_next_cursor()`. Using the wrong one does not fail
+loudly — a cursor derived from a machine listing addresses the first page
+forever.
+
+There is also no exact-fingerprint filter: `filter[q]` is a case-insensitive
+*substring* match across `name`, `hostname` and `fingerprint`, so anything
+looking for one exact value has to re-check what comes back.
+`tamga_client_find_machine_by_fingerprint()` is that check, written once.
+
+**The heartbeat window comes from the policy, not from
+`next_heartbeat_at`.** Read it with `tamga_client_get_license_policy()` and
+`tamga_response_heartbeat_window_secs()`; it is the policy's
+`heartbeat_duration`, or 600 seconds when the policy sets none. Ping at about
+a third of it.
+
+Do not derive it from a machine's `next_heartbeat_at`. That field is computed
+against the 600-second fallback on the create, ping-heartbeat and
+reset-heartbeat responses, and against the real `policy.heartbeat_duration` on
+check-out, generate-offline-proof and the machine reads — only the read
+queries join `policies`. Two responses for the same machine, seconds apart,
+can disagree about when the next heartbeat is due, and the endpoint a
+heartbeat loop naturally calls is the one that is wrong. Reported upstream.
+
+A window is not the same thing as culling: `policies.require_heartbeat`
+defaults to false and the cull job early-returns when it is, so on a default
+policy no machine is ever removed for missing a heartbeat.
+
+**A licence key cannot read `/policies/{id}`, and can read every other
+licence.** Two separate asymmetries, both server-side:
+
+`tamga_client_get_policy()` gates on the `policy.read` permission, which a
+licence-key credential does not carry — it answers `403` whatever the
+policy's authentication strategy says. `tamga_client_get_license_policy()`
+reaches the identical resource through `license.read`, which a licence key
+does carry, and is the call to use.
+
+Neither `tamga_client_get_license()` nor `tamga_client_get_license_policy()`
+is confined to the credential's own licence. The server applies its
+`require_license_scope` check to validate, quick-validate, validate-key and
+check-out, and not to these two — so one licence key can read every other
+licence in the same account by id, including `attributes.key`, the plaintext
+licence key. That is the server's behaviour, it has been reported upstream,
+and an SDK cannot fix it. Do not treat these two calls as a scoped surface.
+
+**Processes have to be disposed of; nothing else removes them.** The server
+has a process reaper, but nothing calls it, so no process row is ever deleted
+automatically. Every row keeps counting towards the licence's process total,
+and that total is what `TOO_MANY_PROCESSES` is checked against — so an
+application that registers a process per run and never deletes one works
+until it does not, and the failure lands on a later, innocent run. Pair every
+`tamga_client_create_process()` with `tamga_client_delete_process()` on the
+way out, including on the error paths. It answers `204` whether or not the row
+was there.
+
+**`204` from the update check means two things.**
+`tamga_client_check_upgrade()` gets `204 No Content` both when there is no
+newer release *and* when there is one this licence is not entitled to,
+because refusing the second explicitly would leak "a newer version exists but
+you cannot have it". There is no client-side way to tell them apart and there
+is not meant to be — so do not report a `204` as "you are up to date". The
+accurate wording is *there is no update available to you*.
+
+**`tamga_client_health()` is the only call that skips the account prefix.**
+`/v1/health` is public, sits outside the account router, and bypasses the
+host-header middleware. If every ordinary call is failing with `403` and "The
+Host header does not match any configured host" while this one succeeds, the
+fault is the deployment's `TAMGA_ALLOWED_HOSTS`, not your credential. Its body
+is a flat `{status, version, uptime_secs}`, not a JSON:API document.
+
+**Entitlements cannot be paginated.** `GET /licenses/{id}/entitlements` accepts
+`page[after]` and ignores it: the listing is a union of direct and
+policy-inherited rows, which no single cursor describes. `limit` bounds it
+instead, defaulting to 25 and capped at 100 — so a licence with more than 100
+effective entitlements cannot be read out in full, and a `false` from
+`tamga_client_has_entitlement()` is only authoritative below that ceiling.
+Never loop on `tamga_response_next_cursor()` for this route; it would return
+the same first page forever. It works correctly for
+`tamga_client_list_components()`, where the server really does apply the
+cursor.
+
+**`scope.version` and `scope.checksum` fail the whole call.** They are not
+ignored: the server rejects either with `422 SCOPE_NOT_SUPPORTED` before any
+validation runs, so no verdict comes back at all. The other six scope
+members — `product`, `policy`, `user`, `environment`, `entitlements` and
+`fingerprint` — are enforced, and a mismatch is a normal validation outcome
+rather than an error.
+
+**Quick-validate silently skips its write when the request carries `Origin`.**
+`tamga_client_quick_validate()` normally stamps `last_validated_at`, but the
+server skips that whenever an `Origin` header is present — and the two
+responses are identical, so there is no way to tell. This SDK's own transports
+never send `Origin`; one registered through `tamga_client_set_transport()`, or
+a proxy in front of it, can. When the write matters, use
+`tamga_client_validate_by_id()`.
 
 **Threading.** Every function is safe to call concurrently on distinct
 handles, and the last-error slot is per-thread. A single `TamgaClient` or

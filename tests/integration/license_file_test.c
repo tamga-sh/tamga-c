@@ -36,7 +36,7 @@ TT_TEST(verifies_a_plain_licence_file) {
     unsigned char pubkey[32];
     size_t pem_len;
     TamgaJson *resource = NULL;
-    TamgaLicenseClaims claims;
+    TamgaFileClaims claims;
     char *json;
 
     TT_ASSERT(load_pubkey(pubkey));
