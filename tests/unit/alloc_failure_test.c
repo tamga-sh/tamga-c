@@ -290,6 +290,49 @@ static TamgaErrorCode validate_by_id(void) {
     return status;
 }
 
+/*
+ * Models a caller written against 1.3.0: it does NOT free `*out_response` on
+ * a failed activation, because in 1.3.0 that pointer was always NULL there.
+ *
+ * That contract is preserved for every creation failure except the five
+ * create-time limit codes, so this must strand nothing. If
+ * tamga_client_activate_machine() were widened to hand its creation response
+ * back on any failure, this op would leak one response per call and the walk
+ * below would report it -- which is the whole point of writing it this way.
+ * LeakSanitizer would catch it too, but it is unsupported on macOS, so this
+ * counter is the check that actually runs everywhere.
+ */
+static TamgaErrorCode activate_machine_conflict_without_freeing(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status =
+        tamga_client_activate_machine(g_client, "01926b3e-0000-7000-8000-0000000000bb",
+                                      "fingerprint-1", NULL, NULL, true, &response);
+
+    if (status != TAMGA_ERR_OUT_OF_MEMORY && response != NULL) {
+        /* Deliberately not freed -- see above. Returning a code the walk does
+         * not expect is how the assertion fails loudly rather than by
+         * stranding a block a later reset would forget about. */
+        return TAMGA_ERR_UNKNOWN;
+    }
+    return status;
+}
+
+/*
+ * The other half: on a create-time limit the response IS handed back, so
+ * ownership genuinely transfers and a single free has to balance it exactly
+ * -- no leak, and no double free when an allocation failed part-way through
+ * building it.
+ */
+static TamgaErrorCode activate_machine_limit_and_free(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status =
+        tamga_client_activate_machine(g_client, "01926b3e-0000-7000-8000-0000000000bb",
+                                      "fingerprint-1", NULL, NULL, true, &response);
+
+    tamga_response_free(response);
+    return status;
+}
+
 TT_TEST(request_builders_survive_every_allocation_failure) {
     /* The last case is a non-2xx reply, and its expected outcome is the
      * specific error the server sent, not TAMGA_OK. Falling back to the
@@ -313,6 +356,19 @@ TT_TEST(request_builders_survive_every_allocation_failure) {
          "{\"errors\":[{\"status\":\"422\",\"code\":\"DATASET_INVALID\","
          "\"title\":\"Unprocessable\",\"detail\":\"dataset must be an object\"}]}",
          TAMGA_ERR_DATASET_INVALID},
+        /* The two activate_machine creation-failure shapes. They differ only
+         * in whether the response comes back, which is exactly the contract
+         * these two ops assert from opposite sides. */
+        {"tamga_client_activate_machine (409, caller frees nothing)",
+         activate_machine_conflict_without_freeing, 409,
+         "{\"errors\":[{\"status\":\"409\",\"code\":\"FINGERPRINT_TAKEN\","
+         "\"title\":\"Conflict\",\"detail\":\"fingerprint is already taken\"}]}",
+         TAMGA_ERR_FINGERPRINT_TAKEN},
+        {"tamga_client_activate_machine (422 limit, caller frees)", activate_machine_limit_and_free,
+         422,
+         "{\"errors\":[{\"status\":\"422\",\"code\":\"MACHINE_LIMIT_EXCEEDED\","
+         "\"title\":\"Unprocessable\",\"detail\":\"machine limit exceeded\"}]}",
+         TAMGA_ERR_MACHINE_LIMIT_EXCEEDED},
     };
     size_t i;
 

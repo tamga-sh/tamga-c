@@ -1007,10 +1007,30 @@ TAMGA_API TamgaErrorCode tamga_client_create_machine(TamgaClient *client, const 
  *    caller asked for -- and any machine left behind is still visible to
  *    normal machine management for manual cleanup.
  *
- * On success the returned response is the validation result. On a failing
- * status it is whichever call failed, so tamga_response_status() and
- * tamga_response_error_code() describe the actual rejection; it is NULL only
- * when the request never reached a transport.
+ * What `*out_response` holds, exactly:
+ *
+ *  - `TAMGA_OK`: the validation result.
+ *  - A validation failure: the validation response, so
+ *    tamga_response_status() and tamga_response_error_code() describe the
+ *    rejection.
+ *  - A creation-time LIMIT failure -- one of the five
+ *    `TAMGA_ERR_*_LIMIT_EXCEEDED` codes: the creation error response, for the
+ *    same reason.
+ *  - ⚠️ ANY OTHER creation failure -- `TAMGA_ERR_FINGERPRINT_TAKEN`, an
+ *    unmodelled 4xx, a 5xx, a transport failure: `NULL`, and the creation
+ *    response is freed internally.
+ *
+ * That last case is an asymmetry with the validation path, and it is
+ * deliberate rather than an oversight -- do not "tidy" it up. Callers written
+ * against 1.3.0 learned that `*out_response` is always NULL when a creation
+ * fails and do not free on that path; handing them a response would leak one
+ * per failed activation on a patch upgrade to code that did not change. The
+ * limit codes are new, so no caller can have that expectation about them.
+ * Aligning the two paths is a contract change and needs a release that says
+ * so.
+ *
+ * In every case, freeing `*out_response` unconditionally is correct and is
+ * what a caller should do: tamga_response_free(NULL) is a documented no-op.
  *
  * `scope_json` is passed straight through to the validation -- see
  * tamga_client_validate_by_id() for what the server enforces. Binding

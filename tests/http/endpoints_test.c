@@ -500,6 +500,48 @@ TT_TEST(activate_machine_reports_a_creation_time_limit_without_deleting) {
 }
 
 /*
+ * The mirror of the test above, and the reason that one asserts a non-NULL
+ * response rather than shrugging at it.
+ *
+ * Handing the creation response back is scoped to the create-time LIMIT codes
+ * alone. Every other creation failure keeps the 1.3.0 contract exactly --
+ * `*out_response` stays NULL and the creation response is freed internally --
+ * because a caller written against 1.3.0 learned that and does not free on
+ * that path. Widening it would leak one TamgaResponse per failed activation
+ * in code that did not change, on a patch upgrade.
+ *
+ * 409 FINGERPRINT_TAKEN is the case that matters in practice: it is what a
+ * second launch on an already-activated machine looks like, so it is the
+ * creation failure a real integration hits most.
+ */
+TT_TEST(a_non_limit_creation_failure_hands_back_no_response) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 409,
+               "{\"errors\":[{\"status\":\"409\",\"code\":\"FINGERPRINT_TAKEN\","
+               "\"title\":\"Conflict\",\"detail\":\"fingerprint is already taken\"}]}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(
+        tamga_client_activate_machine(client, LICENSE_ID, "fp-1", NULL, NULL, true, &response),
+        TAMGA_ERR_FINGERPRINT_TAKEN);
+
+    /* Still only the create -- no validate, no DELETE. */
+    TT_ASSERT_EQ_SIZE(mock.call_count, 1u);
+    /* And nothing handed back, so a 1.3.0 caller that does not free here
+     * still does not leak. ASan's LeakSanitizer proves the response was
+     * actually freed internally rather than dropped. */
+    TT_ASSERT_NULL(response);
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
  * The same licence state under ALLOW_ACCESS / ALLOW_1_25X_OVERAGE: the
  * server's create-time limit check runs through the policy's overage strategy
  * and lets the creation through, so the limit only appears at validation --
@@ -706,6 +748,7 @@ int main(void) {
     TT_RUN(has_entitlement_matches_on_code_not_name);
     TT_RUN(activate_machine_creates_then_validates);
     TT_RUN(activate_machine_reports_a_creation_time_limit_without_deleting);
+    TT_RUN(a_non_limit_creation_failure_hands_back_no_response);
     TT_RUN(activate_machine_still_rolls_back_when_the_overage_strategy_allows_the_create);
     TT_RUN(activate_machine_undoes_an_over_limit_activation);
     TT_RUN(activate_machine_keeps_the_machine_on_a_non_overage_failure);

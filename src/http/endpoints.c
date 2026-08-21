@@ -571,17 +571,32 @@ TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *li
          * the rollback DELETE here would address a machine that was never
          * created.
          *
-         * The creation response is handed back rather than dropped, so the
-         * caller can read the server's own code and status off it, matching
-         * what the validate-failure path below already does.
-         * tamga_validation_code_from_error() turns the returned code into the
-         * validation code that means the same thing.
+         * On that path ALONE the creation response is handed back, so the
+         * caller can read the server's own code and status off it and feed
+         * the returned code to tamga_validation_code_from_error(). Every
+         * other creation failure keeps the pre-1.3.1 behaviour exactly:
+         * `created` is freed here and `*out_response` stays NULL.
+         *
+         * ⚠️ That is deliberately narrower than the validate-failure path
+         * below, which hands its response back on every outcome. The
+         * asymmetry is known and is not an oversight to tidy away. Widening
+         * this branch would start handing a response to callers that have
+         * read `*out_response == NULL` as "activation failed, nothing to
+         * free" since 1.3.0 -- leaking one TamgaResponse per failed
+         * activation in code that did not change, on a patch upgrade. The
+         * limit codes are new in 1.3.1, so no caller can hold an expectation
+         * about them; widening the rest is a contract change and belongs in a
+         * release that announces one.
          *
          * A successful send always yields a response, but the machine id is
          * read out of it below, and a null there would be a crash rather than
          * an error -- so the invariant is checked, not assumed.
          */
-        if (out_response != NULL && created != NULL) {
+        bool is_create_time_limit =
+            (created != NULL) &&
+            (tamga_validation_code_from_error(status) != TAMGA_VALIDATION_UNKNOWN);
+
+        if (out_response != NULL && is_create_time_limit) {
             *out_response = created;
         } else {
             tamga_response_free(created);
