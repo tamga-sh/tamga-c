@@ -735,7 +735,6 @@ TAMGA_API const char *tamga_response_header(const TamgaResponse *response, const
  */
 TAMGA_API const char *tamga_response_error_code(const TamgaResponse *response);
 
-/** Whether a validation response reports the licence as valid. */
 /**
  * The cursor for the next page of a listing, or NULL when this was the last
  * page — pass it back as `after` to tamga_client_list_components().
@@ -759,6 +758,18 @@ TAMGA_API const char *tamga_response_error_code(const TamgaResponse *response);
  */
 TAMGA_API const char *tamga_response_next_cursor(const TamgaResponse *response, uint32_t limit);
 
+/**
+ * Whether a validation response reports the licence as valid.
+ *
+ * Reads `meta.valid`, or the top-level `valid` on quick-validate, which
+ * answers with no `data` envelope.
+ *
+ * False is not by itself proof of an invalid licence: a response carrying no
+ * readable `valid` flag — the wrong response passed, or an error document —
+ * reads false too. Failing closed is deliberate, but when the two must be
+ * told apart, pair this with tamga_response_validation_code(), which answers
+ * NULL where there is no verdict to report and a code string where there is.
+ */
 TAMGA_API bool tamga_response_validation_is_valid(const TamgaResponse *response);
 
 /**
@@ -796,11 +807,35 @@ TAMGA_API bool tamga_response_page(const TamgaResponse *response, int64_t *out_n
  * `Policy::effective_heartbeat_duration_secs()`: the policy's value when it
  * sets one, and TAMGA_DEFAULT_HEARTBEAT_WINDOW_SECONDS when it does not.
  *
- * Returns false — writing nothing — when the response is not a policy
- * resource at all. Answering the default in that case would be
- * indistinguishable from a policy that genuinely leaves the window unset, so
- * a caller that passed the wrong response would silently ping on the wrong
- * schedule instead of learning it asked the wrong question.
+ * Unlike tamga_response_page() directly above, `out_seconds` is NOT optional:
+ * passing NULL returns false rather than reporting readability alone.
+ *
+ * Returns false in two distinct cases, and writes NOTHING to `*out_seconds`
+ * in either — so a caller that ignores the return value reads back whatever
+ * it already had there, never a plausible-looking window it did not earn:
+ *
+ *   1. The response is not a policy resource at all, so `heartbeat_duration`
+ *      is absent. Answering the default here would be indistinguishable from
+ *      a policy that genuinely leaves the window unset, so a caller that
+ *      passed the wrong response would silently ping on the wrong schedule
+ *      instead of learning it asked the wrong question.
+ *
+ *   2. The field is present but is not a usable window: a non-positive
+ *      number — `0` or negative — or a JSON type that is not a number.
+ *
+ * ⚠️ Case 2 is a live server-side possibility, not a defensive formality.
+ * `policies.heartbeat_duration` is a bare nullable INTEGER carrying no CHECK
+ * constraint, and neither the create nor the update handler range-checks the
+ * attribute before binding it, so `0` and negatives are storable — and are
+ * then handed back verbatim, because the server's fallback to 600 keys off
+ * NULL alone. Reported upstream as tamga-api-internal#12. Until it lands,
+ * read false as "this policy does not describe a usable window" and choose a
+ * fallback deliberately rather than computing a schedule from the stored
+ * number: zero is a busy loop against the server, and a negative window is
+ * already in the past on every comparison that uses it.
+ *
+ * A JSON `null` is NOT case 2. That is the documented unset state and yields
+ * TAMGA_DEFAULT_HEARTBEAT_WINDOW_SECONDS with a true return.
  *
  * ⚠️ This is the ONLY reliable way to learn the window. Do not derive it from
  * a machine's `next_heartbeat_at`: that field is computed against the 600s
