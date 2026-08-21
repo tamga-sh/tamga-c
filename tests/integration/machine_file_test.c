@@ -17,6 +17,7 @@
 #include "checkout/machine_file.h"
 #include "tamga_error.h"
 #include "tamga_mem.h"
+#include "util/base64.h"
 #include "util/json.h"
 
 #define FILE_CAP 8192
@@ -162,6 +163,118 @@ TT_TEST(rejects_missing_and_oversized_arguments) {
     TT_ASSERT_NULL(resource);
 }
 
+/*
+ * The alg parser itself, over synthetic certificates.
+ *
+ * The fixture-driven suite in server_machine_files_test.c rewrites each real
+ * file's version marker, but every alg it starts from is well formed. These
+ * are the shapes a real file never has and an attacker can still present:
+ * empty segments, a doubled marker, and -- the one a length-unaware parser
+ * gets wrong -- an interior NUL. A JSON string may contain one, so
+ * `strlen(alg)` would make "base64+ed25519+v2\u0000junk" compare equal to the
+ * algorithm it merely prefixes. TamgaCert carries alg_len for this reason and
+ * every comparison in tamga_machine_alg_split() honours it.
+ *
+ * enc and sig are empty, so anything that gets PAST the alg check fails later
+ * with a different code -- which is what distinguishes "refused here" from
+ * "refused eventually".
+ */
+static TamgaErrorCode status_for_alg(const char *alg_json_literal) {
+    char json[512];
+    char pem[1024];
+    char *body;
+    int written;
+    TamgaJson *resource = NULL;
+    unsigned char pubkey[32];
+    TamgaErrorCode status;
+
+    memset(pubkey, 0, sizeof(pubkey));
+    written = snprintf(json, sizeof(json), "{\"enc\":\"\",\"sig\":\"\",\"alg\":\"%s\"}",
+                       alg_json_literal);
+    if (written <= 0 || (size_t)written >= sizeof(json)) {
+        return TAMGA_ERR_UNKNOWN;
+    }
+
+    body = tamga_base64_encode_alloc((const unsigned char *)json, (size_t)written);
+    if (body == NULL) {
+        return TAMGA_ERR_OUT_OF_MEMORY;
+    }
+    written = snprintf(pem, sizeof(pem),
+                       "-----BEGIN MACHINE FILE-----\n%s\n-----END MACHINE FILE-----", body);
+    tamga_free(body);
+    if (written <= 0 || (size_t)written >= sizeof(pem)) {
+        return TAMGA_ERR_UNKNOWN;
+    }
+
+    status =
+        tamga_machine_file_verify_at(pem, (size_t)written, (uint32_t)TAMGA_SCHEME_ED25519_SIGN,
+                                     pubkey, sizeof(pubkey), NULL, NULL, ANY_TIME, &resource, NULL);
+    if (resource != NULL) {
+        tt_failures_++;
+        (void)fprintf(stderr, "FAIL %s: a failing verify still wrote a resource\n", tt_current_);
+        tamga_json_free(resource);
+    }
+    return status;
+}
+
+static void alg_is_refused(const char *alg_json_literal) {
+    TamgaErrorCode status = status_for_alg(alg_json_literal);
+    if (status != TAMGA_ERR_UNSUPPORTED_SCHEME) {
+        tt_failures_++;
+        (void)fprintf(stderr, "FAIL %s: alg \"%s\" was not refused, got %s\n", tt_current_,
+                      alg_json_literal, tamga_error_name(status));
+    }
+}
+
+TT_TEST(the_alg_parser_is_length_aware_and_rejects_every_malformed_shape) {
+    /*
+     * The control, and it is not optional. Every case below is asserted to be
+     * refused AT THE ALG CHECK -- but if this harness never reached that check
+     * (a typo in the JSON, a PEM that does not parse) they would all be
+     * refused for some other reason and the test would pass while proving
+     * nothing. A well-formed alg must get PAST it and die later, on the
+     * signature, against this all-zero key. Both encoding prefixes, because
+     * they are checked separately.
+     */
+    static const char *const REFUSED[] = {
+        /* no version segment at all */
+        "base64+ed25519",
+        "base64",
+        "",
+        /* a version segment that is not exactly v2 */
+        "base64+ed25519+v1",
+        "base64+ed25519+v3",
+        "base64+ed25519+V2",
+        "base64+ed25519+v2junk",
+        "base64+ed25519+v2+v2",
+        /* empty segments */
+        "+v2",
+        "++v2",
+        "base64++v2",
+        "+ed25519+v2",
+        /* an encoding prefix that only looks right */
+        "xbase64+ed25519+v2",
+        "base6+ed25519+v2",
+        "aes-256-gcm-x+ed25519+v2",
+        /* a signing suffix belonging to another scheme */
+        "base64+ecdsa-p256+v2",
+        "base64+rsa-sha256+v2",
+        /* an interior NUL: only alg_len can tell these from the real thing */
+        "base64+ed25519+v2\\u0000junk",
+        "base64+ed25519+v2\\u0000+v2",
+        "base64+ed25519\\u0000+v2",
+        "base64\\u0000+ed25519+v2",
+    };
+    size_t i;
+
+    TT_ASSERT_EQ_INT(status_for_alg("base64+ed25519+v2"), TAMGA_ERR_SIGNATURE_INVALID);
+    TT_ASSERT_EQ_INT(status_for_alg("aes-256-gcm+ed25519+v2"), TAMGA_ERR_SIGNATURE_INVALID);
+
+    for (i = 0u; i < (sizeof(REFUSED) / sizeof(REFUSED[0])); i++) {
+        alg_is_refused(REFUSED[i]);
+    }
+}
+
 TT_TEST(the_ttl_range_matches_the_server) {
     TT_ASSERT_FALSE(tamga_machine_file_ttl_is_valid(0));
     TT_ASSERT_FALSE(tamga_machine_file_ttl_is_valid(-1));
@@ -175,6 +288,7 @@ int main(void) {
     TT_RUN(rejects_the_jwt_scheme_and_the_none_scheme);
     TT_RUN(rejects_a_licence_file_presented_as_a_machine_file);
     TT_RUN(rejects_missing_and_oversized_arguments);
+    TT_RUN(the_alg_parser_is_length_aware_and_rejects_every_malformed_shape);
     TT_RUN(the_ttl_range_matches_the_server);
     return TT_SUMMARY();
 }
