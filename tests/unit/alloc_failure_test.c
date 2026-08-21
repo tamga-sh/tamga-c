@@ -323,6 +323,57 @@ TT_TEST(offline_proof_verification_survives_every_allocation_failure) {
     walk_allocations("tamga_offline_proof_verify", verify_offline_proof, TAMGA_OK);
 }
 
+/*
+ * The fingerprint helper, walked because a failed allocation here must never
+ * become a verdict about the caller's components.
+ *
+ * A strdup that failed and was reported as TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT
+ * would send the caller to inspect a component that is perfectly valid, and no
+ * amount of inspecting it would help. It also allocates per component and then
+ * again for the joined string, so a failure part-way through has a partially
+ * built array to release -- the shape that leaks.
+ */
+static TamgaErrorCode compute_fingerprint(void) {
+    static const char *const LABELS[] = {"machine-id", "disk", "board", "mac"};
+    static const char *const VALUES[] = {"abc123", "SN-9", "B-77", "00:11:22"};
+    char *fingerprint = NULL;
+    TamgaErrorCode status = tamga_fingerprint_compute(LABELS, VALUES, 4u, &fingerprint);
+
+    /* A TAMGA_OK that wrote nothing would mean the out-parameter contract had
+     * been broken by an allocation failure rather than reported. */
+    if (status == TAMGA_OK && fingerprint == NULL) {
+        return TAMGA_ERR_UNKNOWN;
+    }
+    tamga_string_free(fingerprint);
+    return status;
+}
+
+/*
+ * The rejection path walked separately, because it returns before the join and
+ * therefore has a different set of allocations outstanding when it does. A
+ * rejection must stay a rejection under injection right up until the
+ * allocation that fails is the one that would have built the offending
+ * component -- so either code is acceptable here, and nothing may leak.
+ */
+static TamgaErrorCode reject_duplicate_label(void) {
+    static const char *const LABELS[] = {"id", "id"};
+    static const char *const VALUES[] = {"a", "b"};
+    char *fingerprint = NULL;
+    TamgaErrorCode status = tamga_fingerprint_compute(LABELS, VALUES, 2u, &fingerprint);
+
+    if (fingerprint != NULL) {
+        tamga_string_free(fingerprint);
+        return TAMGA_ERR_UNKNOWN;
+    }
+    return status;
+}
+
+TT_TEST(fingerprint_canonicalisation_survives_every_allocation_failure) {
+    walk_allocations("tamga_fingerprint_compute", compute_fingerprint, TAMGA_OK);
+    walk_allocations("tamga_fingerprint_compute (duplicate label)", reject_duplicate_label,
+                     TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT);
+}
+
 TT_TEST(key_set_construction_survives_every_allocation_failure) {
     walk_allocations("tamga_signing_key_set_add_json", build_key_set_from_json, TAMGA_OK);
 }
@@ -878,6 +929,7 @@ int main(void) {
     TT_RUN(offline_proof_verification_survives_every_allocation_failure);
     TT_RUN(key_set_construction_survives_every_allocation_failure);
     TT_RUN(key_set_verification_survives_every_allocation_failure);
+    TT_RUN(fingerprint_canonicalisation_survives_every_allocation_failure);
     TT_RUN(request_builders_survive_every_allocation_failure);
     TT_RUN(the_added_endpoints_survive_every_allocation_failure);
     return TT_SUMMARY();

@@ -20,6 +20,7 @@ set(TAMGA_SOURCES
     src/util/json.c
     src/util/json_parse.c
     src/util/json_write.c
+    src/util/fingerprint.c
 
     # --- crypto: hashes, MAC, KDF ------------------------------------
     src/crypto/ct.c

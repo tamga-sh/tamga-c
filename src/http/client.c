@@ -894,6 +894,19 @@ static TamgaErrorCode tamga_map_api_error(TamgaResponse *response) {
         if (strcmp(code, "TTL_INVALID") == 0) {
             return TAMGA_ERR_TTL_INVALID;
         }
+        /* The artifact download route spells it differently -- `PRESIGN_TTL_INVALID`
+         * from artifacts/service.rs:33, against the [1min, 1week] presign range,
+         * where the checkout routes raise `TTL_INVALID` against [1s, 365d]
+         * (check_out_license.rs:48). Same condition, so the same code: mapping
+         * only the first would hand a caller TAMGA_ERR_API for one route and
+         * TAMGA_ERR_TTL_INVALID for the other, and force a second branch for a
+         * fault whose remedy is identical. It also has to agree with the local
+         * bounds check in tamga_client_get_artifact_download_url(), which
+         * already returns TAMGA_ERR_TTL_INVALID -- otherwise the code would
+         * depend on which side happened to catch it. */
+        if (strcmp(code, "PRESIGN_TTL_INVALID") == 0) {
+            return TAMGA_ERR_TTL_INVALID;
+        }
         if (strcmp(code, "SCHEME_NOT_SUPPORTED") == 0) {
             return TAMGA_ERR_SCHEME_NOT_SUPPORTED;
         }

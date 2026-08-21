@@ -16,6 +16,17 @@ tamga_add_test(test_unit_bn      bn_test.c)
 tamga_add_test(test_unit_rsa     rsa_test.c)
 tamga_add_test(test_unit_ecdsa   ecdsa_test.c)
 tamga_add_test(test_unit_signing_key signing_key_test.c)
+tamga_add_test(test_unit_fingerprint fingerprint_test.c)
+
+# Whitebox: the component comparator is static, and its two most dangerous
+# properties -- unsigned byte order and the prefix tiebreak -- are unreachable
+# through the public entry points, because the label rules guarantee the first
+# differing byte is always ASCII and no component can be a prefix of another.
+# See the file's own preamble for why they are pinned anyway.
+tamga_add_whitebox_test(test_unit_fingerprint_sort fingerprint_sort_test.c
+    DEPS ${CMAKE_SOURCE_DIR}/src/tamga_mem.c
+         ${CMAKE_SOURCE_DIR}/src/tamga_error.c
+         ${CMAKE_SOURCE_DIR}/src/util/buf.c)
 
 # Whitebox: p256.c's Montgomery arithmetic is static, and should stay that way.
 tamga_add_whitebox_test(test_unit_p256 p256_test.c

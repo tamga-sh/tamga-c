@@ -26,9 +26,12 @@
 #include "checkout/license_file.h"
 #include "checkout/machine_file.h"
 #include "crypto/hkdf.h"
+#include "crypto/sha256.h"
 #include "proof.h"
 #include "tamga_error.h"
 #include "tamga_mem.h"
+#include "util/fingerprint.h"
+#include "util/hex.h"
 #include "util/json.h"
 #include "util/rfc3339.h"
 
@@ -507,4 +510,55 @@ TamgaErrorCode tamga_offline_proof_generate(const char *rsa_privkey, const char 
                            "local proof generation is not supported: proofs are issued by "
                            "the server, and this SDK holds no signing keys. Use "
                            "tamga_client_generate_offline_proof() instead.");
+}
+
+/* --- fingerprint canonicalisation --------------------------------------- */
+
+/*
+ * Both entry points clear the error slot and validate before touching the
+ * out-parameter, so TAMGA_OK always means both that a value was written and
+ * that tamga_last_error_message() is NULL.
+ *
+ * `uintptr_t count` rather than `size_t`, matching the length parameters
+ * already frozen into this ABI. They are the wrong type for a length and stay
+ * that way; a second convention would be worse than one wrong one.
+ */
+
+TamgaErrorCode tamga_fingerprint_canonical(const char *const *labels, const char *const *values,
+                                           uintptr_t count, char **out_canonical) {
+    tamga_error_clear();
+    if (out_canonical == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "out_canonical is required");
+    }
+    return tamga_fingerprint_build_canonical(labels, values, (size_t)count, out_canonical);
+}
+
+TamgaErrorCode tamga_fingerprint_compute(const char *const *labels, const char *const *values,
+                                         uintptr_t count, char **out_fingerprint) {
+    unsigned char digest[TAMGA_SHA256_DIGEST_LEN];
+    char *canonical = NULL;
+    char *hex;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (out_fingerprint == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "out_fingerprint is required");
+    }
+    status = tamga_fingerprint_build_canonical(labels, values, (size_t)count, &canonical);
+    if (status != TAMGA_OK) {
+        return status;
+    }
+
+    /* The canonical string is hashed as its own bytes, separators included --
+     * the 0x1f is inside the digest, not a display convention. */
+    tamga_sha256(canonical, strlen(canonical), digest);
+    tamga_string_free(canonical);
+
+    hex = (char *)tamga_malloc(TAMGA_FINGERPRINT_SIZE);
+    if (hex == NULL) {
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the fingerprint");
+    }
+    tamga_hex_encode(digest, sizeof(digest), hex);
+    *out_fingerprint = hex;
+    return TAMGA_OK;
 }

@@ -704,6 +704,8 @@ TT_TEST(the_appended_error_codes_all_have_names) {
     TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_LICENSE_EXPIRED), "TAMGA_ERR_LICENSE_EXPIRED");
     TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_LICENSE_NOT_ALLOWED),
                      "TAMGA_ERR_LICENSE_NOT_ALLOWED");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT),
+                     "TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT");
 }
 
 /* An identifier that is not a UUID never reaches the URL builder -- otherwise
@@ -1787,6 +1789,22 @@ TT_TEST(an_out_of_range_presign_ttl_never_reaches_the_server) {
                          client, ARTIFACT_ID, TAMGA_PRESIGN_TTL_MAX_SECONDS, &response),
                      TAMGA_OK);
     TT_ASSERT_EQ_SIZE(mock.call_count, 1u);
+    tamga_response_free(response);
+
+    /* The server spells its own rejection differently -- PRESIGN_TTL_INVALID,
+     * not the TTL_INVALID the checkout routes raise -- and both must arrive as
+     * the same code. Otherwise a caller gets TAMGA_ERR_TTL_INVALID when this
+     * SDK catches the bad ttl and TAMGA_ERR_API when the server does, for one
+     * fault with one remedy. */
+    mock_reset(&mock);
+    response = NULL;
+    mock_reply(&mock, 422,
+               "{\"errors\":[{\"status\":\"422\",\"code\":\"PRESIGN_TTL_INVALID\","
+               "\"title\":\"Unprocessable\",\"detail\":\"Presigned URL TTL must be between 1 "
+               "minute and 1 week\"}]}");
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact_download_url(client, ARTIFACT_ID, 120u, &response),
+                     TAMGA_ERR_TTL_INVALID);
+    TT_ASSERT_EQ_STR(tamga_response_error_code(response), "PRESIGN_TTL_INVALID");
     tamga_response_free(response);
 
     /* And an identifier that is not a UUID never reaches the URL builder. */

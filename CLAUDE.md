@@ -34,7 +34,8 @@ tamga-c/
 │   ├── tamga_api.c         # the public entry points: marshalling and handle ownership
 │   ├── tamga_error.c       # the per-thread last-error slot
 │   ├── tamga_mem.c         # overflow-checked allocation, DSE-resistant erase
-│   ├── util/               # buf, base64, hex, uuid, rfc3339, json (parse + two writers)
+│   ├── util/               # buf, base64, hex, uuid, rfc3339, fingerprint,
+│   │                       #   json (parse + two writers)
 │   ├── crypto/             # sha256/512, hmac, hkdf, aes, gcm, ed25519+fe25519,
 │   │                       #   bn, rsa, p256, ecdsa, der, ct
 │   ├── checkout/           # pem, cert, claims, license_file, machine_file
@@ -479,6 +480,135 @@ routes do.
 The durable form of the rule is narrower than "write": a response is only
 guaranteed not to say `DEAD` when the write it was built from set
 `last_heartbeat_at` itself. Ping, reset and create qualify. PATCH does not.
+
+### An artifact download must never be allowed to follow its redirect
+
+`GET /artifacts/{id}/actions/download` answers `303 See Other` to a short-lived
+presigned URL on the object store. A client that follows that redirect with the
+request's `Authorization` header still attached hands the licence key to the
+storage host.
+
+⚠️ **Measured, not assumed**, and measured per auth kind -- a rule about one
+credential is not a rule about another. Driving this repo's own curl transport
+at a local 303 server with `CURLOPT_FOLLOWLOCATION` forced to `1`
+(libcurl 8.7.1):
+
+| auth kind | same-origin hop | cross-origin hop |
+|---|---|---|
+| `TAMGA_AUTH_LICENSE` | **sent intact** | stripped |
+| `TAMGA_AUTH_BEARER` | **sent intact** | stripped |
+| `TAMGA_AUTH_BASIC_*` | **sent intact** | stripped |
+| `TAMGA_AUTH_QUERY_TOKEN` | not sent | not sent |
+
+So all three `Authorization` forms leak same-origin and none leaks
+cross-origin; the query-token form leaks by neither route, because the
+`Location` replaces the URL and the `?token=` goes with it. There is no cookie
+credential here, so the cookie-forwarding hazard a sibling SDK measured has no
+analogue. The leak needs a same-origin redirect -- exactly what `s3_endpoint` +
+`s3_force_path_style` produce when storage is served from the API's own origin.
+
+Do not generalise any of it: `CURLOPT_UNRESTRICTED_AUTH`'s default has varied
+across libcurl versions, and sibling SDKs measured three different behaviours
+across three runtimes. Re-measure before relying on it.
+
+At the shipped `FOLLOWLOCATION` of `0` no redirect is followed at all, so the
+question does not arise; `transport_winhttp.c` sets
+`WINHTTP_OPTION_REDIRECT_POLICY_NEVER` for the same reason (WinHTTP follows by
+default, so that one is a correction). But a transport registered through
+`tamga_client_set_transport()` is the caller's own stack and most follow out of
+the box, so `tamga_client_get_artifact_download_url()` sends `?redirect=false`
+unconditionally and exposes no parameter for asking otherwise. Pinned by
+`the_artifact_download_never_asks_for_the_redirect`.
+
+A second reason holds whatever a transport does about headers: following
+streams the artifact's **bytes** into the capped response buffer
+(`TAMGA_TRANSPORT_FAIL_OVERSIZED`) before anything can reject them, and a real
+artifact routinely exceeds any sane cap.
+
+Three more things about that surface:
+
+- **`created`/`updated`, not `createdAt`/`updatedAt`.** `ArtifactAttributes` is
+  `rename_all = "camelCase"` -- which really does make the neighbouring field
+  `redirectUrl` -- but carries explicit `#[serde(rename)]` attributes overriding
+  the container rule for exactly those two (`artifacts/serializer.rs:20,34-37`).
+  Applying one rule to the whole resource compiles, runs and reads nothing.
+- **A `403` on the download is not necessarily an auth problem.** The handler
+  runs the owning release through `releases::service::enforce_release_access`
+  on top of the permission, so a caller holding `artifact.download` is still
+  refused a release its licence is not entitled to. That gate is on the
+  download action **alone** -- `list_artifacts` and `get_artifact` check the
+  permission only, so metadata that reads perfectly well can still refuse its
+  bytes.
+- **Read and download are the whole surface.** `Role::LicenseToken`
+  (`shared/authz/mod.rs:241-268`) carries `artifact.read` and
+  `artifact.download` and none of create, update or delete. An SDK offering
+  publication would only be offering a 403. Note that only `artifact.download`
+  (`:265`) was granted by `e6d317b` -- `artifact.read` (`:264`) predates it, so
+  the listing and metadata read were always reachable and merely had no SDK
+  method. Only the bytes were ever a 403.
+
+### The curl handle is confined to http and https
+
+`tamga_curl_restrict_protocols()` sets `CURLOPT_PROTOCOLS_STR` to `http,https`
+(falling back to `CURLOPT_PROTOCOLS` below libcurl 7.85), checked rather than
+discarded like the TLS-verification options beside it.
+
+⚠️ **This was measured to matter.** With the option removed, driving the
+transport at `file:///tmp/<a file>` on libcurl 8.7.1 **succeeded** and returned
+the file's contents as `response->body`; with it set the same call fails, while
+an `http://` control still succeeds. libcurl speaks `file:`, `scp:`, `ftp:` and
+`gopher:` and will attempt whatever scheme the URL names.
+
+Nothing builds a curl URL from a server-supplied value today --
+`tamga_client_compose_origin()` prepends `https://` to anything not already
+beginning `http://` or `https://`, and `CURLOPT_FOLLOWLOCATION` is `0` so no
+`Location` can introduce one. Both are one edit away from being untrue, and the
+failure is a local-file read driven by a remote value, handed back as a
+response body. A sibling SDK found its own "is this an absolute URI" check
+accepting `/relative/path` and `C:\x\y` as `file:` URIs.
+
+There is deliberately **no unit test** for this: `transport_curl.c` needs a live
+handle, and this repo's rule is that a fake test for it would measure nothing.
+It was verified with a throwaway probe instead, both directions.
+
+### A fingerprint is canonicalised, never generated
+
+`tamga_fingerprint_compute()` takes caller-chosen labelled components and
+returns `lowercase_hex(SHA-256(canonical))`. It deliberately does **not** read
+hardware identifiers, and must not grow the ability to: what identifies a
+machine is a product decision -- a cloned VM template shares them, a container
+has none, a replaced motherboard changes them -- and no default is right for
+both a desktop application and a Kubernetes sidecar.
+
+What it does fix is measured: all eight SDKs sent the caller's string byte for
+byte, and the server stores `fingerprint TEXT NOT NULL` with no length limit,
+no `CHECK` and no normalisation, unique per `(license_id, fingerprint)`. So
+`"ABC-123"`, `"abc-123"` and `" ABC-123 "` were three seats.
+
+⚠️ **Values are NOT Unicode-normalised, and that is a constraint rather than an
+oversight.** NFC here would mean ICU or hand-rolled Unicode tables inside a
+library whose defining property is having none, and a rule the eight ports
+cannot implement identically is worse than no rule: one machine would get two
+fingerprints depending on which SDK the application used. Every rule is
+ASCII-only for that reason. Do not "improve" it with a normalisation step.
+
+⚠️ **The sort is over unsigned bytes.** `memcmp`, `strcmp` and `strncmp` are
+all specified to compare as `unsigned char` (C11 7.24.4p1), so the library
+functions are safe -- the trap is a hand-rolled `a[i] - b[i]` over plain
+`char`, which on a signed-char target orders every byte above `0x7F` before
+every ASCII one and fingerprints the same machine differently on ARM than on
+x86. `src/util/fingerprint.c` uses `memcmp`, and
+`the_sort_compares_bytes_as_unsigned` pins the ordering that the published
+single-component `non_ascii_value` vector cannot reach.
+
+⚠️ **Rejections are never repairs.** Stripping a control character or
+deduplicating a repeated label maps two different inputs onto one canonical
+string -- two machines, one seat, the mirror image of the defect above. All
+eight `rejected` cases in `tests/fixtures/fingerprint/fingerprint.json` return
+`TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT`.
+
+The vectors were produced outside this SDK family. In the file the separator is
+written as the literal text `<US>` for diffability; the byte hashed is `0x1f`.
 
 ### The permission a licence key has decides which read route works
 

@@ -453,6 +453,37 @@ you cannot have it". There is no client-side way to tell them apart and there
 is not meant to be — so do not report a `204` as "you are up to date". The
 accurate wording is *there is no update available to you*.
 
+**Canonicalise the fingerprint before you send it.** The server stores
+`fingerprint TEXT NOT NULL` with no length limit, no `CHECK` and no
+normalisation, unique per `(license_id, fingerprint)` — so `"ABC-123"`,
+`"abc-123"` and `" ABC-123 "` are three machines on three seats.
+`tamga_fingerprint_compute()` takes labelled components you choose and returns
+one stable 64-character string: order-independent, whitespace-trimmed,
+case-preserving, and rejecting rather than repairing anything it cannot
+canonicalise.
+
+```c
+const char *labels[] = {"machine-id", "disk"};
+const char *values[] = {"abc123", "SN-9"};
+char *fp = NULL;
+if (tamga_fingerprint_compute(labels, values, 2, &fp) == TAMGA_OK) {
+    tamga_client_activate_machine(client, license_id, fp, NULL, NULL, true, &response);
+    tamga_string_free(fp);
+}
+```
+
+It deliberately does **not** read hardware identifiers, and will not grow the
+ability to. What identifies a machine is a product decision — a cloned VM
+template shares them, a container has none, a replaced motherboard changes them
+— and no default is right for both a desktop application and a Kubernetes
+sidecar. Values are also **not** Unicode-normalised: NFC would mean a
+dependency, and a rule the eight SDKs cannot implement identically would give
+one machine two fingerprints depending on which SDK the app was written in.
+Normalise before calling if your values can arrive in more than one form. And
+note that changing the component set changes the fingerprint, which the server
+reads as a new machine against the seat limit — choose it once, at the point
+you ship.
+
 **Never let an artifact download follow its redirect.**
 `GET /artifacts/{id}/actions/download` answers `303 See Other` with a
 short-lived presigned URL on the object store. An HTTP client that follows
@@ -460,12 +491,24 @@ that redirect while still attaching the request's `Authorization` header hands
 your licence key to the storage host. `tamga_client_get_artifact_download_url()`
 therefore always asks for `?redirect=false` and offers no way to ask otherwise:
 the URL comes back in the body, in `redirectUrl`, and you fetch it yourself
-**with no credentials attached** — it carries its own signature and needs
-none. Both built-in transports also refuse to follow (libcurl only follows when
-`CURLOPT_FOLLOWLOCATION` is set, and this SDK leaves it at `0`; WinHTTP follows
-by default and is set to `WINHTTP_OPTION_REDIRECT_POLICY_NEVER`), but a
-transport you register through `tamga_client_set_transport()` is your own HTTP
-stack and most follow redirects out of the box.
+**with no credentials attached** — it carries its own signature and needs none.
+
+Measured against libcurl 8.7.1 with following forced on, per credential, the
+leak is real but scoped: a **same-origin** redirect carries `Authorization`
+intact for the licence-key, bearer and basic forms, while a **cross-origin**
+one arrives with it stripped, and `TAMGA_AUTH_QUERY_TOKEN` is carried by
+neither. Same-origin is exactly what the server's `s3_endpoint` +
+`s3_force_path_style` settings produce when storage is served from the API's
+own origin. Both built-in
+transports refuse to follow at all (`CURLOPT_FOLLOWLOCATION` is left at `0`;
+WinHTTP follows by default and is set to
+`WINHTTP_OPTION_REDIRECT_POLICY_NEVER`), so the question does not arise for
+them — but a transport you register through `tamga_client_set_transport()` is
+your own HTTP stack, and most follow redirects out of the box.
+
+A second reason holds regardless of headers: following the redirect streams the
+artifact's **bytes** into the response buffer, which is capped, before anything
+can reject them. A real artifact routinely exceeds any sane cap.
 
 **An artifact's timestamps are `created` and `updated`, not `createdAt`.**
 `ArtifactAttributes` is `rename_all = "camelCase"` — which is why the

@@ -195,7 +195,18 @@ typedef enum TamgaErrorCode {
     TAMGA_ERR_LICENSE_NOT_ENCRYPTED = 22,
     /** Encrypted checkout was requested but the licence key is missing. */
     TAMGA_ERR_LICENSE_KEY_MISSING = 23,
-    /** The requested ttl is outside the accepted range (1 second to 365 days). */
+    /**
+     * The requested ttl is outside the accepted range for the route.
+     *
+     * The range is NOT the same everywhere. A licence or machine checkout
+     * accepts 1 second to 365 days and rejects with `TTL_INVALID`; an artifact
+     * download's presigned URL accepts
+     * [`TAMGA_PRESIGN_TTL_MIN_SECONDS`, `TAMGA_PRESIGN_TTL_MAX_SECONDS`] —
+     * one minute to one week — and rejects with `PRESIGN_TTL_INVALID`. Both
+     * server codes map here, and tamga_client_get_artifact_download_url()
+     * returns this before sending, so the code does not depend on which side
+     * caught it.
+     */
     TAMGA_ERR_TTL_INVALID = 24,
     /** The licence's scheme is not supported for this operation. */
     TAMGA_ERR_SCHEME_NOT_SUPPORTED = 25,
@@ -318,7 +329,34 @@ typedef enum TamgaErrorCode {
      * rotates the Ed25519 key alone, so no other scheme has a rotation to
      * survive.
      */
-    TAMGA_ERR_KEY_ID_NOT_APPLICABLE = 39
+    TAMGA_ERR_KEY_ID_NOT_APPLICABLE = 39,
+
+    /* --- fingerprint canonicalisation, added in 1.3.3 --------------------
+     *
+     * Appended after the signing-key block, never interleaved with it.
+     * Reachable only from tamga_fingerprint_canonical() and
+     * tamga_fingerprint_compute(), which did not exist before 1.3.3 -- so no
+     * call a caller already writes can start returning it.
+     */
+
+    /**
+     * A fingerprint component is not something this rule can canonicalise:
+     * an empty label, a label carrying `=` or any byte outside ASCII
+     * printable, a repeated label, a value holding an ASCII control
+     * character, or no components at all.
+     *
+     * ⚠️ Every one of these is an error rather than a repair, and that is the
+     * point of the code existing. Stripping the control character or picking
+     * one of the two values for a repeated label would map two different
+     * inputs onto one canonical string -- which is two machines sharing one
+     * seat, the mirror image of the defect this helper exists to fix. A
+     * caller told which component is wrong can fix the component; a caller
+     * handed a quietly repaired fingerprint cannot.
+     *
+     * tamga_last_error_message() names the offending component's index, and
+     * its label where the label itself is not the problem.
+     */
+    TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT = 40
 } TamgaErrorCode;
 
 /* ======================================================================
@@ -901,6 +939,112 @@ TAMGA_API enum TamgaErrorCode
 tamga_offline_proof_generate(const char *rsa_privkey, const char *account_id,
                              const char *machine_id, const char *fingerprint,
                              const char *dataset_json, char **out_proof_str);
+
+/* ======================================================================
+ * Fingerprint canonicalisation
+ * ====================================================================== */
+
+/**
+ * The length of a fingerprint from tamga_fingerprint_compute(): 64 lowercase
+ * hex characters, being SHA-256 of the canonical string.
+ */
+#define TAMGA_FINGERPRINT_LENGTH 64
+/** Room for a fingerprint plus its NUL. */
+#define TAMGA_FINGERPRINT_SIZE (TAMGA_FINGERPRINT_LENGTH + 1)
+
+/**
+ * Turns caller-chosen labelled components into one stable fingerprint.
+ *
+ *     fingerprint = lowercase_hex( SHA-256( UTF-8( canonical ) ) )
+ *     canonical   = "tamga-fingerprint-v1" <US>
+ *                   join(<US>, sort_bytewise([label "=" trimmed_value]))
+ *
+ * where `<US>` is U+001F, the ASCII unit separator, as the single byte `0x1f`.
+ *
+ * `labels` and `values` are parallel arrays of `count` NUL-terminated strings.
+ * On `TAMGA_OK`, `*out_fingerprint` receives an owned string of
+ * `TAMGA_FINGERPRINT_LENGTH` characters, released with tamga_string_free().
+ * Nothing is written on any other outcome.
+ *
+ * **The defect this exists to fix, measured.** Every SDK in this family sent
+ * the caller's fingerprint string byte for byte, and the server stores
+ * `fingerprint TEXT NOT NULL` — no length limit, no CHECK, no normalisation —
+ * unique per `(license_id, fingerprint)`. So `"ABC-123"`, `"abc-123"` and
+ * `" ABC-123 "` were three machines on three seats.
+ *
+ * ⚠️ **This deliberately does NOT read hardware identifiers**, and will not
+ * grow the ability to. What identifies a machine is a product decision — a
+ * cloned VM template shares them, a container has none, a replaced motherboard
+ * changes them — and no default is right for both a desktop application and a
+ * Kubernetes sidecar. You choose the components; this makes your choice
+ * stable.
+ *
+ * The rules, all of them ASCII-only:
+ *
+ * - **Order does not matter.** Components are sorted bytewise before hashing,
+ *   so listing them differently on the next run is the same machine.
+ * - **Values are trimmed** of leading and trailing ASCII whitespace (space,
+ *   tab, CR, LF, VT, FF) *before* validation — the stray newline off a
+ *   command's output is the footgun this absorbs. A value may be empty, and an
+ *   empty value is not the same as an absent component: the label still
+ *   contributes.
+ * - **Case is preserved.** Deliberately: lowercasing a base64 or hex
+ *   identifier corrupts it.
+ * - **`=` is legal in a value and illegal in a label**, so the split is
+ *   unambiguously at the first `=`.
+ * - **Labels are non-empty ASCII printable** (`0x21`–`0x7E`) excluding `=`.
+ * - **Rejections are never repairs.** A control character in a value, a
+ *   repeated label, or no components at all is
+ *   `TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT`. Stripping or deduplicating
+ *   would map two different inputs onto one seat.
+ *
+ * ⚠️ **Values are NOT Unicode-normalised, and that is a constraint rather than
+ * an oversight.** NFC would mean ICU or hand-rolled Unicode tables inside a
+ * library whose defining property is having no dependencies, and a rule the
+ * eight SDKs cannot implement identically is worse than no rule: it would
+ * yield two fingerprints for one machine depending on which SDK the
+ * application was written in, silently consuming two seats. Non-ASCII passes
+ * through as its UTF-8 bytes. If your values can arrive in more than one
+ * normal form, normalise them before calling.
+ *
+ * ⚠️ **Changing the components changes the fingerprint**, and the server has
+ * no way to know the new one is the same machine — it is a new row against the
+ * licence's seat limit. Choose the set once, at the point you ship, and treat
+ * it as part of your on-disk format.
+ *
+ * Example:
+ *
+ *     const char *labels[] = {"machine-id", "disk"};
+ *     const char *values[] = {"abc123", "SN-9"};
+ *     char *fp = NULL;
+ *     if (tamga_fingerprint_compute(labels, values, 2, &fp) == TAMGA_OK) {
+ *         tamga_client_activate_machine(client, license_id, fp, ...);
+ *         tamga_string_free(fp);
+ *     }
+ */
+TAMGA_API TamgaErrorCode tamga_fingerprint_compute(const char *const *labels,
+                                                   const char *const *values, uintptr_t count,
+                                                   char **out_fingerprint);
+
+/**
+ * The canonical string tamga_fingerprint_compute() hashes, for diagnostics.
+ *
+ * Same arguments, same rules, same rejections. On `TAMGA_OK`,
+ * `*out_canonical` receives an owned NUL-terminated string released with
+ * tamga_string_free(); nothing is written on any other outcome.
+ *
+ * This exists because when two SDKs disagree about a machine's fingerprint,
+ * comparing the 64-character digests says only *that* they disagree. Comparing
+ * the canonical strings says which component differs.
+ *
+ * ⚠️ Not printable. It contains `0x1f` separator bytes, which most terminals
+ * render as nothing at all — so a canonical string pasted into a bug report
+ * looks like the components were concatenated without any separator. Escape it
+ * before displaying it.
+ */
+TAMGA_API TamgaErrorCode tamga_fingerprint_canonical(const char *const *labels,
+                                                     const char *const *values, uintptr_t count,
+                                                     char **out_canonical);
 
 /* ======================================================================
  * HTTP client
@@ -2102,15 +2246,32 @@ TAMGA_API TamgaErrorCode tamga_client_get_artifact(TamgaClient *client, const ch
  *
  * ⚠️ This is also why the SDK asks for `redirect=false` and offers no way to
  * ask otherwise. The route's default answer is a `303 See Other` to that same
- * URL, and an HTTP client that follows a redirect while still attaching the
- * original request's headers performs exactly the disclosure above without the
- * caller ever seeing it. Both built-in transports refuse to follow — libcurl
- * only follows when `CURLOPT_FOLLOWLOCATION` is set and this SDK leaves it at
- * 0; WinHTTP follows by default and is explicitly set to
- * `WINHTTP_OPTION_REDIRECT_POLICY_NEVER` — but a transport supplied through
- * tamga_client_set_transport() is the caller's own stack, and most HTTP
- * libraries follow redirects out of the box. Requesting the body form removes
- * the question rather than relying on the answer.
+ * URL, and a client that follows a redirect while still attaching the original
+ * request's headers performs exactly the disclosure above without the caller
+ * ever seeing it.
+ *
+ * Measured against libcurl 8.7.1 with following forced on, per auth kind: a
+ * SAME-ORIGIN redirect carried `Authorization` intact for
+ * `TAMGA_AUTH_LICENSE`, `TAMGA_AUTH_BEARER` and the `TAMGA_AUTH_BASIC_*`
+ * forms, while a CROSS-ORIGIN one arrived with it stripped;
+ * `TAMGA_AUTH_QUERY_TOKEN` was carried by neither, because the `Location`
+ * replaces the URL and the `?token=` goes with it. Same-origin is what the
+ * server's `s3_endpoint` plus `s3_force_path_style` settings produce when
+ * storage is served from the API's own origin, so the hazard is real and
+ * scoped rather than universal — and it is not the same for every credential,
+ * which is why it was measured for each rather than reasoned about once.
+ * Both built-in transports refuse to follow at all (`CURLOPT_FOLLOWLOCATION`
+ * is left at 0; WinHTTP follows by default and is set to
+ * `WINHTTP_OPTION_REDIRECT_POLICY_NEVER`), but a transport supplied through
+ * tamga_client_set_transport() is the caller's own stack and most HTTP
+ * libraries follow out of the box, and sibling SDKs measured three different
+ * behaviours across three runtimes. Requesting the body form removes the
+ * question rather than relying on any of those answers.
+ *
+ * A second reason holds whatever a transport does about headers: following the
+ * redirect streams the artifact's BYTES into the response buffer, which is
+ * capped, before anything can reject them — and a real artifact routinely
+ * exceeds any sane cap.
  *
  * `ttl_seconds` is how long the URL stays valid. Pass 0 for the server's
  * default (five minutes); anything else must be within

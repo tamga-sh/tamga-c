@@ -1729,7 +1729,13 @@ TamgaErrorCode tamga_client_check_upgrade(TamgaClient *client, const char *produ
  * (shared/authz/mod.rs:241-268), so an embedded client cannot publish a build
  * however the SDK asks -- those routes would be a 403 for every credential
  * this library is meant to carry. `artifact.read` and `artifact.download` ARE
- * on that list, which is what makes this surface reachable at all.
+ * on that list, which is what makes this surface reachable.
+ *
+ * Only ONE of the two is new. `artifact.read` (:264) was already there, so the
+ * listing and the metadata read were reachable all along and simply had no
+ * SDK method; e6d317b added `artifact.download` (:265) alone. So the gap this
+ * closes is not symmetric -- the metadata half was an omission on our side,
+ * and the bytes half was genuinely a 403 no client could get past.
  */
 
 TamgaErrorCode tamga_client_list_release_artifacts(TamgaClient *client, const char *release_id,
@@ -1749,24 +1755,57 @@ TamgaErrorCode tamga_client_get_artifact(TamgaClient *client, const char *artifa
  * The download action, and the reason it is not a plain GET.
  *
  * By default this route answers `303 See Other` with a Location pointing at a
- * short-lived presigned URL on the object store. An HTTP client that follows
- * that redirect with the request's headers still attached hands the caller's
- * licence key -- or bearer token -- to the storage host, which is a different
- * origin under different ownership and has no business seeing it.
+ * short-lived presigned URL on the object store. A client that follows that
+ * redirect with the request's headers still attached hands the caller's
+ * licence key -- or bearer token -- to the storage host.
  *
- * Both built-in transports already refuse to follow: transport_curl.c sets
- * CURLOPT_FOLLOWLOCATION to 0 (libcurl does not follow unless asked) and
- * transport_winhttp.c sets WINHTTP_OPTION_REDIRECT_POLICY_NEVER (WinHTTP
- * follows by default, so that one is a real correction). But a transport
- * registered through tamga_client_set_transport() is the caller's own HTTP
- * stack, and most of them follow redirects out of the box.
+ * MEASURED, against libcurl 8.7.1 driving this very transport at a local
+ * server that answers 303, with CURLOPT_FOLLOWLOCATION forced to 1. Every auth
+ * kind this SDK supports was driven separately, because a rule about one
+ * credential is not a rule about another:
  *
- * So the 303 is never requested in the first place: `redirect=false` makes the
- * server return the artifact resource with `redirectUrl` populated instead.
- * The URL is then the caller's to fetch with NO credentials attached -- it
- * carries its own signature and adding an Authorization header to it is both
- * unnecessary and the leak this avoids. There is deliberately no parameter for
- * asking for the redirect form.
+ *   kind                          same-origin hop   cross-origin hop
+ *   TAMGA_AUTH_LICENSE            SENT INTACT       stripped
+ *   TAMGA_AUTH_BEARER             SENT INTACT       stripped
+ *   TAMGA_AUTH_BASIC_*            SENT INTACT       stripped
+ *   TAMGA_AUTH_QUERY_TOKEN        not sent          not sent
+ *
+ * So all three Authorization forms leak on a same-origin redirect and none
+ * leaks cross-origin; the query-token form leaks by neither route, because the
+ * Location replaces the URL and the `?token=` goes with it. There is no cookie
+ * credential in this SDK, so the cookie-forwarding hazard a sibling SDK
+ * measured has no analogue here.
+ *
+ * The leak is therefore real but scoped: it needs a same-origin redirect,
+ * which is exactly the shape the server's `s3_endpoint` +
+ * `s3_force_path_style` settings produce when storage is served from the API's
+ * own origin. Do not generalise any of it -- CURLOPT_UNRESTRICTED_AUTH's
+ * default has varied across libcurl versions, and a caller-registered
+ * transport follows whatever rule its own stack implements. One sibling SDK
+ * strips Authorization on every redirect including same-origin; another strips
+ * only cross-origin. Three runtimes, three behaviours.
+ *
+ * With FOLLOWLOCATION at 0 -- what this repo actually ships, and what the same
+ * probe confirms -- no redirect is followed at all, so the question does not
+ * arise and UNRESTRICTED_AUTH is moot. transport_winhttp.c sets
+ * WINHTTP_OPTION_REDIRECT_POLICY_NEVER for the same reason; WinHTTP follows by
+ * default, so that one is a correction rather than a default.
+ *
+ * But a transport registered through tamga_client_set_transport() is the
+ * caller's own HTTP stack and most follow redirects out of the box, so the 303
+ * is never requested in the first place: `redirect=false` makes the server
+ * return the artifact resource with `redirectUrl` populated instead. The URL is
+ * then the caller's to fetch with NO credentials attached -- it carries its own
+ * signature, and adding an Authorization header to it is both unnecessary and
+ * the leak this avoids. There is deliberately no parameter for asking for the
+ * redirect form.
+ *
+ * There is a second reason that holds whatever any transport does about
+ * headers: following the redirect streams the artifact's BYTES into the
+ * response buffer before anything can reject them. Responses here are capped
+ * (TAMGA_TRANSPORT_FAIL_OVERSIZED), and a real artifact routinely exceeds any
+ * sane cap -- so a followed download either fails late having buffered a large
+ * file, or succeeds and hands back a body no accessor in this SDK can read.
  */
 TamgaErrorCode tamga_client_get_artifact_download_url(TamgaClient *client, const char *artifact_id,
                                                       uint32_t ttl_seconds,

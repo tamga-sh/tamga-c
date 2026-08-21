@@ -117,6 +117,44 @@ static size_t tamga_curl_write_header(char *data, size_t size, size_t count, voi
     return total;
 }
 
+/*
+ * Confines this handle to HTTP and HTTPS.
+ *
+ * libcurl speaks file:, scp:, ftp:, gopher: and more, and by default it will
+ * attempt whatever scheme the URL names. Nothing in this SDK builds a URL from
+ * a server-supplied value today -- tamga_client_compose_origin() prepends
+ * https:// to anything that does not already begin http:// or https://, and
+ * CURLOPT_FOLLOWLOCATION is 0 so no Location header can introduce one either --
+ * so this restriction is currently belt and braces.
+ *
+ * It is here because both of those are one edit away from being untrue, and
+ * the failure mode is severe and silent. MEASURED on libcurl 8.7.1 by driving
+ * this transport at `file:///tmp/<a file>` with this option removed: the call
+ * SUCCEEDED and returned the file's contents as `response->body`. With the
+ * option set the same call fails outright, and an `http://` control still
+ * succeeds -- so the refusal is this restriction and not a broken handle.
+ *
+ * That is a local-file read driven by a remote value, handed back as if it
+ * were a response. A sibling SDK found its "is this an absolute URI" check
+ * accepting `/relative/path` and `C:\x\y` as file: URIs, which is exactly
+ * how a value gets from a server into a scheme nobody intended.
+ *
+ * Checked rather than discarded, like the three options above it and for the
+ * same reason: a build where this silently did nothing would still send the
+ * request, with no way for anything downstream to tell a confined handle from
+ * an unconfined one.
+ */
+static bool tamga_curl_restrict_protocols(CURL *handle) {
+#if defined(CURL_AT_LEAST_VERSION) && CURL_AT_LEAST_VERSION(7, 85, 0)
+    /* CURLOPT_PROTOCOLS is deprecated from 7.85; the _STR form is the
+     * replacement and takes a comma-separated list. */
+    return curl_easy_setopt(handle, CURLOPT_PROTOCOLS_STR, "http,https") == CURLE_OK;
+#else
+    return curl_easy_setopt(handle, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS)) ==
+           CURLE_OK;
+#endif
+}
+
 static bool tamga_curl_perform(void *user_data, const TamgaHttpRequest *request,
                                TamgaHttpResponse *response) {
     TamgaCurlState *state = (TamgaCurlState *)user_data;
@@ -192,7 +230,8 @@ static bool tamga_curl_perform(void *user_data, const TamgaHttpRequest *request,
      */
     if (curl_easy_setopt(state->handle, CURLOPT_SSL_VERIFYPEER, 1L) != CURLE_OK ||
         curl_easy_setopt(state->handle, CURLOPT_SSL_VERIFYHOST, 2L) != CURLE_OK ||
-        curl_easy_setopt(state->handle, CURLOPT_FOLLOWLOCATION, 0L) != CURLE_OK) {
+        curl_easy_setopt(state->handle, CURLOPT_FOLLOWLOCATION, 0L) != CURLE_OK ||
+        !tamga_curl_restrict_protocols(state->handle)) {
         goto done;
     }
 
