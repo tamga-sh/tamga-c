@@ -281,6 +281,19 @@ typedef enum TamgaScheme {
     TAMGA_SCHEME_RSA_2048_JWT_RS256 = 5
 } TamgaScheme;
 
+/**
+ * The heartbeat window the server falls back to when a policy sets none:
+ * ten minutes. Mirrors `Policy::effective_heartbeat_duration_secs()`.
+ *
+ * A heartbeat loop should ping at roughly a third of the effective window, so
+ * that two consecutive losses still leave one attempt inside it. Read the
+ * effective window with tamga_response_heartbeat_window_secs() rather than
+ * assuming this constant — a policy asking for a shorter window and a client
+ * hardcoding ten minutes is a machine that falls outside the window and is
+ * culled.
+ */
+#define TAMGA_DEFAULT_HEARTBEAT_WINDOW_SECONDS 600
+
 /* ======================================================================
  * Opaque handles
  * ====================================================================== */
@@ -722,7 +735,6 @@ TAMGA_API const char *tamga_response_header(const TamgaResponse *response, const
  */
 TAMGA_API const char *tamga_response_error_code(const TamgaResponse *response);
 
-/** Whether a validation response reports the licence as valid. */
 /**
  * The cursor for the next page of a listing, or NULL when this was the last
  * page — pass it back as `after` to tamga_client_list_components().
@@ -746,7 +758,102 @@ TAMGA_API const char *tamga_response_error_code(const TamgaResponse *response);
  */
 TAMGA_API const char *tamga_response_next_cursor(const TamgaResponse *response, uint32_t limit);
 
+/**
+ * Whether a validation response reports the licence as valid.
+ *
+ * Reads `meta.valid`, or the top-level `valid` on quick-validate, which
+ * answers with no `data` envelope.
+ *
+ * False is not by itself proof of an invalid licence: a response carrying no
+ * readable `valid` flag — the wrong response passed, or an error document —
+ * reads false too. Failing closed is deliberate, but when the two must be
+ * told apart, pair this with tamga_response_validation_code(), which answers
+ * NULL where there is no verdict to report and a code string where there is.
+ */
 TAMGA_API bool tamga_response_validation_is_valid(const TamgaResponse *response);
+
+/**
+ * `meta.page` from an OFFSET-paginated listing.
+ *
+ * Only `tamga_client_list_machines()` answers with this metadata. Every other
+ * listing this SDK exposes is keyset-paginated and carries no `meta` at all —
+ * use tamga_response_next_cursor() for those, and this for machines. Getting
+ * the two the wrong way round does not fail loudly: a cursor derived from a
+ * machine listing addresses the same first page forever, and
+ * tamga_response_page() on a keyset listing simply returns false.
+ *
+ * Every out-parameter is optional; pass NULL for the ones you do not want.
+ *
+ * Returns false when the response carries no readable `meta.page`, and writes
+ * NOTHING in that case — all four fields are read before any is stored, so a
+ * caller that ignores the return value cannot act on a half-filled set. A
+ * partially decoded page would be worse than none: a zero `total_pages` reads
+ * as "there is nothing here" and stops a paging loop on its first iteration.
+ *
+ * `total` counts the rows matching the request's filters, not the whole
+ * table. `page[number]` is 1-based. The server clamps `page[size]` to 100 and
+ * refuses an offset past 100000 rows with `400 PAGE_OUT_OF_RANGE`, so the
+ * numbers here can differ from what was asked for.
+ */
+TAMGA_API bool tamga_response_page(const TamgaResponse *response, int64_t *out_number,
+                                   int64_t *out_size, int64_t *out_total, int64_t *out_total_pages);
+
+/**
+ * The heartbeat window, in seconds, that a POLICY response describes.
+ *
+ * Pass a response from tamga_client_get_policy() or, for a licence-key
+ * credential, tamga_client_get_license_policy(). Reads
+ * `data.attributes.heartbeat_duration` and mirrors the server's own
+ * `Policy::effective_heartbeat_duration_secs()`: the policy's value when it
+ * sets one, and TAMGA_DEFAULT_HEARTBEAT_WINDOW_SECONDS when it does not.
+ *
+ * Unlike tamga_response_page() directly above, `out_seconds` is NOT optional:
+ * passing NULL returns false rather than reporting readability alone.
+ *
+ * Returns false in two distinct cases, and writes NOTHING to `*out_seconds`
+ * in either — so a caller that ignores the return value reads back whatever
+ * it already had there, never a plausible-looking window it did not earn:
+ *
+ *   1. The response is not a policy resource at all, so `heartbeat_duration`
+ *      is absent. Answering the default here would be indistinguishable from
+ *      a policy that genuinely leaves the window unset, so a caller that
+ *      passed the wrong response would silently ping on the wrong schedule
+ *      instead of learning it asked the wrong question.
+ *
+ *   2. The field is present but is not a usable window: a non-positive
+ *      number — `0` or negative — or a JSON type that is not a number.
+ *
+ * ⚠️ Case 2 is a live server-side possibility, not a defensive formality.
+ * `policies.heartbeat_duration` is a bare nullable INTEGER carrying no CHECK
+ * constraint, and neither the create nor the update handler range-checks the
+ * attribute before binding it, so `0` and negatives are storable — and are
+ * then handed back verbatim, because the server's fallback to 600 keys off
+ * NULL alone. Reported upstream as tamga-api-internal#12. Until it lands,
+ * read false as "this policy does not describe a usable window" and choose a
+ * fallback deliberately rather than computing a schedule from the stored
+ * number: zero is a busy loop against the server, and a negative window is
+ * already in the past on every comparison that uses it.
+ *
+ * A JSON `null` is NOT case 2. That is the documented unset state and yields
+ * TAMGA_DEFAULT_HEARTBEAT_WINDOW_SECONDS with a true return.
+ *
+ * ⚠️ This is the ONLY reliable way to learn the window. Do not derive it from
+ * a machine's `next_heartbeat_at`: that field is computed against the 600s
+ * fallback on the create, ping-heartbeat and reset-heartbeat responses, and
+ * against `policy.heartbeat_duration` on check-out, generate-offline-proof
+ * and the machine reads, because only the read queries join `policies`. Two
+ * responses for the same machine, seconds apart, can disagree — and the
+ * endpoint a heartbeat loop naturally calls is the one that is wrong.
+ * Reported upstream; until it lands, ask the policy.
+ *
+ * ⚠️ A window is not the same thing as culling. `policies.require_heartbeat`
+ * defaults to false and the cull job early-returns when it is, so on a
+ * default policy no machine is ever removed for missing a heartbeat. Read
+ * `require_heartbeat` off the same response before deciding a loop is
+ * needed.
+ */
+TAMGA_API bool tamga_response_heartbeat_window_secs(const TamgaResponse *response,
+                                                    int64_t *out_seconds);
 
 /**
  * The validation outcome code (`VALID`, `EXPIRED`, `TOO_MANY_MACHINES`, ...).
@@ -937,6 +1044,66 @@ TAMGA_API TamgaErrorCode tamga_client_check_in(TamgaClient *client, const char *
                                                TamgaResponse **out_response);
 
 /**
+ * `GET /licenses/{id}` -- the licence resource.
+ *
+ * ⚠️ NOT confined to the credential's own licence, and the resource carries
+ * the plaintext licence key in `attributes.key`.
+ *
+ * The server applies its `require_license_scope` check -- the one that stops
+ * a licence key being used against another licence's id -- to validate,
+ * quick-validate, validate-key and check-out. It does NOT apply it here. This
+ * route gates on the `license.read` permission alone, and a licence-key
+ * credential carries `license.read` by default, so one licence key can read
+ * every other licence's key in the same account by id.
+ *
+ * That is the server's behaviour and has been reported upstream; an SDK
+ * cannot fix it. It is documented here so that nobody mistakes this call for
+ * a scoped one. If all you need is the policy, use
+ * tamga_client_get_license_policy(), which returns no key.
+ */
+TAMGA_API TamgaErrorCode tamga_client_get_license(TamgaClient *client, const char *license_id,
+                                                  TamgaResponse **out_response);
+
+/**
+ * `GET /licenses/{id}/policy` -- the policy behind a licence.
+ *
+ * This is the call a licence-key credential should use to learn its own
+ * policy: it gates on `license.read`, which a licence key carries, and
+ * returns the same policy resource tamga_client_get_policy() does. The same
+ * missing scope check as tamga_client_get_license() applies -- any licence id
+ * in the account resolves -- but a policy carries no key material.
+ *
+ * Feed the response to tamga_response_heartbeat_window_secs() to size a
+ * heartbeat loop. `attributes.require_heartbeat`,
+ * `attributes.require_check_in`, `attributes.check_in_interval` and the five
+ * `max_*` limits are on the same resource.
+ *
+ * ⚠️ `check_in_interval` is LOWERCASE on the wire (`day`/`week`/`month`/
+ * `year`) -- the one casing exception in the protocol. Two more fields report
+ * values that are not real variants of their own enums: a freshly created
+ * policy really does answer `overage_strategy: "DENY_ACCESS"` and
+ * `heartbeat_resurrection_strategy: "NO_RESURRECTION"`, and the server treats
+ * both as the "none" variant. `"DENY_ACCESS"` in particular reads as "deny
+ * everything", which is not what happens. Compare against the raw strings,
+ * not against an enum you assume the server shares.
+ */
+TAMGA_API TamgaErrorCode tamga_client_get_license_policy(TamgaClient *client,
+                                                         const char *license_id,
+                                                         TamgaResponse **out_response);
+
+/**
+ * `GET /policies/{id}` -- a policy by its own id.
+ *
+ * ⚠️ Closed to a licence key. This route gates on the `policy.read`
+ * permission, which `Role::LicenseToken` does not carry, so a licence-key
+ * credential gets `403` here whatever the policy's authentication strategy
+ * says. Use tamga_client_get_license_policy() instead; it reaches the
+ * identical resource through a permission a licence key does have.
+ */
+TAMGA_API TamgaErrorCode tamga_client_get_policy(TamgaClient *client, const char *policy_id,
+                                                 TamgaResponse **out_response);
+
+/**
  * `GET /licenses/{id}/actions/check-out` -- the raw `.lic` PEM.
  *
  * Not idempotent: a fresh identifier backs each call, so two calls yield two
@@ -1053,6 +1220,104 @@ TAMGA_API TamgaErrorCode tamga_client_activate_machine(
     TamgaClient *client, const char *license_id, const char *fingerprint, const char *options_json,
     const char *scope_json, bool auto_delete_on_overage, TamgaResponse **out_response);
 
+/**
+ * `GET /machines` -- the machine collection, filtered and OFFSET-paginated.
+ *
+ * ⚠️ This is the one listing in this SDK that is not keyset-paginated. It
+ * takes `page[number]` (1-based) and `page[size]`, and answers with
+ * `meta.page{number,size,total,totalPages}` — read it with
+ * tamga_response_page(), NOT with tamga_response_next_cursor(), which would
+ * hand back the first page's last id forever.
+ *
+ * `license_id` is optional; when given, only that licence's machines are
+ * returned. It is the ONLY way to scope a machine to a licence, because the
+ * machine resource carries no relationships and no licence id.
+ *
+ * `search` is optional and is `filter[q]`: a case-insensitive SUBSTRING match
+ * across `name`, `hostname` and `fingerprint`. It is not an equality filter
+ * and there is no `filter[fingerprint]`, so a caller looking for one exact
+ * fingerprint must re-check what comes back —
+ * tamga_client_find_machine_by_fingerprint() does exactly that. The server
+ * truncates the term at 200 characters.
+ *
+ * `page_number` and `page_size` of zero omit the parameter and take the
+ * server's defaults: page 1, 25 rows. `page_size` is clamped to 100.
+ *
+ * Needs the `machine.read` permission, which a licence key carries.
+ */
+TAMGA_API TamgaErrorCode tamga_client_list_machines(TamgaClient *client, const char *license_id,
+                                                    const char *search, uint32_t page_number,
+                                                    uint32_t page_size,
+                                                    TamgaResponse **out_response);
+
+/**
+ * The id of the machine on `license_id` whose fingerprint is exactly
+ * `fingerprint`, or NULL when the licence has none.
+ *
+ * `*out_machine_id` is set to NULL first and only written on an exact match;
+ * on `TAMGA_OK` with a non-NULL value the string is OWNED — release it with
+ * tamga_string_free(). "Not found" is `TAMGA_OK` with NULL, not an error: it
+ * is a normal answer, and a caller branches on it either way.
+ *
+ * Implemented over tamga_client_list_machines() because the server has no
+ * exact-fingerprint filter — `filter[q]` is a substring match, so every
+ * candidate it returns is compared here in full. At most ten pages of a
+ * hundred are walked; past that the answer is reported as "not found", which
+ * is the same thing the caller has to handle anyway.
+ */
+TAMGA_API TamgaErrorCode tamga_client_find_machine_by_fingerprint(TamgaClient *client,
+                                                                  const char *license_id,
+                                                                  const char *fingerprint,
+                                                                  char **out_machine_id);
+
+/**
+ * tamga_client_activate_machine(), but a machine that is already activated is
+ * not an error.
+ *
+ * Re-running an activation on a machine that already holds a seat is the
+ * normal case — it happens on every restart of an installed application — and
+ * the plain call reports it as `TAMGA_ERR_FINGERPRINT_TAKEN` with no way
+ * forward. The server intends the opposite reading: it checks fingerprint
+ * uniqueness BEFORE the seat limits precisely so that a re-activation is
+ * reported as a conflict rather than as "buy more seats", and its own comment
+ * on that branch says the conflict means "already activated, carry on".
+ *
+ * The sequence is: create; on `FINGERPRINT_TAKEN`, look the existing machine
+ * up on this licence by exact fingerprint; then validate as usual. On every
+ * other outcome this behaves exactly like tamga_client_activate_machine(),
+ * including what `*out_response` holds — see there, and note in particular
+ * that a creation failure other than the five limit codes still leaves
+ * `*out_response` NULL.
+ *
+ * ⚠️ `auto_delete_on_overage` applies to the CREATE path only. When the
+ * machine was already there, this call created nothing and rolls nothing
+ * back: deleting on an over-limit verdict would destroy a seat that is
+ * already paid for and in use, on a call whose purpose is to be a no-op when
+ * the machine is present.
+ *
+ * ⚠️ `TAMGA_ERR_FINGERPRINT_TAKEN` still comes back when the conflict is real
+ * — when the machine holding that fingerprint belongs to a DIFFERENT licence.
+ * The lookup is scoped to the licence being activated, and that scope is the
+ * point rather than a limitation: a policy set to `UNIQUE_PER_POLICY` or
+ * `UNIQUE_PER_ACCOUNT` rejects a fingerprint already registered anywhere in
+ * that scope, and those two strategies exist precisely to stop one machine
+ * holding seats on several licences. Returning the other licence's machine
+ * and reporting success would leave you holding a machine id whose seat
+ * belongs to that licence, with this one's `machines_count` never
+ * incremented — the arrangement the policy forbids, arranged for you.
+ *
+ * The same code comes back, with a different message, when the credential
+ * cannot read machines at all; tamga_last_error_message() distinguishes them.
+ * To find out WHICH licence holds a fingerprint, ask account-wide with
+ * `tamga_client_list_machines(client, NULL, fingerprint, ...)` — a diagnostic,
+ * and deliberately a separate call.
+ *
+ * Needs `machine.read` on top of what tamga_client_activate_machine() needs.
+ */
+TAMGA_API TamgaErrorCode tamga_client_activate_machine_idempotent(
+    TamgaClient *client, const char *license_id, const char *fingerprint, const char *options_json,
+    const char *scope_json, bool auto_delete_on_overage, TamgaResponse **out_response);
+
 /** `POST /machines/{id}/actions/ping-heartbeat`. */
 TAMGA_API TamgaErrorCode tamga_client_ping_heartbeat(TamgaClient *client, const char *machine_id,
                                                      TamgaResponse **out_response);
@@ -1071,6 +1336,74 @@ TAMGA_API TamgaErrorCode tamga_client_ping_heartbeat(TamgaClient *client, const 
  */
 TAMGA_API TamgaErrorCode tamga_client_reset_heartbeat(TamgaClient *client, const char *machine_id,
                                                       TamgaResponse **out_response);
+
+/**
+ * `GET /machines/{id}` -- one machine.
+ *
+ * This is a READ, and the distinction matters for `heartbeat_status`. A
+ * response the server builds off a write it has just performed can never
+ * report `DEAD`, because the status is derived from the timestamp that write
+ * just set: create, ping-heartbeat and reset-heartbeat all answer
+ * `NOT_STARTED`, `ALIVE` or `RESURRECTED` and nothing else. A response built
+ * off a read carries a genuine staleness verdict, so this call, the machine
+ * listing, check-out and generate-offline-proof are where `DEAD` is
+ * observable at all.
+ *
+ * ⚠️ `DEAD` does not mean the machine was culled. The status is computed
+ * purely from `last_heartbeat_at` against the policy's window and never
+ * consults `require_heartbeat`, so a machine reports `DEAD` indefinitely
+ * while its row and its seat are still there. A ping against a `DEAD` machine
+ * succeeds and revives it. Keep pinging through `DEAD`; the only signal the
+ * row is really gone is a `404` from the ping itself.
+ *
+ * ⚠️ No machine route is confined to the credential's own licence. The
+ * server's `require_license_scope` check is applied to the licence validate
+ * and check-out routes and to no machine route at all, while a licence-key
+ * credential carries `machine.read`, `machine.update` and `machine.delete` by
+ * default. So a licence key can read, update and delete ANY machine in the
+ * account by id, not only its own. That is the server's behaviour and has
+ * been reported upstream; it is recorded here so that nobody reads this call,
+ * tamga_client_update_machine() or tamga_client_delete_machine() as a scoped
+ * surface. The machine resource carries no licence id, so a caller cannot
+ * check the ownership locally either — scope a listing server-side with
+ * tamga_client_list_machines()'s `license_id` when it matters.
+ */
+TAMGA_API TamgaErrorCode tamga_client_get_machine(TamgaClient *client, const char *machine_id,
+                                                  TamgaResponse **out_response);
+
+/**
+ * `PATCH /machines/{id}` -- updates a machine's mutable attributes.
+ *
+ * `attributes_json` is a required JSON object; the recognised members are
+ * `name`, `ip`, `hostname`, `platform`, `cores`, `memory`, `disk` and
+ * `metadata`, and anything else in it is dropped rather than forwarded.
+ * `fingerprint` is deliberately not among them -- it is the identity the
+ * licence's seat is bound to, and the server has no field for it here.
+ *
+ * ⚠️ Omitting a member leaves it unchanged, and so does sending `null`: the
+ * server coalesces every attribute against its current value, so there is no
+ * way to CLEAR a field through this call.
+ *
+ * ⚠️ `memory` and `disk` are MEGABYTES, as in tamga_client_create_machine(),
+ * and an update adjusts the licence's running core, memory and disk totals by
+ * the difference -- without re-checking the limits. An update that takes a
+ * licence over its limit succeeds here and surfaces at the next validation or
+ * the next activation.
+ *
+ * ⚠️ This response's `heartbeat_status` CAN read `DEAD`, and its
+ * `next_heartbeat_at` is computed against the 600-second fallback rather than
+ * the policy's window. That looks like it contradicts the rule that a
+ * response built off a write never reports `DEAD` -- and it is a genuine
+ * exception to how that rule is usually stated. The update's `UPDATE …
+ * RETURNING` never touches `last_heartbeat_at`, so the status is judged
+ * against a timestamp this write did not set; and it does not join
+ * `policies`, so the window falls back. The durable form of the rule is
+ * narrower than "write": a response can only be guaranteed not to say `DEAD`
+ * when the write it was built from set `last_heartbeat_at` itself.
+ */
+TAMGA_API TamgaErrorCode tamga_client_update_machine(TamgaClient *client, const char *machine_id,
+                                                     const char *attributes_json,
+                                                     TamgaResponse **out_response);
 
 /** `DELETE /machines/{id}`. */
 TAMGA_API TamgaErrorCode tamga_client_delete_machine(TamgaClient *client, const char *machine_id,
@@ -1128,6 +1461,20 @@ TAMGA_API TamgaErrorCode tamga_client_list_components(TamgaClient *client, const
                                                       TamgaResponse **out_response);
 
 /**
+ * `GET /machines/{id}/processes` -- the machine's processes.
+ *
+ * Keyset-paginated, like the component listing and unlike
+ * tamga_client_list_machines(): pass tamga_response_next_cursor() back as
+ * `after`. `limit` defaults to 25 server-side and is clamped to 100.
+ *
+ * Needs the `process.read` permission, which a licence key carries.
+ */
+TAMGA_API TamgaErrorCode tamga_client_list_machine_processes(TamgaClient *client,
+                                                             const char *machine_id, uint32_t limit,
+                                                             const char *after,
+                                                             TamgaResponse **out_response);
+
+/**
  * `POST /processes` -- same flat body shape as component creation.
  *
  * Unlike a machine, a process starts alive: its heartbeat is set at creation.
@@ -1141,6 +1488,27 @@ TAMGA_API TamgaErrorCode tamga_client_create_process(TamgaClient *client, const 
 /** `POST /processes/{id}/actions/ping`. */
 TAMGA_API TamgaErrorCode tamga_client_ping_process(TamgaClient *client, const char *process_id,
                                                    TamgaResponse **out_response);
+
+/**
+ * `DELETE /processes/{id}` -- 204, and the only thing that removes the row.
+ *
+ * ⚠️ Not optional housekeeping. The server has a process reaper, but nothing
+ * calls it -- it is dead code, reported upstream -- so no process row is ever
+ * removed automatically. Every row keeps counting towards the licence's
+ * process total, and that total is what `TOO_MANY_PROCESSES` is checked
+ * against. An application that registers a process on each run and never
+ * disposes of one works until it does not, and the failure lands on a later,
+ * innocent run rather than on the run that caused it.
+ *
+ * Pair every tamga_client_create_process() with this on the way out, on the
+ * error paths as well as the happy one. It answers `204` whether or not the
+ * row was there, so calling it twice, or at a shutdown that has already run
+ * once, is harmless.
+ *
+ * Needs the `process.delete` permission, which a licence key carries.
+ */
+TAMGA_API TamgaErrorCode tamga_client_delete_process(TamgaClient *client, const char *process_id,
+                                                     TamgaResponse **out_response);
 
 /**
  * `GET /licenses/{id}/entitlements` -- same wire shape as the component
@@ -1198,6 +1566,81 @@ TAMGA_API TamgaErrorCode tamga_client_get_entitlement(TamgaClient *client, const
 TAMGA_API TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const char *license_id,
                                                       const char *code, uint32_t limit,
                                                       bool *out_has);
+
+/* ======================================================================
+ * Releases and diagnostics
+ * ====================================================================== */
+
+/**
+ * `GET /releases/actions/upgrade` -- is there a newer release for me?
+ *
+ * `product_id`, `platform`, `filetype` and `version` are ALL required: the
+ * server declares them as non-optional query parameters and answers `400`
+ * when one is missing rather than defaulting the search. `version` is the
+ * caller's CURRENT version. `channel` (`stable`, `beta`, ...) and
+ * `constraint` (a semver range to stay within) are optional; pass NULL to
+ * omit either.
+ *
+ * ⚠️ `204 No Content` means TWO different things, and the server cannot tell
+ * them apart on purpose:
+ *
+ *   - there is no newer release; or
+ *   - there IS one, and this licence is not entitled to it because it has
+ *     expired under an expiration strategy that stops new builds.
+ *
+ * The server's own comment gives the reason: refusing the second case
+ * explicitly would leak "a newer version exists but you cannot have it", and
+ * `204` is the honest answer to both. There is no client-side way to separate
+ * them and there is not meant to be.
+ *
+ * So do NOT report a `204` to a user as "you are up to date". The accurate
+ * wording is "there is no update available to you". A `204` also carries no
+ * body at all, so `*out_response` holds a response whose
+ * tamga_response_status() is 204 and whose tamga_response_json() is empty —
+ * there is no zeroed release resource that could be misread as a real one.
+ *
+ * `204` is not the only non-200 outcome, and the others mean different
+ * things. `200` carries the release resource. `403` is a SUSPENDED licence,
+ * refused before the entitlement branch is ever reached, or a product whose
+ * distribution strategy excludes this caller. `401` comes from the same
+ * distribution-strategy check when no credential is accepted. `404` means the
+ * product id is unknown. `400` means one of the four required parameters was
+ * missing or malformed.
+ *
+ * The route accepts anonymous callers for products with an `Open`
+ * distribution strategy — so that an auto-updater in the field keeps working
+ * — but this client has no unauthenticated mode: tamga_client_set_auth() is a
+ * precondition of every request, and the configured credential is sent here
+ * like anywhere else.
+ */
+TAMGA_API TamgaErrorCode tamga_client_check_upgrade(TamgaClient *client, const char *product_id,
+                                                    const char *platform, const char *filetype,
+                                                    const char *version, const char *channel,
+                                                    const char *constraint,
+                                                    TamgaResponse **out_response);
+
+/**
+ * `GET /v1/health` -- the server's liveness probe.
+ *
+ * The one route this SDK calls that is NOT account-scoped. It is registered
+ * outside the account router, sits on the server's public-route allowlist,
+ * and bypasses the host-header middleware entirely.
+ *
+ * ⚠️ The body is a flat `{"status": "ok", "version": "...", "uptime_secs": N}`
+ * — NOT a JSON:API document. There is no `data` envelope and no `meta`, so
+ * none of the tamga_response_validation_* or tamga_response_page() accessors
+ * apply. Read it with tamga_response_json().
+ *
+ * Its diagnostic value is that combination of exemptions. If every ordinary
+ * call is failing with `403` and "The Host header does not match any
+ * configured host" while THIS call succeeds, the fault is the deployment's
+ * `TAMGA_ALLOWED_HOSTS` configuration, not the caller's credential — so the
+ * fix is on the server side and re-issuing the token will not help.
+ *
+ * A credential is still sent, because this client has no unauthenticated
+ * mode. The route ignores it.
+ */
+TAMGA_API TamgaErrorCode tamga_client_health(TamgaClient *client, TamgaResponse **out_response);
 
 #ifdef __cplusplus
 } /* extern "C" */

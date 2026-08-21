@@ -17,6 +17,8 @@ static const char LICENSE_ID[] = "01926b3e-0000-7000-8000-000000000001";
 static const char MACHINE_ID[] = "01926b3e-0000-7000-8000-000000000002";
 static const char PROCESS_ID[] = "01926b3e-0000-7000-8000-000000000003";
 static const char ENTITLEMENT_ID[] = "01926b3e-0000-7000-8000-000000000004";
+static const char POLICY_ID[] = "01926b3e-0000-7000-8000-000000000005";
+static const char PRODUCT_ID[] = "01926b3e-0000-7000-8000-000000000006";
 
 static const char *const BASE = "https://api.tamga.sh/v1/accounts/"
                                 "01926b3e-0000-7000-8000-0000000000aa";
@@ -729,6 +731,598 @@ TT_TEST(identifiers_are_normalised_into_the_path) {
     });
 }
 
+/* --- the reads and writes added in 1.3.x --------------------------------- */
+
+TT_TEST(the_licence_and_policy_reads_hit_their_routes) {
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_get_license(client, LICENSE_ID, &response), TAMGA_OK);
+        expect_call(&mock, "GET", "/licenses/01926b3e-0000-7000-8000-000000000001");
+    });
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_get_license_policy(client, LICENSE_ID, &response), TAMGA_OK);
+        expect_call(&mock, "GET", "/licenses/01926b3e-0000-7000-8000-000000000001/policy");
+    });
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_get_policy(client, POLICY_ID, &response), TAMGA_OK);
+        expect_call(&mock, "GET", "/policies/01926b3e-0000-7000-8000-000000000005");
+    });
+}
+
+/*
+ * The heartbeat window comes from the policy, and an absent one means the
+ * server's 600-second fallback rather than "no heartbeat".
+ *
+ * An SDK that hardcoded 600 would ping far too slowly for a policy asking for
+ * a shorter window, and its machines would fall outside that window. The
+ * third case is the one that keeps this honest: a response that is not a
+ * policy must be refused rather than answered with the default, or a caller
+ * that passed the wrong response would silently ping on the wrong schedule.
+ */
+TT_TEST(the_policy_response_carries_the_heartbeat_window) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    int64_t window = 0;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"policies\",\"id\":\"p\","
+               "\"attributes\":{\"heartbeat_duration\":120,\"require_heartbeat\":true}}}");
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"policies\",\"id\":\"p\","
+               "\"attributes\":{\"heartbeat_duration\":null,\"require_heartbeat\":false}}}");
+    mock_reply(&mock, 200, "{\"data\":{\"type\":\"machines\",\"id\":\"m\",\"attributes\":{}}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_get_license_policy(client, LICENSE_ID, &response), TAMGA_OK);
+    TT_ASSERT(tamga_response_heartbeat_window_secs(response, &window));
+    TT_ASSERT_EQ_INT((int)window, 120);
+    tamga_response_free(response);
+    response = NULL;
+
+    /* `heartbeat_duration: null` is the 600-second fallback, not an error --
+     * the field is always present on the wire because the server declares no
+     * skip_serializing_if for it. */
+    TT_ASSERT_EQ_INT(tamga_client_get_license_policy(client, LICENSE_ID, &response), TAMGA_OK);
+    TT_ASSERT(tamga_response_heartbeat_window_secs(response, &window));
+    TT_ASSERT_EQ_INT((int)window, TAMGA_DEFAULT_HEARTBEAT_WINDOW_SECONDS);
+    tamga_response_free(response);
+    response = NULL;
+
+    window = -1;
+    TT_ASSERT_EQ_INT(tamga_client_get_machine(client, MACHINE_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_heartbeat_window_secs(response, &window));
+    /* Refused, and nothing written -- a caller that ignored the return value
+     * must not find a plausible-looking 600 in its variable. */
+    TT_ASSERT_EQ_INT((int)window, -1);
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * A stored window of zero or less is refused, and `*out_seconds` is left
+ * exactly as the caller had it.
+ *
+ * Not a defensive formality: `policies.heartbeat_duration` is a bare nullable
+ * INTEGER with no CHECK constraint, and neither create_policy nor
+ * update_policy range-checks the attribute before binding it -- each
+ * validates only its enum-typed string fields. So `0` and negatives are
+ * storable, and `effective_heartbeat_duration_secs()` hands them straight
+ * back, because its fallback to 600 keys off NULL alone.
+ *
+ * Both halves of the promise are pinned here. Answering true with a zero
+ * would turn a heartbeat loop into a busy loop against the server, and a
+ * negative window is already in the past on every comparison that uses it.
+ * Writing to `*out_seconds` on the way out would be just as bad: the refusal
+ * only helps if a caller that ignored the return value cannot find a
+ * plausible-looking number waiting in its variable. The sibling test above
+ * covers the readable cases, and every one of its assertions stays green if
+ * the `<= 0` guard is deleted -- which is what makes this test the one
+ * holding the documented contract up.
+ */
+TT_TEST(a_non_positive_heartbeat_window_is_refused_without_writing) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    int64_t window;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"policies\",\"id\":\"p\","
+               "\"attributes\":{\"heartbeat_duration\":0,\"require_heartbeat\":true}}}");
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"policies\",\"id\":\"p\","
+               "\"attributes\":{\"heartbeat_duration\":-1,\"require_heartbeat\":true}}}");
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"policies\",\"id\":\"p\","
+               "\"attributes\":{\"heartbeat_duration\":\"600\",\"require_heartbeat\":true}}}");
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"policies\",\"id\":\"p\","
+               "\"attributes\":{\"heartbeat_duration\":120,\"require_heartbeat\":true}}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    /* Zero -- storable upstream, and a schedule computed from it never
+     * sleeps. */
+    window = -7;
+    TT_ASSERT_EQ_INT(tamga_client_get_policy(client, POLICY_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_heartbeat_window_secs(response, &window));
+    TT_ASSERT_EQ_INT((int)window, -7);
+    tamga_response_free(response);
+    response = NULL;
+
+    /* Negative -- equally storable, and every deadline built from it has
+     * already passed. */
+    window = -7;
+    TT_ASSERT_EQ_INT(tamga_client_get_policy(client, POLICY_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_heartbeat_window_secs(response, &window));
+    TT_ASSERT_EQ_INT((int)window, -7);
+    tamga_response_free(response);
+    response = NULL;
+
+    /* Present, non-null, and not a number. The value even looks right, which
+     * is exactly why it is worth pinning: the guard is a type check as well
+     * as a range check. */
+    window = -7;
+    TT_ASSERT_EQ_INT(tamga_client_get_policy(client, POLICY_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_heartbeat_window_secs(response, &window));
+    TT_ASSERT_EQ_INT((int)window, -7);
+    tamga_response_free(response);
+    response = NULL;
+
+    /* `out_seconds` is NOT optional here: a perfectly readable window is
+     * still a refusal when there is nowhere to put it. Pinned because
+     * tamga_response_page(), two declarations up in the header, says every
+     * one of ITS out-parameters may be NULL -- so this is the asymmetry a
+     * reader is most likely to carry the wrong way. */
+    TT_ASSERT_EQ_INT(tamga_client_get_policy(client, POLICY_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_heartbeat_window_secs(response, NULL));
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * `false` from tamga_response_validation_is_valid() is not by itself proof
+ * that the server rejected the licence.
+ *
+ * tamga_json_bool_or() returns its fallback for an absent key and a
+ * wrong-typed one alike, so a response carrying no readable `valid` flag --
+ * the wrong response passed, or an error document -- reads exactly like a
+ * licence the server refused. Failing closed is the right default and this
+ * test does not argue with it; what it pins is the remedy the header now
+ * points at, because a conflation is only safe while the documented way out
+ * of it keeps working. tamga_response_validation_code() answers NULL where
+ * there is no verdict to report and a code string where there is, so the two
+ * cases that look identical through `is_valid` stay distinguishable.
+ */
+TT_TEST(an_unreadable_validation_flag_reads_as_invalid) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, "{\"data\":{\"type\":\"machines\",\"id\":\"m\",\"attributes\":{}}}");
+    mock_reply(&mock, 200,
+               "{\"ts\":\"2026-08-20T00:00:00Z\",\"valid\":false,"
+               "\"detail\":\"has expired\",\"code\":\"EXPIRED\"}");
+    mock_reply(&mock, 200,
+               "{\"ts\":\"2026-08-20T00:00:00Z\",\"valid\":\"true\",\"code\":\"VALID\"}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    /* No verdict anywhere in the document: false, and the code is NULL. That
+     * NULL is the whole remedy -- it is what separates this from the refusal
+     * immediately below. */
+    TT_ASSERT_EQ_INT(tamga_client_get_machine(client, MACHINE_ID, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_validation_is_valid(response));
+    TT_ASSERT_NULL(tamga_response_validation_code(response));
+    TT_ASSERT_EQ_INT(tamga_response_validation_code_enum(response), TAMGA_VALIDATION_UNKNOWN);
+    tamga_response_free(response);
+    response = NULL;
+
+    /* A licence the server really did reject: identical `is_valid`, but a
+     * code that says so. */
+    TT_ASSERT_EQ_INT(tamga_client_quick_validate(client, LICENSE_ID, NULL, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_validation_is_valid(response));
+    TT_ASSERT_EQ_STR(tamga_response_validation_code(response), "EXPIRED");
+    tamga_response_free(response);
+    response = NULL;
+
+    /* `valid` present but a string. It spells "true", and it still reads
+     * false -- tamga_json_bool_or() takes the fallback on a type mismatch
+     * rather than coercing, so a server that ever quoted the field would fail
+     * closed instead of waving every licence through. */
+    TT_ASSERT_EQ_INT(tamga_client_quick_validate(client, LICENSE_ID, NULL, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_validation_is_valid(response));
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * Nothing on the server deletes a process row -- its reaper is dead code --
+ * so a client that never disposes of one leaks a seat against
+ * TOO_MANY_PROCESSES until a later, innocent run fails.
+ */
+TT_TEST(deleting_a_process_is_a_bare_delete) {
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_delete_process(client, PROCESS_ID, &response), TAMGA_OK);
+        expect_call(&mock, "DELETE", "/processes/01926b3e-0000-7000-8000-000000000003");
+        expect_body(&mock, "");
+    });
+}
+
+TT_TEST(listing_machine_processes_is_keyset_paginated) {
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(
+            tamga_client_list_machine_processes(client, MACHINE_ID, 50u, ENTITLEMENT_ID, &response),
+            TAMGA_OK);
+        expect_call(&mock, "GET",
+                    "/machines/01926b3e-0000-7000-8000-000000000002/processes"
+                    "?limit=50&page%5Bafter%5D=01926b3e-0000-7000-8000-000000000004");
+    });
+}
+
+TT_TEST(machine_reads_and_updates_hit_their_routes) {
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_get_machine(client, MACHINE_ID, &response), TAMGA_OK);
+        expect_call(&mock, "GET", "/machines/01926b3e-0000-7000-8000-000000000002");
+    });
+
+    /* Enveloped, and `type` is mandatory: the server declares it as a
+     * non-optional String, so a body without it is a 422 at deserialization
+     * before the handler ever runs. Only the recognised attributes are
+     * forwarded -- and never `fingerprint`, which has no field here. */
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_update_machine(
+                             client, MACHINE_ID,
+                             "{\"hostname\":\"build-02\",\"cores\":8,"
+                             "\"fingerprint\":\"cannot-move\",\"unexpected\":\"dropped\"}",
+                             &response),
+                         TAMGA_OK);
+        expect_call(&mock, "PATCH", "/machines/01926b3e-0000-7000-8000-000000000002");
+        expect_body(&mock, "{\"data\":{\"type\":\"machines\","
+                           "\"attributes\":{\"hostname\":\"build-02\",\"cores\":8}}}");
+    });
+}
+
+/*
+ * GET /machines is the one listing in this domain that is OFFSET-paginated,
+ * not keyset. Sending it a cursor would address the first page forever; the
+ * page metadata is what a caller loops on instead.
+ */
+TT_TEST(the_machine_collection_is_offset_paginated) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    int64_t number = 0;
+    int64_t size = 0;
+    int64_t total = 0;
+    int64_t total_pages = 0;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200,
+               "{\"data\":[],\"meta\":{\"page\":{\"number\":2,\"size\":25,"
+               "\"total\":51,\"totalPages\":3}}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_list_machines(client, LICENSE_ID, "build-01", 2u, 25u, &response),
+                     TAMGA_OK);
+    expect_call(&mock, "GET",
+                "/machines?page%5Bnumber%5D=2&page%5Bsize%5D=25"
+                "&filter%5Blicense%5D=01926b3e-0000-7000-8000-000000000001"
+                "&filter%5Bq%5D=build-01");
+
+    TT_ASSERT(tamga_response_page(response, &number, &size, &total, &total_pages));
+    TT_ASSERT_EQ_INT((int)number, 2);
+    TT_ASSERT_EQ_INT((int)size, 25);
+    TT_ASSERT_EQ_INT((int)total, 51);
+    TT_ASSERT_EQ_INT((int)total_pages, 3);
+    /* The keyset accessor answers nothing here, which is the correct failure:
+     * this listing carries no cursor and never will. */
+    TT_ASSERT_NULL(tamga_response_next_cursor(response, 25u));
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/* Every parameter is optional on this call and each one omitted must vanish
+ * from the query rather than being sent empty. */
+TT_TEST(the_machine_collection_omits_what_it_was_not_given) {
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_list_machines(client, NULL, NULL, 0u, 0u, &response),
+                         TAMGA_OK);
+        expect_call(&mock, "GET", "/machines");
+    });
+}
+
+/* A page with no `meta.page` -- an unexpected body shape -- must not yield a
+ * half-filled set of numbers a caller would act on. */
+TT_TEST(a_page_without_metadata_is_refused_whole) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    int64_t number = -1;
+    int64_t total_pages = -1;
+
+    mock_reset(&mock);
+    /* `totalPages` missing: three of the four fields are readable, and a zero
+     * in the fourth would read as "there is nothing here" and stop a paging
+     * loop on its first iteration. */
+    mock_reply(&mock, 200,
+               "{\"data\":[],\"meta\":{\"page\":{\"number\":1,\"size\":25,"
+               "\"total\":51}}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_list_machines(client, NULL, NULL, 1u, 25u, &response), TAMGA_OK);
+    TT_ASSERT_FALSE(tamga_response_page(response, &number, NULL, NULL, &total_pages));
+    TT_ASSERT_EQ_INT((int)number, -1);
+    TT_ASSERT_EQ_INT((int)total_pages, -1);
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * `filter[q]` is a SUBSTRING search, not an equality filter -- there is no
+ * filter[fingerprint] on the server at all. A machine whose fingerprint
+ * merely contains the one asked for comes back from the same query, and
+ * returning it would hand the caller somebody else's seat.
+ */
+TT_TEST(finding_a_machine_by_fingerprint_demands_an_exact_match) {
+    MockTransport mock;
+    TamgaClient *client;
+    char *machine_id = (char *)0x1;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200,
+               "{\"data\":[{\"id\":\"01926b3e-0000-7000-8000-00000000000f\","
+               "\"attributes\":{\"fingerprint\":\"fp-1-but-longer\"}}],"
+               "\"meta\":{\"page\":{\"number\":1,\"size\":100,\"total\":1,\"totalPages\":1}}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(
+        tamga_client_find_machine_by_fingerprint(client, LICENSE_ID, "fp-1", &machine_id),
+        TAMGA_OK);
+    /* Not found is TAMGA_OK with NULL, and the out-param is cleared first so
+     * a caller cannot read the value it passed in. */
+    TT_ASSERT_NULL(machine_id);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 1u);
+
+    tamga_client_free(client);
+}
+
+TT_TEST(finding_a_machine_walks_past_a_page_that_does_not_hold_it) {
+    MockTransport mock;
+    TamgaClient *client;
+    char *machine_id = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200,
+               "{\"data\":[{\"id\":\"01926b3e-0000-7000-8000-00000000000f\","
+               "\"attributes\":{\"fingerprint\":\"fp-1-but-longer\"}}],"
+               "\"meta\":{\"page\":{\"number\":1,\"size\":100,\"total\":2,\"totalPages\":2}}}");
+    mock_reply(&mock, 200,
+               "{\"data\":[{\"id\":\"01926b3e-0000-7000-8000-000000000002\","
+               "\"attributes\":{\"fingerprint\":\"fp-1\"}}],"
+               "\"meta\":{\"page\":{\"number\":2,\"size\":100,\"total\":2,\"totalPages\":2}}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(
+        tamga_client_find_machine_by_fingerprint(client, LICENSE_ID, "fp-1", &machine_id),
+        TAMGA_OK);
+    TT_ASSERT_NOT_NULL(machine_id);
+    TT_ASSERT_EQ_STR(machine_id, "01926b3e-0000-7000-8000-000000000002");
+    TT_ASSERT_EQ_SIZE(mock.call_count, 2u);
+    TT_ASSERT_NOT_NULL(strstr(mock.calls[1].url, "page%5Bnumber%5D=2"));
+
+    tamga_string_free(machine_id);
+    tamga_client_free(client);
+}
+
+/*
+ * Re-activating an already-activated machine is the normal case -- it happens
+ * on every restart -- and the plain activate call reports it as a bare
+ * conflict with no way forward. The server checks fingerprint uniqueness
+ * BEFORE the seat limits precisely so this is not reported as "buy more
+ * seats"; carrying on is the intended reading.
+ */
+TT_TEST(an_already_activated_machine_is_not_an_error) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 409,
+               "{\"errors\":[{\"status\":\"409\",\"code\":\"FINGERPRINT_TAKEN\","
+               "\"title\":\"Conflict\",\"detail\":\"already activated\"}]}");
+    mock_reply(&mock, 200,
+               "{\"data\":[{\"id\":\"01926b3e-0000-7000-8000-000000000002\","
+               "\"attributes\":{\"fingerprint\":\"fp-1\"}}],"
+               "\"meta\":{\"page\":{\"number\":1,\"size\":100,\"total\":1,\"totalPages\":1}}}");
+    mock_reply(&mock, 200, "{\"data\":{},\"meta\":{\"valid\":true,\"code\":\"VALID\"}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_activate_machine_idempotent(client, LICENSE_ID, "fp-1", NULL,
+                                                              NULL, true, &response),
+                     TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 3u);
+    TT_ASSERT_EQ_STR(mock.calls[0].method, "POST");
+    TT_ASSERT_EQ_STR(mock.calls[1].method, "GET");
+    TT_ASSERT_NOT_NULL(strstr(mock.calls[1].url, "filter%5Bq%5D=fp-1"));
+    /* The existing machine is NOT deleted: this call created nothing, and
+     * auto_delete_on_overage governs only the create path. */
+    TT_ASSERT_EQ_STR(mock.calls[2].method, "POST");
+    TT_ASSERT_NOT_NULL(strstr(mock.calls[2].url, "/actions/validate"));
+    TT_ASSERT(tamga_response_validation_is_valid(response));
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * The conflict is real when the fingerprint belongs to a DIFFERENT licence,
+ * which UNIQUE_PER_POLICY and UNIQUE_PER_ACCOUNT both allow. Those two
+ * strategies exist to stop one fingerprint holding seats on several licences,
+ * so handing the other licence's machine back as "yours" would defeat them --
+ * and the machine resource carries no licence id, so scoping the lookup
+ * server-side is the only way to tell.
+ */
+TT_TEST(an_idempotent_activation_still_refuses_another_licences_fingerprint) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = (TamgaResponse *)0x1;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 409,
+               "{\"errors\":[{\"status\":\"409\",\"code\":\"FINGERPRINT_TAKEN\","
+               "\"title\":\"Conflict\",\"detail\":\"already activated\"}]}");
+    mock_reply(&mock, 200,
+               "{\"data\":[],\"meta\":{\"page\":{\"number\":1,\"size\":100,"
+               "\"total\":0,\"totalPages\":0}}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_activate_machine_idempotent(client, LICENSE_ID, "fp-1", NULL,
+                                                              NULL, true, &response),
+                     TAMGA_ERR_FINGERPRINT_TAKEN);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 2u);
+    /* No validation was attempted, and nothing was handed back to free --
+     * the same contract tamga_client_activate_machine() has on this path. */
+    TT_ASSERT_NULL(response);
+    TT_ASSERT_NOT_NULL(tamga_last_error_message());
+
+    tamga_client_free(client);
+}
+
+/*
+ * A credential that cannot read machines cannot recover from the conflict
+ * either -- but the two failures are different things and must not share a
+ * message. Both keep TAMGA_ERR_FINGERPRINT_TAKEN, because in both cases the
+ * activation genuinely did not happen.
+ */
+TT_TEST(an_idempotent_activation_says_when_the_lookup_itself_failed) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = (TamgaResponse *)0x1;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 409,
+               "{\"errors\":[{\"status\":\"409\",\"code\":\"FINGERPRINT_TAKEN\","
+               "\"title\":\"Conflict\",\"detail\":\"already activated\"}]}");
+    mock_reply(&mock, 403,
+               "{\"errors\":[{\"status\":\"403\",\"code\":\"FORBIDDEN\","
+               "\"title\":\"Forbidden\",\"detail\":\"cannot read machines\"}]}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_activate_machine_idempotent(client, LICENSE_ID, "fp-1", NULL,
+                                                              NULL, true, &response),
+                     TAMGA_ERR_FINGERPRINT_TAKEN);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 2u);
+    TT_ASSERT_NULL(response);
+    /* Named, not folded into "it belongs to another licence" -- the operator
+     * fix for a missing permission is not the fix for a shared fingerprint. */
+    TT_ASSERT_NOT_NULL(strstr(tamga_last_error_message(), "could not be looked up"));
+
+    tamga_client_free(client);
+}
+
+/*
+ * All four of product/platform/filetype/version are required server-side --
+ * they are non-Option query fields, so omitting one is a 400 rather than a
+ * defaulted search.
+ */
+TT_TEST(the_upgrade_check_sends_every_required_parameter) {
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_check_upgrade(client, PRODUCT_ID, "darwin-aarch64", "dmg",
+                                                    "1.2.0", NULL, NULL, &response),
+                         TAMGA_OK);
+        expect_call(&mock, "GET",
+                    "/releases/actions/upgrade"
+                    "?product=01926b3e-0000-7000-8000-000000000006"
+                    "&platform=darwin-aarch64&filetype=dmg&version=1.2.0");
+    });
+
+    /* The optional two are appended only when given, and every value is
+     * percent-encoded -- a constraint like ">=1.2, <2" carries characters
+     * that would otherwise add parameters of their own. */
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_check_upgrade(client, PRODUCT_ID, "linux-x86_64", "AppImage",
+                                                    "1.2.0", "beta", ">=1.2, <2", &response),
+                         TAMGA_OK);
+        expect_call(&mock, "GET",
+                    "/releases/actions/upgrade"
+                    "?product=01926b3e-0000-7000-8000-000000000006"
+                    "&platform=linux-x86_64&filetype=AppImage&version=1.2.0"
+                    "&channel=beta&constraint=%3E%3D1.2%2C%20%3C2");
+    });
+}
+
+/*
+ * `204` means BOTH "there is no newer release" and "there is one and this
+ * licence is not entitled to it", and the server answers the same way on
+ * purpose so a refusal cannot leak the second. The SDK's job is to surface
+ * the status honestly rather than to invent a third state -- there is no
+ * client-side way to tell them apart, and reporting "you are up to date"
+ * would be a claim the response does not support.
+ */
+TT_TEST(the_upgrade_check_reports_204_without_claiming_currency) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 204, "");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_check_upgrade(client, PRODUCT_ID, "windows-x86_64", "exe",
+                                                "1.2.0", NULL, NULL, &response),
+                     TAMGA_OK);
+    TT_ASSERT_NOT_NULL(response);
+    TT_ASSERT_EQ_INT(tamga_response_status(response), 204);
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * The one route that is not account-scoped. Every URL builder in this SDK
+ * family unconditionally prepended /v1/accounts/{account_id}, which is why no
+ * SDK could reach a route the server deliberately publishes outside the
+ * account tree -- the restriction was ours, not the server's.
+ */
+TT_TEST(health_is_not_account_scoped) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, "{\"status\":\"ok\",\"version\":\"0.1.0\",\"uptime_secs\":42}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_health(client, &response), TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 1u);
+    TT_ASSERT_EQ_STR(mock.calls[0].method, "GET");
+    TT_ASSERT_EQ_STR(mock.calls[0].url, "https://api.tamga.sh/v1/health");
+    TT_ASSERT_NULL(strstr(mock.calls[0].url, "/accounts/"));
+    /* A flat body, not a JSON:API document -- nothing that expects a `data`
+     * envelope applies to it. */
+    TT_ASSERT_NOT_NULL(strstr(tamga_response_json(response, NULL), "\"uptime_secs\":42"));
+    /* The credential still goes out: this client has no anonymous mode. */
+    TT_ASSERT_NOT_NULL(mock_last_header(&mock, "Authorization"));
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
 int main(void) {
     TT_RUN(validate_by_key);
     TT_RUN(validate_by_id_with_and_without_scope);
@@ -757,5 +1351,23 @@ int main(void) {
     TT_RUN(the_appended_error_codes_all_have_names);
     TT_RUN(identifiers_must_be_uuids);
     TT_RUN(identifiers_are_normalised_into_the_path);
+    TT_RUN(the_licence_and_policy_reads_hit_their_routes);
+    TT_RUN(the_policy_response_carries_the_heartbeat_window);
+    TT_RUN(a_non_positive_heartbeat_window_is_refused_without_writing);
+    TT_RUN(an_unreadable_validation_flag_reads_as_invalid);
+    TT_RUN(deleting_a_process_is_a_bare_delete);
+    TT_RUN(listing_machine_processes_is_keyset_paginated);
+    TT_RUN(machine_reads_and_updates_hit_their_routes);
+    TT_RUN(the_machine_collection_is_offset_paginated);
+    TT_RUN(the_machine_collection_omits_what_it_was_not_given);
+    TT_RUN(a_page_without_metadata_is_refused_whole);
+    TT_RUN(finding_a_machine_by_fingerprint_demands_an_exact_match);
+    TT_RUN(finding_a_machine_walks_past_a_page_that_does_not_hold_it);
+    TT_RUN(an_already_activated_machine_is_not_an_error);
+    TT_RUN(an_idempotent_activation_still_refuses_another_licences_fingerprint);
+    TT_RUN(an_idempotent_activation_says_when_the_lookup_itself_failed);
+    TT_RUN(the_upgrade_check_sends_every_required_parameter);
+    TT_RUN(the_upgrade_check_reports_204_without_claiming_currency);
+    TT_RUN(health_is_not_account_scoped);
     return TT_SUMMARY();
 }

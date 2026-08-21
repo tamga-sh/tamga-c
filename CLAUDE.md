@@ -294,6 +294,132 @@ Pinned by `activate_machine_reports_a_creation_time_limit_without_deleting`
 and `activate_machine_still_rolls_back_when_the_overage_strategy_allows_the_create`.
 Do not delete either — the pair is the point.
 
+### One listing in the machine domain is offset-paginated, and only one
+
+`GET /machines` goes through the server's shared offset paginator
+(`tamga-api/src/shared/list_query.rs`): `page[number]`, `page[size]`, and a
+`meta.page{number,size,total,totalPages}` object. Every other listing this SDK
+calls — components, entitlements, a machine's processes — keeps its own
+hand-written keyset query and returns no `meta` at all.
+
+Neither shape fails loudly when confused for the other, which is why both
+accessors exist and why each names its own: `tamga_response_next_cursor()`
+against a machine listing derives a cursor the route ignores and re-fetches
+page one forever; `tamga_response_page()` against a keyset listing returns
+false. `the_machine_collection_is_offset_paginated` asserts both directions on
+the same response.
+
+M6 found `page[after]` inert on entitlements. This is the same mistake
+available in the opposite direction — do not assume a domain paginates one
+way because most of it does.
+
+### `FINGERPRINT_TAKEN` means "already activated", and only sometimes "not yours"
+
+`machines/service.rs` checks fingerprint uniqueness *before* the seat limits,
+and its comment says why: checked the other way round, a licence at its limit
+answered a routine re-activation with `MACHINE_LIMIT_EXCEEDED`, so an SDK told
+the customer to buy seats for a machine they had already licensed. The
+conflict is the accurate answer and it means "carry on".
+
+`tamga_client_activate_machine_idempotent()` is that carrying on, and the part
+that is easy to get wrong is when it must NOT. The conflict is raised under the
+policy's `machine_uniqueness_strategy`, which has three scopes:
+`UNIQUE_PER_LICENSE` (the default), `UNIQUE_PER_POLICY` and
+`UNIQUE_PER_ACCOUNT`. Under the wider two the machine holding the fingerprint
+can belong to a **different licence**, and returning it as "yours" shares one
+seat across licences — the exact thing those strategies exist to prevent. So
+the lookup is scoped to the licence server-side with `filter[license]`, and a
+miss re-raises `FINGERPRINT_TAKEN` unchanged.
+
+Server-side scoping is not a stylistic choice here: `MachineResource` carries
+no `relationships` and no licence id, so a machine handed back by the listing
+cannot be checked against a licence locally.
+
+Widening the lookup to the account was proposed and is wrong, and the reason
+is that all three uniqueness scopes are supersets of "a machine on this
+licence with this fingerprint". Every `EXISTS` check in `service.rs` includes
+the caller's own licence rows: `UNIQUE_PER_LICENSE` matches `license_id = $2`
+directly, `UNIQUE_PER_POLICY` joins licences on the policy this licence
+already has, `UNIQUE_PER_ACCOUNT` covers the whole account. So a genuine
+re-activation raises the conflict under all three *and* a licence-scoped
+lookup finds it under all three.
+
+What an account-wide lookup adds is precisely the cross-licence case — the one
+the server refuses on purpose. Returning that machine leaves the caller
+heartbeating and checking out a machine its licence does not own, with its own
+`machines_count` still zero and no way to notice, because the resource carries
+no licence id. An account-wide search is still available as an explicit
+diagnostic, `tamga_client_list_machines(client, NULL, fingerprint, ...)`, and
+it is deliberately a separate call.
+
+And there is no exact-fingerprint filter to scope with. `filter[q]` is
+`ILIKE '%term%'` across `name`, `hostname` and `fingerprint`
+(`shared/list_filter.rs`), truncated at 200 characters — a substring search,
+not an equality filter. Every candidate it returns is compared in full by
+`tamga_machine_page_exact_match`, which reports a failed copy as
+`TAMGA_ERR_OUT_OF_MEMORY` rather than as "no match": the caller reads "no
+match" as "the fingerprint belongs to another licence", which is a wrong and
+unactionable answer to an out-of-memory.
+
+### The heartbeat window is a policy read, never a machine field
+
+`Policy::effective_heartbeat_duration_secs()` is the policy's
+`heartbeat_duration` or 600. `tamga_response_heartbeat_window_secs()` mirrors
+it, and `heartbeat_duration: null` is the fallback rather than an error — the
+field has no `skip_serializing_if`, so it is always on the wire.
+
+`next_heartbeat_at` is not a substitute. It is derived from
+`Machine::effective_window_secs()`, which reads a column populated only when
+the query joined `policies` — so create, ping-heartbeat and reset-heartbeat
+compute it against 600 while check-out, generate-offline-proof and the machine
+reads compute it against the policy. Two responses for one machine, seconds
+apart, disagree, and a scheduler naturally calls the wrong one. Reported
+upstream.
+
+Two further things that are not the window: `require_heartbeat` defaults to
+false and the cull job early-returns when it is, so a default policy culls
+nothing; and a licence key cannot read `/policies/{id}` at all
+(`Role::LicenseToken` has no `policy.read` — see below), so the window comes
+from `GET /licenses/{id}/policy`.
+
+### `PATCH /machines/{id}` is a write whose response can still say `DEAD`
+
+The contract's write-vs-read rule — a response the server builds off a write
+it just performed can never report `DEAD`, because the status is derived from
+the timestamp that write set — has a counterexample, and it is the update
+route. `queries::update`'s `UPDATE … RETURNING` never touches
+`last_heartbeat_at`, so the status is judged against a timestamp this write
+did not set and `DEAD` is reachable; and the statement does not join
+`policies`, so `next_heartbeat_at` falls back to 600 seconds the way the ping
+routes do.
+
+The durable form of the rule is narrower than "write": a response is only
+guaranteed not to say `DEAD` when the write it was built from set
+`last_heartbeat_at` itself. Ping, reset and create qualify. PATCH does not.
+
+### The permission a licence key has decides which read route works
+
+`Role::LicenseToken::default_permissions()` (`shared/authz/mod.rs`) is the
+whole list a licence-key credential gets. It carries `license.read`,
+`machine.read`, `machine.update`, `process.read`, `process.delete` and
+`component.*` — so the reads and the disposal added in 1.3.x work — and it
+does **not** carry `policy.read`. `GET /policies/{id}` is therefore a `403`
+for every licence key, and `GET /licenses/{id}/policy` returns the identical
+resource through a permission it does have.
+
+Separately, `require_license_scope` — the check that confines a licence key to
+its own licence — is applied to validate, quick-validate, validate-key and
+check-out, and **not** to `get_license` or `get_license_policy`. One licence
+key can read every licence in the account by id, and `attributes.key` is the
+plaintext key. Reported upstream; the SDK's obligation is to not describe that
+surface as scoped. Do not "simplify" the warnings on those two entry points.
+
+The same is true of every machine route: `require_license_scope` is applied to
+none of them, and a licence key carries `machine.read`, `machine.update` and
+`machine.delete`. So a licence key can read, PATCH and DELETE any machine in
+the account by id. Also reported upstream, and also not something the docs may
+imply is scoped.
+
 ### Licence-key authentication is off unless the policy opts in
 
 `authentication_strategy` defaults to `TOKEN`, and `NONE` refuses licence keys

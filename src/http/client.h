@@ -47,6 +47,14 @@ struct TamgaClient {
     char *account_id;
     char *host;
     char *api_version;
+    /*
+     * "{scheme}://{host}", with no path. Every account-scoped route hangs off
+     * `base_url`; `origin` exists for the two routes that do not live under
+     * an account -- currently only GET /v1/health, which is registered on the
+     * server outside the account router and bypasses both the auth and the
+     * host-header middleware.
+     */
+    char *origin;
     char *base_url;
     unsigned int timeout_ms;
     unsigned int max_retries;
@@ -78,6 +86,14 @@ struct TamgaResponse {
  * one.
  */
 TAMGA_NODISCARD char *tamga_sanitize_api_version(const char *version);
+
+/**
+ * Percent-encodes everything outside RFC 3986's unreserved set.
+ *
+ * Used for every query-string value built from caller input. Returns a string
+ * released with tamga_string_free(), or NULL on allocation failure.
+ */
+TAMGA_NODISCARD char *tamga_url_encode(const char *value);
 
 /**
  * Is a value safe to place in an HTTP header?
@@ -117,10 +133,34 @@ bool tamga_request_is_retryable(const char *method, const char *path);
  */
 unsigned int tamga_retry_delay_ms(unsigned int attempt, int64_t retry_after_seconds);
 
+/**
+ * Which prefix a path is resolved against.
+ *
+ * Every URL builder in this SDK family unconditionally prepended
+ * `/v1/accounts/{account_id}`, which is why no SDK could reach `/v1/health` --
+ * a server-side route that is deliberately public and deliberately outside
+ * the account tree. The scope is an explicit argument rather than a second
+ * send function so that the auth, header, retry and error handling below have
+ * exactly one implementation.
+ */
+typedef enum TamgaPathScope {
+    /** Relative to `{origin}/v1/accounts/{account_id}` -- almost everything. */
+    TAMGA_PATH_ACCOUNT = 0,
+    /** Relative to `{origin}` -- the path must therefore start with `/v1/`. */
+    TAMGA_PATH_ORIGIN = 1
+} TamgaPathScope;
+
 /** Sends a request, applying auth, headers and the retry policy. */
 TAMGA_NODISCARD TamgaErrorCode tamga_client_send(TamgaClient *client, const char *method,
                                                  const char *path, const char *query,
                                                  const char *body, const char *otp,
                                                  bool json_api_body, TamgaResponse **out_response);
+
+/** As tamga_client_send(), but resolves `path` against `scope`. */
+TAMGA_NODISCARD TamgaErrorCode tamga_client_send_scoped(TamgaClient *client, TamgaPathScope scope,
+                                                        const char *method, const char *path,
+                                                        const char *query, const char *body,
+                                                        const char *otp, bool json_api_body,
+                                                        TamgaResponse **out_response);
 
 #endif /* TAMGA_HTTP_CLIENT_H */
