@@ -190,6 +190,7 @@ TamgaErrorCode tamga_machine_file_verify(const char *pem, uintptr_t pem_len, uin
     TamgaErrorCode status;
     TamgaJson *resource = NULL;
     struct TamgaMachineFile *handle;
+    int64_t now_unix = 0;
 
     tamga_error_clear();
 
@@ -206,12 +207,19 @@ TamgaErrorCode tamga_machine_file_verify(const char *pem, uintptr_t pem_len, uin
     }
     *out_handle = NULL;
 
+    if (!tamga_time_now_unix(&now_unix)) {
+        /* Refusing beats guessing: the only thing `now` is used for is the
+         * expiry check, and any substituted value silently decides it. */
+        return tamga_error_set(TAMGA_ERR_UNKNOWN,
+                               "the system clock could not be read, so the file's expiry "
+                               "could not be checked");
+    }
+
     /* `scheme` arrives as a raw uint32_t rather than the enum type on
      * purpose: a C enum has no validity range at the ABI level, so a stale
      * header or a buggy binding can pass anything. It is validated inside. */
-    status =
-        tamga_machine_file_verify_into(pem, (size_t)pem_len, scheme, pubkey, (size_t)pubkey_len,
-                                       license_key, fingerprint, &resource);
+    status = tamga_machine_file_verify_at(pem, (size_t)pem_len, scheme, pubkey, (size_t)pubkey_len,
+                                          license_key, fingerprint, now_unix, &resource, NULL);
     if (status != TAMGA_OK) {
         return status;
     }

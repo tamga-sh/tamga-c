@@ -37,7 +37,7 @@ tamga-c/
 │   ├── util/               # buf, base64, hex, uuid, rfc3339, json (parse + two writers)
 │   ├── crypto/             # sha256/512, hmac, hkdf, aes, gcm, ed25519+fe25519,
 │   │                       #   bn, rsa, p256, ecdsa, der, ct
-│   ├── checkout/           # pem, cert, license_file, machine_file
+│   ├── checkout/           # pem, cert, claims, license_file, machine_file
 │   ├── proof.c             # machine offline proof
 │   ├── models/validation.c # the 24 validation codes
 │   └── http/               # transport seam, curl and winhttp backends, client, endpoints
@@ -47,8 +47,9 @@ tamga-c/
 │   ├── integration/        # offline formats against real fixtures
 │   ├── http/               # endpoints via a mock transport, no sockets
 │   ├── fuzz/               # libFuzzer targets for every untrusted-input parser
-│   ├── fixtures/           # committed key material and offline files (see its README)
-│   └── c/                  # THE v1.2.2 ABI harness, byte-for-byte unmodified
+│   ├── fixtures/           # committed key material and offline files (see its README);
+│   │                       #   server-machine-files/ is the only set this repo did not produce
+│   └── c/                  # THE v1.2.2 ABI harness (see its CMakeLists for the one edit)
 ├── tools/fixture-generator/ # dev-only; cross-verifies fixtures against tamga-rust
 └── examples/
 ```
@@ -155,12 +156,64 @@ not a KDF" over a `naive_key.rs` that no longer exists — that text predates
 format v2. The code, `tamga-rust/src/checkout/license_file.rs`, calls
 `crypto::hkdf::derive_license_file_key`.
 
-### Licence files are format v2 only
+### Both offline formats are v2 only, and the marker is the LAST `+` segment
 
 `alg` must end in `+v2`; a v1 file is rejected with no fallback. In v1 the ttl
 lived in the JSON envelope *outside* the signature, so a 24-hour trial file
 was cryptographically valid forever — the client holds the file and can edit
 anything the signature does not cover. Accepting both formats hands that back.
+
+The licence file's `alg` is one of two fixed strings, matched whole. The
+machine file's is not: it is `<encoding>+<signing suffix>+v2`, where the
+encoding is `base64` or `aes-256-gcm` and the suffix is one of four. Both
+outer parts contain hyphens of their own, so the only correct delimiters are
+the **first** `+` and the **last** `+` — `src/checkout/machine_file.c`'s
+`tamga_machine_alg_split`. Two wrong readings have shipped across this SDK
+family: splitting once and comparing the whole remainder (which rejects every
+real file, because the remainder still carries `+v2`), and a substring
+`contains("+v2")` test (which accepts `base64+ed25519+v2junk` and
+`xbase64+ed25519+v2`). Pinned per-fixture in
+`tests/integration/server_machine_files_test.c`, which rewrites each real
+file's marker to `""`, `+v1`, `+v3`, `+v2junk` and `+v2+v2` in turn.
+
+### An encrypted machine file's payload is dot-separated; a licence file's is not
+
+Same AES-256-GCM primitive, different framing, and assuming one framing for
+both breaks the other:
+
+- licence file: `enc = base64(nonce(12) || ciphertext || tag(16))`, one blob
+- machine file: `enc = base64(nonce) "." base64(ciphertext || tag)`, two
+  halves encoded **separately**
+
+The server's own doc comment at `tamga-api`
+`src/shared/crypto/machine_file.rs:59` still describes the machine file as the
+single blob, contradicting the code twenty lines below it that calls
+`FieldEncryption::encrypt`. That stale comment is why all eight SDKs
+implemented the same wrong thing. The licence file really is the single blob
+(`license_file.rs`'s own private `aes256gcm_encrypt`), so `license_file.c` is
+correct as written — do not "fix" it to match.
+
+This repository's base64 decoder is strict (`TAMGA_B64_REVERSE['.']` is
+`0xFF`), so the old single-blob reading failed outright here rather than
+working by accident the way it does under CPython's and Node's lenient
+decoders, which silently drop the `.` and happen to reconstruct
+`nonce||ciphertext` because both halves are multiples of four characters.
+
+Verify, THEN split, THEN decode, THEN decrypt. Nothing parses `enc` before the
+signature over the whole `enc` string has verified.
+
+### The machine file's `exp` is signed, and it is enforced
+
+`check_out_machine.rs` builds the signed payload as
+`{ "data": <machine>, "meta": <LicenseFileClaims> }` — the same claims struct
+the licence file uses, carrying `iat`, `exp`, `jti` and `kid`. Until this was
+enforced, a machine file verified forever.
+
+`exp` is optional by design: `ttl` is an `Option`, `exp` is
+`#[serde(skip_serializing_if = "Option::is_none")]`, and a checkout with no
+ttl produces a file with no `exp` that genuinely never expires. Absence is not
+an error. Both formats run the check through `tamga_claims_are_expired()` in
+`src/checkout/claims.c` so the 60-second tolerance cannot drift between them.
 
 ### The machine file's scheme comes from the caller, never from the file
 
@@ -241,6 +294,132 @@ Pinned by `activate_machine_reports_a_creation_time_limit_without_deleting`
 and `activate_machine_still_rolls_back_when_the_overage_strategy_allows_the_create`.
 Do not delete either — the pair is the point.
 
+### One listing in the machine domain is offset-paginated, and only one
+
+`GET /machines` goes through the server's shared offset paginator
+(`tamga-api/src/shared/list_query.rs`): `page[number]`, `page[size]`, and a
+`meta.page{number,size,total,totalPages}` object. Every other listing this SDK
+calls — components, entitlements, a machine's processes — keeps its own
+hand-written keyset query and returns no `meta` at all.
+
+Neither shape fails loudly when confused for the other, which is why both
+accessors exist and why each names its own: `tamga_response_next_cursor()`
+against a machine listing derives a cursor the route ignores and re-fetches
+page one forever; `tamga_response_page()` against a keyset listing returns
+false. `the_machine_collection_is_offset_paginated` asserts both directions on
+the same response.
+
+M6 found `page[after]` inert on entitlements. This is the same mistake
+available in the opposite direction — do not assume a domain paginates one
+way because most of it does.
+
+### `FINGERPRINT_TAKEN` means "already activated", and only sometimes "not yours"
+
+`machines/service.rs` checks fingerprint uniqueness *before* the seat limits,
+and its comment says why: checked the other way round, a licence at its limit
+answered a routine re-activation with `MACHINE_LIMIT_EXCEEDED`, so an SDK told
+the customer to buy seats for a machine they had already licensed. The
+conflict is the accurate answer and it means "carry on".
+
+`tamga_client_activate_machine_idempotent()` is that carrying on, and the part
+that is easy to get wrong is when it must NOT. The conflict is raised under the
+policy's `machine_uniqueness_strategy`, which has three scopes:
+`UNIQUE_PER_LICENSE` (the default), `UNIQUE_PER_POLICY` and
+`UNIQUE_PER_ACCOUNT`. Under the wider two the machine holding the fingerprint
+can belong to a **different licence**, and returning it as "yours" shares one
+seat across licences — the exact thing those strategies exist to prevent. So
+the lookup is scoped to the licence server-side with `filter[license]`, and a
+miss re-raises `FINGERPRINT_TAKEN` unchanged.
+
+Server-side scoping is not a stylistic choice here: `MachineResource` carries
+no `relationships` and no licence id, so a machine handed back by the listing
+cannot be checked against a licence locally.
+
+Widening the lookup to the account was proposed and is wrong, and the reason
+is that all three uniqueness scopes are supersets of "a machine on this
+licence with this fingerprint". Every `EXISTS` check in `service.rs` includes
+the caller's own licence rows: `UNIQUE_PER_LICENSE` matches `license_id = $2`
+directly, `UNIQUE_PER_POLICY` joins licences on the policy this licence
+already has, `UNIQUE_PER_ACCOUNT` covers the whole account. So a genuine
+re-activation raises the conflict under all three *and* a licence-scoped
+lookup finds it under all three.
+
+What an account-wide lookup adds is precisely the cross-licence case — the one
+the server refuses on purpose. Returning that machine leaves the caller
+heartbeating and checking out a machine its licence does not own, with its own
+`machines_count` still zero and no way to notice, because the resource carries
+no licence id. An account-wide search is still available as an explicit
+diagnostic, `tamga_client_list_machines(client, NULL, fingerprint, ...)`, and
+it is deliberately a separate call.
+
+And there is no exact-fingerprint filter to scope with. `filter[q]` is
+`ILIKE '%term%'` across `name`, `hostname` and `fingerprint`
+(`shared/list_filter.rs`), truncated at 200 characters — a substring search,
+not an equality filter. Every candidate it returns is compared in full by
+`tamga_machine_page_exact_match`, which reports a failed copy as
+`TAMGA_ERR_OUT_OF_MEMORY` rather than as "no match": the caller reads "no
+match" as "the fingerprint belongs to another licence", which is a wrong and
+unactionable answer to an out-of-memory.
+
+### The heartbeat window is a policy read, never a machine field
+
+`Policy::effective_heartbeat_duration_secs()` is the policy's
+`heartbeat_duration` or 600. `tamga_response_heartbeat_window_secs()` mirrors
+it, and `heartbeat_duration: null` is the fallback rather than an error — the
+field has no `skip_serializing_if`, so it is always on the wire.
+
+`next_heartbeat_at` is not a substitute. It is derived from
+`Machine::effective_window_secs()`, which reads a column populated only when
+the query joined `policies` — so create, ping-heartbeat and reset-heartbeat
+compute it against 600 while check-out, generate-offline-proof and the machine
+reads compute it against the policy. Two responses for one machine, seconds
+apart, disagree, and a scheduler naturally calls the wrong one. Reported
+upstream.
+
+Two further things that are not the window: `require_heartbeat` defaults to
+false and the cull job early-returns when it is, so a default policy culls
+nothing; and a licence key cannot read `/policies/{id}` at all
+(`Role::LicenseToken` has no `policy.read` — see below), so the window comes
+from `GET /licenses/{id}/policy`.
+
+### `PATCH /machines/{id}` is a write whose response can still say `DEAD`
+
+The contract's write-vs-read rule — a response the server builds off a write
+it just performed can never report `DEAD`, because the status is derived from
+the timestamp that write set — has a counterexample, and it is the update
+route. `queries::update`'s `UPDATE … RETURNING` never touches
+`last_heartbeat_at`, so the status is judged against a timestamp this write
+did not set and `DEAD` is reachable; and the statement does not join
+`policies`, so `next_heartbeat_at` falls back to 600 seconds the way the ping
+routes do.
+
+The durable form of the rule is narrower than "write": a response is only
+guaranteed not to say `DEAD` when the write it was built from set
+`last_heartbeat_at` itself. Ping, reset and create qualify. PATCH does not.
+
+### The permission a licence key has decides which read route works
+
+`Role::LicenseToken::default_permissions()` (`shared/authz/mod.rs`) is the
+whole list a licence-key credential gets. It carries `license.read`,
+`machine.read`, `machine.update`, `process.read`, `process.delete` and
+`component.*` — so the reads and the disposal added in 1.3.x work — and it
+does **not** carry `policy.read`. `GET /policies/{id}` is therefore a `403`
+for every licence key, and `GET /licenses/{id}/policy` returns the identical
+resource through a permission it does have.
+
+Separately, `require_license_scope` — the check that confines a licence key to
+its own licence — is applied to validate, quick-validate, validate-key and
+check-out, and **not** to `get_license` or `get_license_policy`. One licence
+key can read every licence in the account by id, and `attributes.key` is the
+plaintext key. Reported upstream; the SDK's obligation is to not describe that
+surface as scoped. Do not "simplify" the warnings on those two entry points.
+
+The same is true of every machine route: `require_license_scope` is applied to
+none of them, and a licence key carries `machine.read`, `machine.update` and
+`machine.delete`. So a licence key can read, PATCH and DELETE any machine in
+the account by id. Also reported upstream, and also not something the docs may
+imply is scoped.
+
 ### Licence-key authentication is off unless the policy opts in
 
 `authentication_strategy` defaults to `TOKEN`, and `NONE` refuses licence keys
@@ -277,8 +456,16 @@ version returned 0 while its own comment claimed to fail closed.
 **The ABI is frozen.** Every signature in `include/tamga.h` that shipped in a
 release stays byte-identical, including the `uintptr_t` length parameters that
 are the wrong type for a length. Enum values are appended, never renumbered.
-`tests/c/` holds the v1.2.2 harness unmodified as the proof; `tests/c/
+`tests/c/` holds the v1.2.2 harness as the proof; `tests/c/
 abi_surface_test.c` asserts every frozen number at compile time.
+
+The one edit ever made to that harness is in `test_machine_file.c`, and it did
+not touch the ABI: the machine file it shipped with is offline format v1,
+which is now refused, so the assertion changed from "this verifies" to "this
+is refused". The original bytes are still in the file as the negative case.
+Internal headers under `src/` are not part of this promise --
+`tamga_machine_file_verify_at()` gained a `now_unix` and a claims out-param
+when machine-file expiry started being enforced.
 
 **Errors.** Every public entry point clears the thread's error slot on entry,
 so `TAMGA_OK` always means `tamga_last_error_message()` returns `NULL`. The
@@ -328,6 +515,21 @@ before being committed. That tool needs Rust and a sibling `tamga-rust`
 checkout, and is deliberately outside the CMake build — the library itself
 must never grow a dependency, and a fixture generated and checked by the same
 implementation proves only self-consistency.
+
+**And self-consistency is not enough — it hid a two-year bug.** Every machine
+file under `tests/fixtures/offline/` and `tests/fixtures/cross-sdk/` is
+offline format **v1**, because the generator was written from the same
+misreading of the format the verifier had. CI was green the whole time and no
+build of this SDK could open a file the server actually emitted.
+`tests/fixtures/server-machine-files/` is the answer: twelve files from the
+server's own `encode_machine_file`, driven from a `manifest.json` so a new
+fixture needs no test edit. **Do not generate a machine-file fixture here.**
+Ask for one from the server's encoder. The v1 sets are kept as the negative
+corpus and are asserted to be refused.
+
+Note that those server fixtures were issued with a one-hour ttl, so a test
+that verifies one against the wall clock starts failing an hour later. Use
+`tamga_machine_file_verify_at()` and the file's own signed `iat`/`exp`.
 
 **`src/crypto/`, `src/checkout/`, `src/proof.c` and `src/http/` require a
 `security-reviewer` pass before merge**, one area per review.

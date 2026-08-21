@@ -40,9 +40,12 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     for (i = 0u; i < (sizeof(cases) / sizeof(cases[0])); i++) {
         TamgaJson *resource = NULL;
-        if (tamga_machine_file_verify_into((const char *)data, size, cases[i].scheme,
-                                           cases[i].pubkey, cases[i].pubkey_len, "licence-key",
-                                           "fingerprint", &resource) == TAMGA_OK) {
+        /* A fixed clock, as the licence-file harness uses: an input that
+         * verifies must do so on every run, and the wall clock would make the
+         * expiry check -- and therefore the corpus -- time-dependent. */
+        if (tamga_machine_file_verify_at((const char *)data, size, cases[i].scheme, cases[i].pubkey,
+                                         cases[i].pubkey_len, "licence-key", "fingerprint",
+                                         1750000000, &resource, NULL) == TAMGA_OK) {
             tamga_json_free(resource);
         }
     }

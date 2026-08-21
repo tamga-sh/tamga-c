@@ -41,11 +41,11 @@ otherwise.
 | `license_v1.lic` | Correct in every way except the missing `+v2` suffix |
 | `license_signed_over_decoded_bytes.lic` | Signed over `enc`'s decoded bytes instead of the base64 string — the format's defining trap |
 | `license_plain_wrapped.lic` | The plain file with its body wrapped at 64 columns |
-| `machine_ed25519.mach` | `base64+ed25519` |
-| `machine_ed25519_encrypted.mach` | `aes-256-gcm+ed25519`, needs the licence key **and** the fingerprint |
-| `machine_rsa_pkcs1.mach` | `base64+rsa-sha256` |
-| `machine_rsa_pss.mach` | `base64+rsa-pss-sha256` |
-| `machine_ecdsa.mach` | `base64+ecdsa-p256` |
+| `machine_ed25519.mach` | `base64+ed25519` — **format v1, refused**; see below |
+| `machine_ed25519_encrypted.mach` | `aes-256-gcm+ed25519` — **format v1, refused** |
+| `machine_rsa_pkcs1.mach` | `base64+rsa-sha256` — **format v1, refused** |
+| `machine_rsa_pss.mach` | `base64+rsa-pss-sha256` — **format v1, refused** |
+| `machine_ecdsa.mach` | `base64+ecdsa-p256` — **format v1, refused** |
 | `proof.txt` | A `v1x0.` offline proof over the tuple below |
 | `proof_dataset.json` | The dataset the proof covers |
 | `proof_payload.json` | The exact canonical bytes that were signed, for reference |
@@ -53,6 +53,24 @@ otherwise.
 The proof's tuple is account `01926b3e-0000-7000-8000-0000000000aa`, machine
 `01926b3e-0000-7000-8000-000000000002`, fingerprint `9f8e7d6c5b4a39281706`.
 The licence key for the encrypted files is `MUP7-2TQK-7FBF-4Q6H-Y7ZR-9C3V`.
+
+## Every machine file here is format v1
+
+Their `alg` has no `+v2` segment, and the encrypted one packs
+`nonce||ciphertext||tag` into a single base64 blob. The server emits neither
+shape: it writes `<encoding>+<signing suffix>+v2`, and its encrypted payload
+is `base64(nonce) "." base64(ciphertext||tag)`.
+
+The generator produced them that way because it was written from the same
+misreading of the format the verifier had — which is exactly the failure mode
+the note above warns about, caught two years late. They are kept and
+`tests/integration/machine_file_test.c` now asserts each one is **refused**,
+which is the only thing they are still evidence of. Positive machine-file
+coverage lives in `../server-machine-files/`, which this repository did not
+produce and must not regenerate.
+
+The licence files here are unaffected: they are `+v2`, and the licence file's
+single-blob encrypted framing is genuinely what the server writes.
 
 ## Two findings these fixtures produced
 

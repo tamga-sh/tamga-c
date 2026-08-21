@@ -1,13 +1,15 @@
 /*
  * gcm.h -- AES-256-GCM (NIST SP 800-38D).
  *
- * This is how both offline file formats encrypt their payload. The wire
- * layout the Tamga server produces is
+ * This is how both offline file formats encrypt their payload, with no
+ * additional authenticated data -- but they do NOT package the result the
+ * same way, and assuming they do breaks one of the two:
  *
- *     nonce(12) || ciphertext || tag(16)
+ *   licence file: `enc = base64(nonce(12) || ciphertext || tag(16))`, one blob
+ *   machine file: `enc = base64(nonce) "." base64(ciphertext || tag)`, two
+ *                 halves encoded separately
  *
- * concatenated into the base64 `enc` field, with no additional authenticated
- * data.
+ * Both come out of the same AES-256-GCM primitive; only the framing differs.
  *
  * The open path verifies the tag before returning any plaintext, and compares
  * it in constant time. Returning "probably fine, here is the plaintext" ahead
