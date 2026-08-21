@@ -31,16 +31,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "checkout/claims.h"
 #include "tamga.h"
 #include "tamga_compat.h"
 #include "util/json.h"
-
-/** The claims carried inside the signed payload. */
-typedef struct TamgaLicenseClaims {
-    int64_t issued_at;
-    bool has_expiry;
-    int64_t expiry;
-} TamgaLicenseClaims;
 
 /**
  * Verifies a `.lic` file and yields the embedded licence resource.
@@ -58,6 +52,6 @@ TAMGA_NODISCARD TamgaErrorCode tamga_license_file_verify_at(const char *pem, siz
                                                             const char *license_key,
                                                             int64_t now_unix,
                                                             TamgaJson **out_resource,
-                                                            TamgaLicenseClaims *out_claims);
+                                                            TamgaFileClaims *out_claims);
 
 #endif /* TAMGA_CHECKOUT_LICENSE_FILE_H */

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "checkout/cert.h"
+#include "checkout/claims.h"
 #include "checkout/pem.h"
 #include "crypto/ed25519.h"
 #include "crypto/gcm.h"
@@ -17,49 +18,10 @@ static const char TAMGA_LICENSE_PEM_END[] = "-----END LICENSE FILE-----";
 static const char TAMGA_ALG_PLAIN[] = "base64+ed25519+v2";
 static const char TAMGA_ALG_ENCRYPTED[] = "aes-256-gcm+ed25519+v2";
 
-/*
- * How much clock skew to tolerate on the expiry check.
- *
- * Deliberately small. The client's clock is under the adversary's control in
- * this threat model, so a generous allowance is simply a free extension on
- * every expired file. Sixty seconds covers ordinary NTP drift and nothing
- * more.
- */
-#define TAMGA_CLOCK_SKEW_TOLERANCE_SECONDS 60
-
-static TamgaErrorCode tamga_license_read_claims(const TamgaJson *meta, TamgaLicenseClaims *out) {
-    const TamgaJson *exp;
-    int64_t value = 0;
-
-    out->issued_at = 0;
-    out->has_expiry = false;
-    out->expiry = 0;
-
-    if (meta == NULL || tamga_json_type(meta) != TAMGA_JSON_OBJECT) {
-        return tamga_error_set(TAMGA_ERR_INVALID_JSON, "the signed payload has no claims object");
-    }
-    if (tamga_json_as_int(tamga_json_object_get(meta, "iat"), &value)) {
-        out->issued_at = value;
-    }
-    exp = tamga_json_object_get(meta, "exp");
-    /* An absent exp means the file never expires -- checkout was requested
-     * without a ttl. An explicit null means the same thing. */
-    if (exp != NULL && !tamga_json_is_null(exp)) {
-        if (!tamga_json_as_int(exp, &value)) {
-            return tamga_error_set(TAMGA_ERR_INVALID_JSON,
-                                   "the signed exp claim is not an integer");
-        }
-        out->has_expiry = true;
-        out->expiry = value;
-    }
-    return TAMGA_OK;
-}
-
 TamgaErrorCode tamga_license_file_verify_at(const char *pem, size_t pem_len,
                                             const unsigned char ed25519_pubkey[32],
                                             const char *license_key, int64_t now_unix,
-                                            TamgaJson **out_resource,
-                                            TamgaLicenseClaims *out_claims) {
+                                            TamgaJson **out_resource, TamgaFileClaims *out_claims) {
     TamgaErrorCode status;
     char *body = NULL;
     size_t body_len = 0u;
@@ -76,7 +38,7 @@ TamgaErrorCode tamga_license_file_verify_at(const char *pem, size_t pem_len,
     size_t plaintext_capacity = 0u;
     TamgaJson *payload = NULL;
     const TamgaJson *data;
-    TamgaLicenseClaims claims;
+    TamgaFileClaims claims;
     const char *parse_error = NULL;
     TamgaBase64Failure why;
     bool encrypted;
@@ -215,7 +177,7 @@ TamgaErrorCode tamga_license_file_verify_at(const char *pem, size_t pem_len,
                                (parse_error != NULL) ? parse_error : "unknown");
     }
 
-    status = tamga_license_read_claims(tamga_json_object_get(payload, "meta"), &claims);
+    status = tamga_claims_read(tamga_json_object_get(payload, "meta"), &claims);
     if (status != TAMGA_OK) {
         tamga_json_free(payload);
         return status;
@@ -224,9 +186,10 @@ TamgaErrorCode tamga_license_file_verify_at(const char *pem, size_t pem_len,
     /*
      * The signature proves the file is authentic. It does not prove it is
      * still valid -- that is this check, and skipping it is exactly what made
-     * v1 files permanent.
+     * v1 files permanent. The machine-file path runs the same check through
+     * the same helper, so the two grace periods cannot drift apart.
      */
-    if (claims.has_expiry && ((now_unix - TAMGA_CLOCK_SKEW_TOLERANCE_SECONDS) > claims.expiry)) {
+    if (tamga_claims_are_expired(&claims, now_unix)) {
         tamga_json_free(payload);
         return tamga_error_set(TAMGA_ERR_EXPIRED,
                                "the licence file is authentic but expired; check out a fresh one");

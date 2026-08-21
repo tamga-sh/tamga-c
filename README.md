@@ -225,11 +225,18 @@ thread — copy it if you need it longer.
 `NULL` on that thread. A failing call always sets one. No error message ever
 contains a licence key, token or password.
 
-**Offline files expire.** A `.lic` file carries a signed expiry, enforced with
-sixty seconds of clock skew and reported as `TAMGA_ERR_EXPIRED` rather than as
-a signature failure — a caller that cannot tell "expired" from "forged" either
-accuses the user of tampering when their trial ends, or treats a forgery as a
-renewal prompt. A file checked out with no `ttl` never expires.
+**Offline files expire.** Both a `.lic` file and a machine file carry a signed
+expiry, enforced with sixty seconds of clock skew and reported as
+`TAMGA_ERR_EXPIRED` rather than as a signature failure — a caller that cannot
+tell "expired" from "forged" either accuses the user of tampering when their
+trial ends, or treats a forgery as a renewal prompt. A file checked out with
+no `ttl` never expires; the server omits the claim entirely, and its absence
+is not an error.
+
+**Offline files are format v2 only.** Both formats' `alg` must end in `+v2`,
+and a v1 file is rejected with `TAMGA_ERR_UNSUPPORTED_SCHEME` and no fallback.
+In v1 the expiry lived outside the signature, and the encryption key came from
+zero-padding the licence key rather than from HKDF.
 
 **The client's clock is the user's clock.** For a stricter offline grace
 period, keep a server-supplied timestamp and check the file's expiry against
@@ -238,7 +245,11 @@ that instead of the system clock.
 **Machine files need the fingerprint.** An encrypted machine file's key is
 derived from the licence key *and* the machine's fingerprint, so a file issued
 for one machine cannot be decrypted on another even by someone holding the
-licence key.
+licence key. Its payload is framed differently from a licence file's, too:
+`"<nonce_b64>.<ciphertext_b64>"`, two halves encoded separately, where the
+licence file uses a single `base64(nonce||ciphertext||tag)` blob. Both are
+handled internally; the distinction only matters if you are reading the bytes
+yourself.
 
 **Licence-key authentication is off by default.** `TAMGA_AUTH_LICENSE` only
 works when the licence's policy sets `authentication_strategy` to `LICENSE` or

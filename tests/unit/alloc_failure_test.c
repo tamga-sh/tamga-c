@@ -18,13 +18,26 @@
  */
 #include "tamga_test.h"
 
+#include "checkout/machine_file.h"
 #include "http/client.h"
 #include "support/failing_alloc.h"
 #include "tamga.h"
+#include "tamga_mem.h"
+#include "util/base64.h"
+#include "util/json.h"
 
 #include <string.h>
 
 #define FILE_CAP 8192
+
+/*
+ * The Ed25519 key for server-machine-files/ed25519_encrypted_valid.machine,
+ * copied from that directory's manifest.json, and a clock reading before any
+ * possible expiry so this walk's expected status stays TAMGA_OK for good --
+ * the fixture itself was issued with a one-hour ttl.
+ */
+#define MACHINE_FIXTURE_PUBKEY_B64 "AQAg/HkMCKUVnpDfZAVDWheJo2UmA6fiBHTUDgCFC0g="
+#define MACHINE_FIXTURE_BEFORE_ANY_EXPIRY 0
 
 /* An operation to walk. Returns the library's status; out-params are freed
  * by the operation itself so a leak here is the library's, not the test's. */
@@ -53,12 +66,25 @@ static TamgaErrorCode verify_licence_file(void) {
     return status;
 }
 
+/*
+ * The encrypted machine-file path, which is the longer of the two: PEM,
+ * certificate, signature, the "<nonce>.<ciphertext>" split, two base64
+ * decodes, HKDF, AES-GCM, the JSON payload and the signed claims.
+ *
+ * It goes through tamga_machine_file_verify_at() rather than the public
+ * wrapper because the fixture was issued with a one-hour ttl: against the
+ * wall clock the public entry point starts answering TAMGA_ERR_EXPIRED an
+ * hour after the fixture was generated, and this walk needs a stable expected
+ * status. The wrapper's only additional allocation is the handle itself, and
+ * the licence-file walk above covers that identical shape.
+ */
 static TamgaErrorCode verify_machine_file(void) {
-    TamgaMachineFile *handle = NULL;
-    TamgaErrorCode status = tamga_machine_file_verify(
-        g_pem, (uintptr_t)g_pem_len, TAMGA_SCHEME_ED25519_SIGN, g_ed25519_pubkey, 32u,
-        "MUP7-2TQK-7FBF-4Q6H-Y7ZR-9C3V", "fingerprint-1", &handle);
-    tamga_machine_file_free(handle);
+    TamgaJson *resource = NULL;
+    TamgaErrorCode status = tamga_machine_file_verify_at(
+        g_pem, g_pem_len, (uint32_t)TAMGA_SCHEME_ED25519_SIGN, g_ed25519_pubkey, 32u,
+        "TAMGA-FIXTURE-LICENSE-KEY-0001", "fixture-fingerprint-a1b2c3",
+        MACHINE_FIXTURE_BEFORE_ANY_EXPIRY, &resource, NULL);
+    tamga_json_free(resource);
     return status;
 }
 
@@ -160,12 +186,23 @@ TT_TEST(licence_file_verification_survives_every_allocation_failure) {
 }
 
 TT_TEST(machine_file_verification_survives_every_allocation_failure) {
-    g_pem_len =
-        tt_read_fixture("offline/machine_ed25519.mach", (unsigned char *)g_pem, sizeof(g_pem));
-    TT_ASSERT(g_pem_len != (size_t)-1);
-    TT_ASSERT_EQ_SIZE(tt_read_fixture("offline/ed25519_pubkey.bin", g_ed25519_pubkey, 32u), 32u);
+    unsigned char *decoded;
+    size_t decoded_len = 0u;
 
-    walk_allocations("tamga_machine_file_verify", verify_machine_file, TAMGA_OK);
+    g_pem_len = tt_read_fixture("server-machine-files/ed25519_encrypted_valid.machine",
+                                (unsigned char *)g_pem, sizeof(g_pem));
+    TT_ASSERT(g_pem_len != (size_t)-1);
+
+    /* The key lives in the fixture manifest rather than in a .bin beside the
+     * file; pulling the one line out is cheaper here than parsing JSON. */
+    decoded = tamga_base64_decode_alloc(MACHINE_FIXTURE_PUBKEY_B64,
+                                        strlen(MACHINE_FIXTURE_PUBKEY_B64), &decoded_len);
+    TT_ASSERT_NOT_NULL(decoded);
+    TT_ASSERT_EQ_SIZE(decoded_len, 32u);
+    memcpy(g_ed25519_pubkey, decoded, 32u);
+    tamga_free(decoded);
+
+    walk_allocations("tamga_machine_file_verify_at", verify_machine_file, TAMGA_OK);
 }
 
 TT_TEST(offline_proof_verification_survives_every_allocation_failure) {

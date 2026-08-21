@@ -446,7 +446,16 @@ TAMGA_API void tamga_license_file_free(struct TamgaLicenseFile *handle);
  * self-declared `alg` string: `RSA_2048_PKCS1_SIGN` and
  * `RSA_2048_JWT_RS256` share one `alg` suffix server-side, so the file cannot
  * disambiguate them -- and letting untrusted input choose a cryptographic
- * primitive is algorithm confusion regardless.
+ * primitive is algorithm confusion regardless. The file's `alg` is a
+ * cross-check on this parameter, never a source for it.
+ *
+ * The file must be offline format v2 (`alg` of the form
+ * `"<encoding>+<signing suffix>+v2"`); a file without the `+v2` marker is
+ * rejected with `TAMGA_ERR_UNSUPPORTED_SCHEME` and there is no fallback path.
+ * The signed `exp` claim is enforced with a 60-second clock-skew tolerance --
+ * the same tolerance the licence-file path uses -- and reported as
+ * `TAMGA_ERR_EXPIRED`. A machine file checked out without a ttl carries no
+ * `exp` and legitimately never expires.
  *
  * Parameters:
  * - `pem` / `pem_len`: the raw machine-file bytes, PEM markers included.
@@ -462,7 +471,10 @@ TAMGA_API void tamga_license_file_free(struct TamgaLicenseFile *handle);
  *   OpenSSL-based tooling produces -- both are accepted. ECDSA P-256: a
  *   65-byte uncompressed point, or a SubjectPublicKeyInfo.
  * - `license_key` / `fingerprint`: required only to decrypt an encrypted
- *   (`aes-256-gcm`) machine file; ignored for plain files.
+ *   (`aes-256-gcm`) machine file; ignored for plain files. An encrypted
+ *   machine file's payload is `"<nonce_b64>.<ciphertext_b64>"` -- two halves,
+ *   each base64-encoded separately -- unlike the licence file's single
+ *   `base64(nonce||ciphertext||tag)` blob.
  * - `out_handle`: on `TAMGA_OK`, receives an owned handle; free it with
  *   tamga_machine_file_free() exactly once.
  */
