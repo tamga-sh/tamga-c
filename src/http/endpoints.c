@@ -1721,6 +1721,106 @@ TamgaErrorCode tamga_client_check_upgrade(TamgaClient *client, const char *produ
     return status;
 }
 
+/* --- artifacts ----------------------------------------------------------- */
+
+/*
+ * Read and download only. `artifact.create`, `artifact.update` and
+ * `artifact.delete` are absent from Role::LicenseToken
+ * (shared/authz/mod.rs:241-268), so an embedded client cannot publish a build
+ * however the SDK asks -- those routes would be a 403 for every credential
+ * this library is meant to carry. `artifact.read` and `artifact.download` ARE
+ * on that list, which is what makes this surface reachable at all.
+ */
+
+TamgaErrorCode tamga_client_list_release_artifacts(TamgaClient *client, const char *release_id,
+                                                   uint32_t limit, const char *after,
+                                                   TamgaResponse **out_response) {
+    return tamga_list(client, "/releases/", release_id, "release_id", "/artifacts", limit, after,
+                      out_response);
+}
+
+TamgaErrorCode tamga_client_get_artifact(TamgaClient *client, const char *artifact_id,
+                                         TamgaResponse **out_response) {
+    return tamga_get_resource(client, "/artifacts/", artifact_id, "artifact_id", NULL,
+                              out_response);
+}
+
+/*
+ * The download action, and the reason it is not a plain GET.
+ *
+ * By default this route answers `303 See Other` with a Location pointing at a
+ * short-lived presigned URL on the object store. An HTTP client that follows
+ * that redirect with the request's headers still attached hands the caller's
+ * licence key -- or bearer token -- to the storage host, which is a different
+ * origin under different ownership and has no business seeing it.
+ *
+ * Both built-in transports already refuse to follow: transport_curl.c sets
+ * CURLOPT_FOLLOWLOCATION to 0 (libcurl does not follow unless asked) and
+ * transport_winhttp.c sets WINHTTP_OPTION_REDIRECT_POLICY_NEVER (WinHTTP
+ * follows by default, so that one is a real correction). But a transport
+ * registered through tamga_client_set_transport() is the caller's own HTTP
+ * stack, and most of them follow redirects out of the box.
+ *
+ * So the 303 is never requested in the first place: `redirect=false` makes the
+ * server return the artifact resource with `redirectUrl` populated instead.
+ * The URL is then the caller's to fetch with NO credentials attached -- it
+ * carries its own signature and adding an Authorization header to it is both
+ * unnecessary and the leak this avoids. There is deliberately no parameter for
+ * asking for the redirect form.
+ */
+TamgaErrorCode tamga_client_get_artifact_download_url(TamgaClient *client, const char *artifact_id,
+                                                      uint32_t ttl_seconds,
+                                                      TamgaResponse **out_response) {
+    TamgaBuf query_buf;
+    char *path;
+    char *query;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (client == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "client and out_response are required");
+    }
+    status = tamga_require_uuid(artifact_id, "artifact_id");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    /*
+     * Checked here rather than left to the server, which answers `422
+     * PRESIGN_TTL_INVALID` -- a round trip that spends a request and a retry
+     * budget to learn something this side already knows.
+     * artifacts/service.rs's PRESIGN_TTL_MIN/PRESIGN_TTL_MAX are the bounds.
+     */
+    if (ttl_seconds != 0u && (ttl_seconds < TAMGA_PRESIGN_TTL_MIN_SECONDS ||
+                              ttl_seconds > TAMGA_PRESIGN_TTL_MAX_SECONDS)) {
+        return tamga_error_set(
+            TAMGA_ERR_TTL_INVALID, "ttl must be between %u seconds and %u seconds (1 week)",
+            (unsigned)TAMGA_PRESIGN_TTL_MIN_SECONDS, (unsigned)TAMGA_PRESIGN_TTL_MAX_SECONDS);
+    }
+
+    path = tamga_path("/artifacts/", artifact_id, "/actions/download");
+    if (path == NULL) {
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+
+    tamga_buf_init(&query_buf);
+    /* Always, and never from a caller-supplied flag: see the comment above. */
+    tamga_buf_append_str(&query_buf, "redirect=false");
+    if (ttl_seconds != 0u) {
+        tamga_buf_append_fmt(&query_buf, "&ttl=%lu", (unsigned long)ttl_seconds);
+    }
+    query = tamga_buf_detach_string(&query_buf, NULL);
+    tamga_buf_free(&query_buf);
+    if (query == NULL) {
+        tamga_string_free(path);
+        return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+    }
+
+    status = tamga_client_send(client, "GET", path, query, NULL, NULL, false, out_response);
+    tamga_string_free(query);
+    tamga_string_free(path);
+    return status;
+}
+
 /* --- health -------------------------------------------------------------- */
 
 /*

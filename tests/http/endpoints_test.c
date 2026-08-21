@@ -1490,6 +1490,368 @@ TT_TEST(a_signing_key_row_missing_a_field_is_refused_whole) {
     tamga_client_free(client);
 }
 
+/* --- artifacts ----------------------------------------------------------- */
+
+static const char ARTIFACT_ID[] = "01926b3e-0000-7000-8000-000000000007";
+static const char RELEASE_ID[] = "01926b3e-0000-7000-8000-000000000008";
+
+/*
+ * ⚠️ `created` and `updated`, not `createdAt`/`updatedAt`. ArtifactAttributes
+ * is rename_all = "camelCase" -- which is what makes `redirectUrl` camelCase --
+ * but carries explicit #[serde(rename)] attributes overriding the container
+ * rule for exactly these two fields (artifacts/serializer.rs:20,34-37). The
+ * whole point of spelling a real body out here is that applying one rule to
+ * the whole resource compiles, runs and reads nothing.
+ */
+static const char ARTIFACT_LIST_BODY[] =
+    "{\"data\":["
+    "{\"type\":\"artifacts\",\"id\":\"01926b3e-0000-7000-8000-000000000007\",\"attributes\":{"
+    "\"filename\":\"app-1.2.0-macos-arm64.dmg\",\"filetype\":\"dmg\",\"filesize\":52428800,"
+    "\"checksum\":\"sha256:9f2b\",\"platform\":\"macos\",\"arch\":\"arm64\","
+    "\"signature\":\"MEUCIQ\",\"status\":\"UPLOADED\",\"metadata\":{},"
+    "\"created\":\"2026-08-01T10:00:00Z\",\"updated\":\"2026-08-01T10:05:00Z\"}},"
+    "{\"type\":\"artifacts\",\"id\":\"01926b3e-0000-7000-8000-000000000009\",\"attributes\":{"
+    "\"filename\":\"app-1.2.0-src.tar.gz\",\"filetype\":null,\"filesize\":null,"
+    "\"checksum\":null,\"platform\":null,\"arch\":null,"
+    "\"signature\":null,\"status\":\"WAITING\",\"metadata\":{},"
+    "\"created\":\"2026-08-01T10:00:00Z\",\"updated\":\"2026-08-01T10:00:00Z\"}}"
+    "]}";
+
+TT_TEST(a_release_artifact_listing_is_keyset_paginated) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    const char *id = NULL;
+    const char *filename = NULL;
+    const char *filetype = NULL;
+    const char *platform = NULL;
+    const char *arch = NULL;
+    const char *status = NULL;
+    const char *checksum = NULL;
+    const char *signature = NULL;
+    const char *created = NULL;
+    const char *updated = NULL;
+    int64_t filesize = 0;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, ARTIFACT_LIST_BODY);
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(
+        tamga_client_list_release_artifacts(client, RELEASE_ID, 2u, ARTIFACT_ID, &response),
+        TAMGA_OK);
+    /* Keyset, like every listing here except GET /machines: `limit` and a
+     * percent-encoded `page[after]`, and no page[number]/page[size]. */
+    expect_call(&mock, "GET",
+                "/releases/01926b3e-0000-7000-8000-000000000008/artifacts"
+                "?limit=2&page%5Bafter%5D=01926b3e-0000-7000-8000-000000000007");
+
+    TT_ASSERT_EQ_SIZE(tamga_response_artifact_count(response), 2u);
+    TT_ASSERT(tamga_response_artifact_at(response, 0u, &id, &filename, &filetype, &platform, &arch,
+                                         &status));
+    TT_ASSERT_EQ_STR(id, "01926b3e-0000-7000-8000-000000000007");
+    TT_ASSERT_EQ_STR(filename, "app-1.2.0-macos-arm64.dmg");
+    TT_ASSERT_EQ_STR(filetype, "dmg");
+    TT_ASSERT_EQ_STR(platform, "macos");
+    TT_ASSERT_EQ_STR(arch, "arm64");
+    TT_ASSERT_EQ_STR(status, "UPLOADED");
+
+    TT_ASSERT(tamga_response_artifact_integrity_at(response, 0u, &checksum, &signature, &created,
+                                                   &updated));
+    TT_ASSERT_EQ_STR(checksum, "sha256:9f2b");
+    TT_ASSERT_EQ_STR(signature, "MEUCIQ");
+    /* The rename pair. Reading `createdAt` here returns NULL and takes the
+     * whole row down with it. */
+    TT_ASSERT_EQ_STR(created, "2026-08-01T10:00:00Z");
+    TT_ASSERT_EQ_STR(updated, "2026-08-01T10:05:00Z");
+    TT_ASSERT(tamga_response_artifact_filesize_at(response, 0u, &filesize));
+    TT_ASSERT_EQ_INT(filesize, 52428800);
+
+    /* The optional fields arrive as JSON null rather than being omitted, and a
+     * build that targets no platform is ordinary: NULL with a TRUE return, not
+     * a refused row. */
+    TT_ASSERT(tamga_response_artifact_at(response, 1u, &id, &filename, &filetype, &platform, &arch,
+                                         &status));
+    TT_ASSERT_EQ_STR(filename, "app-1.2.0-src.tar.gz");
+    TT_ASSERT_NULL(filetype);
+    TT_ASSERT_NULL(platform);
+    TT_ASSERT_NULL(arch);
+    TT_ASSERT_EQ_STR(status, "WAITING");
+    TT_ASSERT(
+        tamga_response_artifact_integrity_at(response, 1u, &checksum, &signature, NULL, NULL));
+    TT_ASSERT_NULL(checksum);
+    TT_ASSERT_NULL(signature);
+    /* An artifact whose bytes were never uploaded has no recorded size. False,
+     * writing nothing -- a zero written here would be compared against a real
+     * download length and reject it. */
+    filesize = 123;
+    TT_ASSERT_FALSE(tamga_response_artifact_filesize_at(response, 1u, &filesize));
+    TT_ASSERT_EQ_INT(filesize, 123);
+
+    /* Out of range writes nothing at all. */
+    id = "sentinel";
+    TT_ASSERT_FALSE(tamga_response_artifact_at(response, 2u, &id, NULL, NULL, NULL, NULL, NULL));
+    TT_ASSERT_EQ_STR(id, "sentinel");
+    /* A listing carries no redirectUrl: the field is
+     * skip_serializing_if = "Option::is_none" and the download action is the
+     * only thing that populates it. */
+    TT_ASSERT_NULL(tamga_response_artifact_download_url(response));
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * A row missing one of the three fields that are NOT optional server-side is
+ * refused whole rather than handed over half-read: a caller that ignored the
+ * return value would otherwise download by a filename it never received.
+ */
+TT_TEST(an_artifact_row_missing_a_required_field_is_refused_whole) {
+    static const char BODY[] =
+        "{\"data\":[{\"type\":\"artifacts\",\"id\":\"01926b3e-0000-7000-8000-000000000007\","
+        "\"attributes\":{\"filetype\":\"dmg\",\"platform\":\"macos\",\"arch\":\"arm64\","
+        "\"status\":\"UPLOADED\",\"created\":\"2026-08-01T10:00:00Z\","
+        "\"updated\":\"2026-08-01T10:00:00Z\"}}]}";
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    const char *platform = "sentinel";
+    const char *status = "sentinel";
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, BODY);
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_list_release_artifacts(client, RELEASE_ID, 0u, NULL, &response),
+                     TAMGA_OK);
+    /* Still counted: the count is the array's length so that `index` keeps
+     * addressing the row it names. One malformed row in the middle of a page
+     * must not truncate the page. */
+    TT_ASSERT_EQ_SIZE(tamga_response_artifact_count(response), 1u);
+    TT_ASSERT_FALSE(
+        tamga_response_artifact_at(response, 0u, NULL, NULL, NULL, &platform, NULL, &status));
+    TT_ASSERT_EQ_STR(platform, "sentinel");
+    TT_ASSERT_EQ_STR(status, "sentinel");
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * The same accessors read a single-resource document, so picking a build out
+ * of a listing and re-reading it after the download action does not need a
+ * second family of them. The `type` check is what makes that leniency safe:
+ * every other single-resource response in this SDK also has a `data` object.
+ */
+TT_TEST(the_artifact_accessors_read_a_single_resource_document_too) {
+    static const char BODY[] =
+        "{\"data\":{\"type\":\"artifacts\",\"id\":\"01926b3e-0000-7000-8000-000000000007\","
+        "\"attributes\":{\"filename\":\"app.dmg\",\"filetype\":\"dmg\",\"filesize\":10,"
+        "\"checksum\":null,\"platform\":\"macos\",\"arch\":\"arm64\",\"signature\":null,"
+        "\"status\":\"UPLOADED\",\"metadata\":{},\"created\":\"2026-08-01T10:00:00Z\","
+        "\"updated\":\"2026-08-01T10:00:00Z\"}}}";
+    static const char MACHINE_BODY[] =
+        "{\"data\":{\"type\":\"machines\",\"id\":\"01926b3e-0000-7000-8000-000000000002\","
+        "\"attributes\":{\"fingerprint\":\"fp\",\"status\":\"ALIVE\"}}}";
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    const char *filename = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, BODY);
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact(client, ARTIFACT_ID, &response), TAMGA_OK);
+    expect_call(&mock, "GET", "/artifacts/01926b3e-0000-7000-8000-000000000007");
+    TT_ASSERT_EQ_SIZE(tamga_response_artifact_count(response), 1u);
+    TT_ASSERT(tamga_response_artifact_at(response, 0u, NULL, &filename, NULL, NULL, NULL, NULL));
+    TT_ASSERT_EQ_STR(filename, "app.dmg");
+    /* One element only -- index 1 is out of range on a single resource. */
+    TT_ASSERT_FALSE(tamga_response_artifact_at(response, 1u, NULL, NULL, NULL, NULL, NULL, NULL));
+    /* And a plain read carries no download URL. */
+    TT_ASSERT_NULL(tamga_response_artifact_download_url(response));
+    tamga_response_free(response);
+    response = NULL;
+
+    /* A different resource type is refused rather than read by field name --
+     * otherwise the wrong response reports as an unreadable artifact instead
+     * of as the wrong question. */
+    mock_reset(&mock);
+    mock_reply(&mock, 200, MACHINE_BODY);
+    TT_ASSERT_EQ_INT(tamga_client_get_machine(client, MACHINE_ID, &response), TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(tamga_response_artifact_count(response), 0u);
+    filename = "sentinel";
+    TT_ASSERT_FALSE(
+        tamga_response_artifact_at(response, 0u, NULL, &filename, NULL, NULL, NULL, NULL));
+    TT_ASSERT_EQ_STR(filename, "sentinel");
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * ⚠️ The download must never be asked for as a redirect.
+ *
+ * The route's default answer is a 303 to a presigned storage URL, and an HTTP
+ * client that follows it with the request's Authorization header still
+ * attached hands the licence key to the storage host. Both built-in transports
+ * refuse to follow, but a caller-registered one is the caller's own stack and
+ * most follow by default -- so `redirect=false` removes the question instead
+ * of relying on the answer. This asserts the parameter is on the wire and that
+ * there is no way to turn it off.
+ */
+TT_TEST(the_artifact_download_never_asks_for_the_redirect) {
+    static const char BODY[] =
+        "{\"data\":{\"type\":\"artifacts\",\"id\":\"01926b3e-0000-7000-8000-000000000007\","
+        "\"attributes\":{\"filename\":\"app.dmg\",\"filetype\":\"dmg\",\"filesize\":10,"
+        "\"checksum\":\"sha256:9f2b\",\"platform\":\"macos\",\"arch\":\"arm64\","
+        "\"signature\":null,\"status\":\"UPLOADED\",\"metadata\":{},"
+        "\"redirectUrl\":\"https://storage.example.com/o/app.dmg?X-Amz-Signature=abc\","
+        "\"created\":\"2026-08-01T10:00:00Z\",\"updated\":\"2026-08-01T10:00:00Z\"}}}";
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, BODY);
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact_download_url(client, ARTIFACT_ID, 0u, &response),
+                     TAMGA_OK);
+    /* No ttl when none was asked for: the server's own default applies. */
+    expect_call(&mock, "GET",
+                "/artifacts/01926b3e-0000-7000-8000-000000000007/actions/download"
+                "?redirect=false");
+    TT_ASSERT_EQ_STR(tamga_response_artifact_download_url(response),
+                     "https://storage.example.com/o/app.dmg?X-Amz-Signature=abc");
+    /* The download answers the artifact resource, so the ordinary accessors
+     * read it -- the checksum a caller verifies the fetched bytes against
+     * arrives in the same response as the URL. */
+    TT_ASSERT_EQ_SIZE(tamga_response_artifact_count(response), 1u);
+    tamga_response_free(response);
+    response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, BODY);
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact_download_url(client, ARTIFACT_ID, 3600u, &response),
+                     TAMGA_OK);
+    expect_call(&mock, "GET",
+                "/artifacts/01926b3e-0000-7000-8000-000000000007/actions/download"
+                "?redirect=false&ttl=3600");
+    tamga_response_free(response);
+
+    tamga_client_free(client);
+}
+
+/*
+ * A ttl outside [PRESIGN_TTL_MIN, PRESIGN_TTL_MAX] is a 422 PRESIGN_TTL_INVALID
+ * server-side. Catching it here spends no request and no slice of the retry
+ * budget -- and pins that the boundary values themselves are accepted, which
+ * an off-by-one comparison would break silently in the direction of rejecting
+ * legitimate calls.
+ */
+TT_TEST(an_out_of_range_presign_ttl_never_reaches_the_server) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact_download_url(client, ARTIFACT_ID, 59u, &response),
+                     TAMGA_ERR_TTL_INVALID);
+    TT_ASSERT_EQ_INT(
+        tamga_client_get_artifact_download_url(client, ARTIFACT_ID, 604801u, &response),
+        TAMGA_ERR_TTL_INVALID);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 0u);
+    TT_ASSERT_NULL(response);
+
+    /* Both boundaries are inside the range. */
+    mock_reply(&mock, 200, "{\"data\":{}}");
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact_download_url(
+                         client, ARTIFACT_ID, TAMGA_PRESIGN_TTL_MIN_SECONDS, &response),
+                     TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 1u);
+    tamga_response_free(response);
+    response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, "{\"data\":{}}");
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact_download_url(
+                         client, ARTIFACT_ID, TAMGA_PRESIGN_TTL_MAX_SECONDS, &response),
+                     TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 1u);
+    tamga_response_free(response);
+
+    /* And an identifier that is not a UUID never reaches the URL builder. */
+    mock_reset(&mock);
+    response = NULL;
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact_download_url(client, "../../admin", 0u, &response),
+                     TAMGA_ERR_NULL_ARGUMENT);
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact(client, NULL, &response), TAMGA_ERR_NULL_ARGUMENT);
+    TT_ASSERT_EQ_INT(tamga_client_list_release_artifacts(client, "nope", 0u, NULL, &response),
+                     TAMGA_ERR_NULL_ARGUMENT);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 0u);
+
+    tamga_client_free(client);
+}
+
+/*
+ * ⚠️ A 403 on the download is not necessarily an auth misconfiguration.
+ *
+ * The handler runs the owning release through
+ * releases::service::enforce_release_access -- distribution strategy,
+ * suspension, expiry, entitlement -- on top of the artifact.download
+ * permission. That gate is on the download action ALONE, so the metadata read
+ * of the very same artifact succeeds. The two answers disagreeing is the
+ * design, and this pins both halves of it.
+ */
+TT_TEST(a_closed_releases_bytes_are_refused_while_its_metadata_reads) {
+    static const char META_BODY[] =
+        "{\"data\":{\"type\":\"artifacts\",\"id\":\"01926b3e-0000-7000-8000-000000000007\","
+        "\"attributes\":{\"filename\":\"app.dmg\",\"filetype\":\"dmg\",\"filesize\":10,"
+        "\"checksum\":null,\"platform\":\"macos\",\"arch\":\"arm64\",\"signature\":null,"
+        "\"status\":\"UPLOADED\",\"metadata\":{},\"created\":\"2026-08-01T10:00:00Z\","
+        "\"updated\":\"2026-08-01T10:00:00Z\"}}}";
+    static const char FORBIDDEN[] =
+        "{\"errors\":[{\"status\":\"403\",\"code\":\"RELEASE_NOT_ACCESSIBLE\","
+        "\"title\":\"Forbidden\",\"detail\":\"This release is not available\"}]}";
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    const char *filename = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, META_BODY);
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact(client, ARTIFACT_ID, &response), TAMGA_OK);
+    TT_ASSERT(tamga_response_artifact_at(response, 0u, NULL, &filename, NULL, NULL, NULL, NULL));
+    TT_ASSERT_EQ_STR(filename, "app.dmg");
+    tamga_response_free(response);
+    response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 403, FORBIDDEN);
+    TT_ASSERT_EQ_INT(tamga_client_get_artifact_download_url(client, ARTIFACT_ID, 0u, &response),
+                     TAMGA_ERR_FORBIDDEN);
+    TT_ASSERT_NOT_NULL(response);
+    TT_ASSERT_EQ_STR(tamga_response_error_code(response), "RELEASE_NOT_ACCESSIBLE");
+    /* An error document carries no artifact, and no URL to fetch. */
+    TT_ASSERT_EQ_SIZE(tamga_response_artifact_count(response), 0u);
+    TT_ASSERT_NULL(tamga_response_artifact_download_url(response));
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
 int main(void) {
     TT_RUN(validate_by_key);
     TT_RUN(validate_by_id_with_and_without_scope);
@@ -1540,5 +1902,11 @@ int main(void) {
     TT_RUN(a_licence_key_is_refused_the_signing_key_listing);
     TT_RUN(an_account_that_never_rotated_answers_with_an_empty_collection);
     TT_RUN(a_signing_key_row_missing_a_field_is_refused_whole);
+    TT_RUN(a_release_artifact_listing_is_keyset_paginated);
+    TT_RUN(an_artifact_row_missing_a_required_field_is_refused_whole);
+    TT_RUN(the_artifact_accessors_read_a_single_resource_document_too);
+    TT_RUN(the_artifact_download_never_asks_for_the_redirect);
+    TT_RUN(an_out_of_range_presign_ttl_never_reaches_the_server);
+    TT_RUN(a_closed_releases_bytes_are_refused_while_its_metadata_reads);
     return TT_SUMMARY();
 }

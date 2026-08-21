@@ -524,6 +524,8 @@ static TamgaErrorCode activate_machine_limit_and_free(void) {
 #define ALLOC_MACHINE_ID "01926b3e-0000-7000-8000-000000000002"
 #define ALLOC_PRODUCT_ID "01926b3e-0000-7000-8000-000000000006"
 #define ALLOC_PROCESS_ID "01926b3e-0000-7000-8000-000000000003"
+#define ALLOC_ARTIFACT_ID "01926b3e-0000-7000-8000-000000000007"
+#define ALLOC_RELEASE_ID "01926b3e-0000-7000-8000-000000000008"
 
 /* One page holding the machine the lookups below are asked for. */
 #define ALLOC_MACHINE_PAGE                                                                         \
@@ -536,6 +538,13 @@ static TamgaErrorCode activate_machine_limit_and_free(void) {
     "\"title\":\"Conflict\",\"detail\":\"already activated\"}]}"
 
 #define ALLOC_VALIDATION "{\"data\":{},\"meta\":{\"valid\":true,\"code\":\"VALID\"}}"
+
+#define ALLOC_ARTIFACT                                                                             \
+    "{\"data\":{\"type\":\"artifacts\",\"id\":\"" ALLOC_ARTIFACT_ID "\",\"attributes\":{"          \
+    "\"filename\":\"app.dmg\",\"filetype\":\"dmg\",\"filesize\":10,\"checksum\":null,"             \
+    "\"platform\":\"macos\",\"arch\":\"arm64\",\"signature\":null,\"status\":\"UPLOADED\","        \
+    "\"metadata\":{},\"redirectUrl\":\"https://storage.example.com/o\","                           \
+    "\"created\":\"2026-08-01T10:00:00Z\",\"updated\":\"2026-08-01T10:00:00Z\"}}}"
 
 static TamgaErrorCode update_machine(void) {
     TamgaResponse *response = NULL;
@@ -561,6 +570,30 @@ static TamgaErrorCode check_upgrade(void) {
     TamgaErrorCode status =
         tamga_client_check_upgrade(g_client, ALLOC_PRODUCT_ID, "darwin-aarch64", "dmg", "1.2.0",
                                    "beta", ">=1.2, <2", &response);
+    status = response_must_be_usable(status, response);
+    tamga_response_free(response);
+    return status;
+}
+
+/*
+ * The download builder allocates twice -- a path and a query -- and the second
+ * failing after the first succeeded is the shape that leaks. A reply that is
+ * reported as anything other than OUT_OF_MEMORY would mean an allocation
+ * failure had been turned into a verdict about the artifact.
+ */
+static TamgaErrorCode get_artifact_download_url(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status =
+        tamga_client_get_artifact_download_url(g_client, ALLOC_ARTIFACT_ID, 3600u, &response);
+    status = response_must_be_usable(status, response);
+    tamga_response_free(response);
+    return status;
+}
+
+static TamgaErrorCode list_release_artifacts(void) {
+    TamgaResponse *response = NULL;
+    TamgaErrorCode status = tamga_client_list_release_artifacts(g_client, ALLOC_RELEASE_ID, 10u,
+                                                                ALLOC_ARTIFACT_ID, &response);
     status = response_must_be_usable(status, response);
     tamga_response_free(response);
     return status;
@@ -645,6 +678,20 @@ TT_TEST(the_added_endpoints_survive_every_allocation_failure) {
          check_upgrade,
          200,
          "{\"data\":{\"id\":\"" ALLOC_MACHINE_ID "\"}}",
+         TAMGA_OK,
+         {NULL, NULL, NULL},
+         {0, 0, 0}},
+        {"tamga_client_get_artifact_download_url",
+         get_artifact_download_url,
+         200,
+         ALLOC_ARTIFACT,
+         TAMGA_OK,
+         {NULL, NULL, NULL},
+         {0, 0, 0}},
+        {"tamga_client_list_release_artifacts",
+         list_release_artifacts,
+         200,
+         "{\"data\":[]}",
          TAMGA_OK,
          {NULL, NULL, NULL},
          {0, 0, 0}},

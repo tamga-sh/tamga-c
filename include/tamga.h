@@ -356,6 +356,18 @@ typedef enum TamgaScheme {
  */
 #define TAMGA_DEFAULT_HEARTBEAT_WINDOW_SECONDS 600
 
+/**
+ * The bounds the server enforces on a presigned artifact-download URL's
+ * lifetime: one minute and one week. Mirror `PRESIGN_TTL_MIN` and
+ * `PRESIGN_TTL_MAX` in the server's `artifacts/service.rs`.
+ *
+ * A `ttl` outside this range is a `422 PRESIGN_TTL_INVALID`, so
+ * tamga_client_get_artifact_download_url() refuses it locally rather than
+ * spending a request and a slice of the retry budget to be told.
+ */
+#define TAMGA_PRESIGN_TTL_MIN_SECONDS 60u
+#define TAMGA_PRESIGN_TTL_MAX_SECONDS 604800u
+
 /* ======================================================================
  * Opaque handles
  * ====================================================================== */
@@ -2031,6 +2043,188 @@ TAMGA_API TamgaErrorCode tamga_client_check_upgrade(TamgaClient *client, const c
                                                     const char *version, const char *channel,
                                                     const char *constraint,
                                                     TamgaResponse **out_response);
+
+/* ======================================================================
+ * Artifacts
+ * ====================================================================== */
+
+/**
+ * `GET /releases/{release_id}/artifacts` — the builds attached to one release.
+ *
+ * Keyset-paginated like every listing in this SDK except `GET /machines`:
+ * `limit` (0 for the server's default of 25, clamped server-side to [1, 100])
+ * and `after`, which is the id of the last resource on the previous page.
+ * There is no `meta` object, so tamga_response_page() does not apply — derive
+ * the next cursor with tamga_response_next_cursor().
+ *
+ * Read the rows with tamga_response_artifact_count() and
+ * tamga_response_artifact_at().
+ *
+ * ⚠️ Read and download are the whole artifact surface this SDK offers, and
+ * that is a permission fact rather than a decision: `Role::LicenseToken`
+ * carries `artifact.read` and `artifact.download` and does NOT carry
+ * `artifact.create`, `artifact.update` or `artifact.delete`. Publishing a
+ * build needs an admin or product token and a different tool.
+ */
+TAMGA_API TamgaErrorCode tamga_client_list_release_artifacts(TamgaClient *client,
+                                                             const char *release_id, uint32_t limit,
+                                                             const char *after,
+                                                             TamgaResponse **out_response);
+
+/**
+ * `GET /artifacts/{artifact_id}` — one artifact's metadata.
+ *
+ * Answers the same resource a listing row carries, so the same accessors read
+ * it: tamga_response_artifact_at() with `index` 0, and its integrity and
+ * filesize companions.
+ *
+ * ⚠️ This route does NOT carry the bytes and does NOT carry a `redirectUrl`
+ * — the field is `skip_serializing_if = "Option::is_none"` server-side and is
+ * populated by the download action alone. Fetching the file is
+ * tamga_client_get_artifact_download_url() followed by a request the caller
+ * makes itself.
+ */
+TAMGA_API TamgaErrorCode tamga_client_get_artifact(TamgaClient *client, const char *artifact_id,
+                                                   TamgaResponse **out_response);
+
+/**
+ * `GET /artifacts/{artifact_id}/actions/download` — a short-lived presigned
+ * URL for the artifact's bytes.
+ *
+ * Read the URL out of the response with tamga_response_artifact_download_url()
+ * and fetch it yourself.
+ *
+ * ⚠️ Fetch it with NO credentials attached. The URL points at the object store,
+ * which is a different origin under different ownership; it carries its own
+ * signature and needs nothing else, so an `Authorization` header on that
+ * request only discloses the licence key or token to a host that has no
+ * business holding one.
+ *
+ * ⚠️ This is also why the SDK asks for `redirect=false` and offers no way to
+ * ask otherwise. The route's default answer is a `303 See Other` to that same
+ * URL, and an HTTP client that follows a redirect while still attaching the
+ * original request's headers performs exactly the disclosure above without the
+ * caller ever seeing it. Both built-in transports refuse to follow — libcurl
+ * only follows when `CURLOPT_FOLLOWLOCATION` is set and this SDK leaves it at
+ * 0; WinHTTP follows by default and is explicitly set to
+ * `WINHTTP_OPTION_REDIRECT_POLICY_NEVER` — but a transport supplied through
+ * tamga_client_set_transport() is the caller's own stack, and most HTTP
+ * libraries follow redirects out of the box. Requesting the body form removes
+ * the question rather than relying on the answer.
+ *
+ * `ttl_seconds` is how long the URL stays valid. Pass 0 for the server's
+ * default (five minutes); anything else must be within
+ * [`TAMGA_PRESIGN_TTL_MIN_SECONDS`, `TAMGA_PRESIGN_TTL_MAX_SECONDS`] and is
+ * refused locally with `TAMGA_ERR_TTL_INVALID` otherwise. Ask for roughly the
+ * time the transfer needs: the URL is a bearer credential for those bytes for
+ * as long as it lives.
+ *
+ * ⚠️ A `403` here is not necessarily a misconfigured credential. The handler
+ * runs the owning release through `releases::service::enforce_release_access`
+ * — distribution strategy, suspension, expiry, entitlement — on top of the
+ * `artifact.download` permission, so a caller that holds the permission is
+ * still refused the binary of a release its licence is not entitled to. That
+ * gate is on the download action ALONE: the listing and the metadata read
+ * above apply the permission only, so an artifact whose metadata reads
+ * perfectly well can still refuse to hand over its bytes, and the two answers
+ * disagreeing is the design rather than a fault.
+ *
+ * `404` means the artifact id is unknown to this account, or the release that
+ * owns it is. `422 STORAGE_UNAVAILABLE` means the deployment has no object
+ * storage configured, which is a server-side provisioning gap and will not
+ * change on retry.
+ */
+TAMGA_API TamgaErrorCode tamga_client_get_artifact_download_url(TamgaClient *client,
+                                                                const char *artifact_id,
+                                                                uint32_t ttl_seconds,
+                                                                TamgaResponse **out_response);
+
+/**
+ * How many artifact resources a response carries.
+ *
+ * A listing reports its rows; a single-artifact response — from
+ * tamga_client_get_artifact() or tamga_client_get_artifact_download_url() —
+ * reports 1, so one loop reads either. An error document reports 0.
+ *
+ * ⚠️ For a listing this is the array's LENGTH, not the number of rows that
+ * turn out to be readable, so `index` keeps addressing the row it names and
+ * one malformed row cannot truncate the page. Always check the return value of
+ * tamga_response_artifact_at() rather than assuming every index below the
+ * count yields a row.
+ */
+TAMGA_API uintptr_t tamga_response_artifact_count(const TamgaResponse *response);
+
+/**
+ * Reads the fields that identify and select one artifact.
+ *
+ * Every out-parameter is optional; pass NULL for the ones you do not want. The
+ * strings are BORROWED and valid until the response is freed.
+ *
+ * `*out_id`, `*out_filename` and `*out_status` are always present on a
+ * readable artifact. `*out_filetype`, `*out_platform` and `*out_arch` are
+ * `Option<String>` server-side with no `skip_serializing_if`, so they arrive as
+ * JSON null and are reported as NULL with a TRUE return — a build that targets
+ * no particular platform is ordinary, not unreadable.
+ *
+ * Returns false when `index` is out of range, the response is not an artifact
+ * document, or one of the three required fields is missing — and writes
+ * NOTHING in that case, so a caller that ignores the return value cannot act
+ * on a half-filled set.
+ */
+TAMGA_API bool tamga_response_artifact_at(const TamgaResponse *response, uintptr_t index,
+                                          const char **out_id, const char **out_filename,
+                                          const char **out_filetype, const char **out_platform,
+                                          const char **out_arch, const char **out_status);
+
+/**
+ * Reads the fields for checking bytes you have already fetched, plus the
+ * resource's timestamps.
+ *
+ * Same conventions as tamga_response_artifact_at(): optional out-parameters,
+ * borrowed strings, and nothing written unless the whole set can be.
+ *
+ * `*out_checksum` and `*out_signature` are optional server-side and are NULL
+ * when the artifact carries neither — which an artifact whose bytes were never
+ * uploaded will not.
+ *
+ * ⚠️ The timestamps are on the wire as `created` and `updated`, NOT
+ * `createdAt`/`updatedAt`. `ArtifactAttributes` is `rename_all = "camelCase"`
+ * — that is what makes `redirectUrl` camelCase — but carries explicit
+ * `#[serde(rename = ...)]` attributes overriding it for exactly these two
+ * fields. Applying the container rule to the whole resource is the natural
+ * assumption and it silently reads nothing.
+ */
+TAMGA_API bool tamga_response_artifact_integrity_at(const TamgaResponse *response, uintptr_t index,
+                                                    const char **out_checksum,
+                                                    const char **out_signature,
+                                                    const char **out_created,
+                                                    const char **out_updated);
+
+/**
+ * The artifact's size in bytes, when the server has recorded one.
+ *
+ * Returns false — writing nothing — when it has not. `filesize` is
+ * `Option<i64>`, and an artifact row created before its bytes were uploaded
+ * carries null. That is "not recorded yet", which is why it is a false return
+ * rather than a zero: a caller comparing a downloaded length against a written
+ * zero would reject every real file.
+ */
+TAMGA_API bool tamga_response_artifact_filesize_at(const TamgaResponse *response, uintptr_t index,
+                                                   int64_t *out_bytes);
+
+/**
+ * The presigned URL from a tamga_client_get_artifact_download_url() response.
+ * Borrowed, valid until the response is freed.
+ *
+ * ⚠️ Fetch it with no credentials — see the warning on
+ * tamga_client_get_artifact_download_url().
+ *
+ * NULL means the response is not a download: the wire field `redirectUrl` is
+ * `skip_serializing_if = "Option::is_none"`, so a listing and a plain metadata
+ * read omit it entirely. That is a different thing from a download that
+ * failed, which is reported through the return code of the call itself.
+ */
+TAMGA_API const char *tamga_response_artifact_download_url(const TamgaResponse *response);
 
 /**
  * `GET /v1/health` -- the server's liveness probe.

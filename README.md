@@ -453,6 +453,37 @@ you cannot have it". There is no client-side way to tell them apart and there
 is not meant to be — so do not report a `204` as "you are up to date". The
 accurate wording is *there is no update available to you*.
 
+**Never let an artifact download follow its redirect.**
+`GET /artifacts/{id}/actions/download` answers `303 See Other` with a
+short-lived presigned URL on the object store. An HTTP client that follows
+that redirect while still attaching the request's `Authorization` header hands
+your licence key to the storage host. `tamga_client_get_artifact_download_url()`
+therefore always asks for `?redirect=false` and offers no way to ask otherwise:
+the URL comes back in the body, in `redirectUrl`, and you fetch it yourself
+**with no credentials attached** — it carries its own signature and needs
+none. Both built-in transports also refuse to follow (libcurl only follows when
+`CURLOPT_FOLLOWLOCATION` is set, and this SDK leaves it at `0`; WinHTTP follows
+by default and is set to `WINHTTP_OPTION_REDIRECT_POLICY_NEVER`), but a
+transport you register through `tamga_client_set_transport()` is your own HTTP
+stack and most follow redirects out of the box.
+
+**An artifact's timestamps are `created` and `updated`, not `createdAt`.**
+`ArtifactAttributes` is `rename_all = "camelCase"` — which is why the
+neighbouring field really is `redirectUrl` — but carries explicit
+`#[serde(rename)]` attributes overriding it for exactly those two. Applying one
+rule to the whole resource compiles, runs, and reads nothing.
+
+**A `403` on an artifact download is not necessarily an auth problem.** The
+download runs the owning release through the same four gates `GET /releases/{id}`
+applies — distribution strategy, suspension, expiry, entitlement — on top of
+the `artifact.download` permission. So a caller holding the permission is still
+refused the binary of a release its licence is not entitled to. That gate is on
+the download action *alone*: `tamga_client_get_artifact()` and
+`tamga_client_list_release_artifacts()` check the permission only, so an
+artifact whose metadata reads perfectly well can still refuse to hand over its
+bytes. Publishing is out of reach in any case — `Role::LicenseToken` carries
+`artifact.read` and `artifact.download` and none of create, update or delete.
+
 **`tamga_client_health()` is the only call that skips the account prefix.**
 `/v1/health` is public, sits outside the account router, and bypasses the
 host-header middleware. If every ordinary call is failing with `403` and "The
