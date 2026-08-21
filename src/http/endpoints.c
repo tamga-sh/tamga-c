@@ -1072,18 +1072,25 @@ TamgaErrorCode tamga_client_activate_machine_idempotent(
      * bug, not a better diagnostic.
      *
      * The conflict is raised under the policy's `machine_uniqueness_strategy`,
-     * which has three scopes. Under UNIQUE_PER_LICENSE -- the default -- a
-     * conflict is BY DEFINITION a machine on this licence, and the scoped
-     * lookup finds it. Under UNIQUE_PER_POLICY or UNIQUE_PER_ACCOUNT it can
-     * be a machine on a DIFFERENT licence, and those two scopes exist
-     * precisely to stop one fingerprint holding seats on several licences.
-     * Returning that machine and reporting success would leave the caller
-     * holding a machine id whose seat belongs to another licence, with this
-     * licence's own machines_count never incremented -- the exact arrangement
-     * the policy forbids, arranged by the SDK on the caller's behalf.
+     * and all three of its scopes are SUPERSETS of "a machine on this licence
+     * with this fingerprint" -- every one of the EXISTS checks in
+     * tamga-api `machines/service.rs` includes the caller's own licence rows:
+     * UNIQUE_PER_LICENSE matches on `license_id = $2` directly,
+     * UNIQUE_PER_POLICY joins licences on the policy this licence already
+     * has, and UNIQUE_PER_ACCOUNT covers every machine in the account.
      *
-     * So the scoped lookup hits in exactly the cases where carrying on is
-     * legitimate, and misses in exactly the cases where it is not. A caller
+     * So a genuine re-activation raises the conflict under all three, and a
+     * licence-scoped lookup finds it under all three. What an account-wide
+     * lookup would add is exactly the cross-licence case -- and that is the
+     * case the server refuses on purpose: its comment says the wider scopes
+     * exist to stop a customer registering one fingerprint against N licences
+     * and sharing seats. Returning that machine and reporting success would
+     * leave the caller heartbeating and checking out a machine its licence
+     * does not own, with its own machines_count still zero, and no way to
+     * notice because the resource carries no licence id.
+     *
+     * The scoped lookup therefore hits in exactly the cases where carrying on
+     * is legitimate and misses in exactly the cases where it is not. A caller
      * that wants to know WHICH licence holds the fingerprint can ask
      * account-wide with tamga_client_list_machines(client, NULL, fingerprint,
      * ...); that is a diagnostic, and it is deliberately a separate call.

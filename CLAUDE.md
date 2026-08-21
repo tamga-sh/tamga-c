@@ -335,15 +335,22 @@ Server-side scoping is not a stylistic choice here: `MachineResource` carries
 no `relationships` and no licence id, so a machine handed back by the listing
 cannot be checked against a licence locally.
 
-Widening the lookup to the account was proposed and is wrong. It would hit in
-the cross-licence case too, and returning that machine leaves the caller
-holding a machine id whose seat belongs to another licence while this one's
-`machines_count` was never incremented — the exact arrangement
-`UNIQUE_PER_ACCOUNT` exists to forbid, arranged by the SDK. The scoped lookup
-hits in exactly the cases where carrying on is legitimate. An account-wide
-search is still available as an explicit diagnostic —
-`tamga_client_list_machines(client, NULL, fingerprint, ...)` — and it is
-deliberately a separate call.
+Widening the lookup to the account was proposed and is wrong, and the reason
+is that all three uniqueness scopes are supersets of "a machine on this
+licence with this fingerprint". Every `EXISTS` check in `service.rs` includes
+the caller's own licence rows: `UNIQUE_PER_LICENSE` matches `license_id = $2`
+directly, `UNIQUE_PER_POLICY` joins licences on the policy this licence
+already has, `UNIQUE_PER_ACCOUNT` covers the whole account. So a genuine
+re-activation raises the conflict under all three *and* a licence-scoped
+lookup finds it under all three.
+
+What an account-wide lookup adds is precisely the cross-licence case — the one
+the server refuses on purpose. Returning that machine leaves the caller
+heartbeating and checking out a machine its licence does not own, with its own
+`machines_count` still zero and no way to notice, because the resource carries
+no licence id. An account-wide search is still available as an explicit
+diagnostic, `tamga_client_list_machines(client, NULL, fingerprint, ...)`, and
+it is deliberately a separate call.
 
 And there is no exact-fingerprint filter to scope with. `filter[q]` is
 `ILIKE '%term%'` across `name`, `hostname` and `fingerprint`
