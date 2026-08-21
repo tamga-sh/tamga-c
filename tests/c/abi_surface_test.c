@@ -36,6 +36,16 @@ _Static_assert(TAMGA_ERR_LENGTH_INVALID == 10, "frozen ABI value changed");
 _Static_assert(TAMGA_ERR_EXPIRED == 11, "frozen ABI value changed");
 /* Appended in 1.3. New codes go after this one, never in front of it. */
 _Static_assert(TAMGA_ERR_OUT_OF_MEMORY == 12, "appended ABI value changed");
+/*
+ * The HTTP block shipped in 1.3.0 ends here. Pinning its last value catches
+ * an insertion into the middle of the block, which renumbers everything after
+ * it -- the failure mode appending is supposed to avoid, and the one a
+ * compiler is happy to accept.
+ */
+_Static_assert(TAMGA_ERR_PID_TAKEN == 28, "appended ABI value changed");
+/* The limit and licence-state block, appended in 1.3.1. */
+_Static_assert(TAMGA_ERR_MACHINE_LIMIT_EXCEEDED == 29, "appended ABI value changed");
+_Static_assert(TAMGA_ERR_LICENSE_NOT_ALLOWED == 36, "appended ABI value changed");
 
 /* --- frozen scheme values ---------------------------------------------- */
 _Static_assert(TAMGA_SCHEME_NONE == 0, "frozen ABI value changed");

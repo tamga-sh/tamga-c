@@ -99,9 +99,23 @@ bool tamga_header_value_is_safe(const char *value) {
 }
 
 bool tamga_request_is_retryable(const char *method, const char *path) {
+    /*
+     * `/actions/ping-heartbeat` and `/actions/reset-heartbeat` are listed
+     * explicitly and are not covered by `/actions/ping`: matching is by whole
+     * suffix, so `/actions/ping` matches only the process ping route.
+     *
+     * Both heartbeat actions are bare idempotent state writes -- the server's
+     * ping is an unconditional `last_heartbeat_at = NOW()` with no seat cost
+     * and no resurrection check -- so repeating one is unconditionally safe.
+     * Leaving them out was the more dangerous choice: the rate limiter keys
+     * on the route pattern rather than the caller, so an entire fleet shares
+     * one bucket on `/actions/ping-heartbeat` and throttles itself, and a
+     * heartbeat dropped on a 429 is a machine the server culls.
+     */
     static const char *const retryable_suffixes[] = {
-        "/actions/validate",  "/actions/validate-key", "/actions/check-in",
-        "/actions/check-out", "/actions/ping",
+        "/actions/validate",        "/actions/validate-key", "/actions/check-in",
+        "/actions/check-out",       "/actions/ping",         "/actions/ping-heartbeat",
+        "/actions/reset-heartbeat",
     };
     size_t i;
     size_t path_len;
@@ -479,6 +493,47 @@ static TamgaErrorCode tamga_map_api_error(TamgaResponse *response) {
         }
         if (strcmp(code, "PID_TAKEN") == 0) {
             return TAMGA_ERR_PID_TAKEN;
+        }
+        /*
+         * The five limit codes below are raised at CREATION time, which the
+         * server does enforce -- the outcome depends on the policy's overage
+         * strategy, so the same request either fails here or succeeds and
+         * reports the limit at the next validation instead. Without these,
+         * a strict-strategy rejection arrived as a bare TAMGA_ERR_API and
+         * was indistinguishable from any other 422.
+         */
+        if (strcmp(code, "MACHINE_LIMIT_EXCEEDED") == 0) {
+            return TAMGA_ERR_MACHINE_LIMIT_EXCEEDED;
+        }
+        if (strcmp(code, "CORE_LIMIT_EXCEEDED") == 0) {
+            return TAMGA_ERR_CORE_LIMIT_EXCEEDED;
+        }
+        if (strcmp(code, "MEMORY_LIMIT_EXCEEDED") == 0) {
+            return TAMGA_ERR_MEMORY_LIMIT_EXCEEDED;
+        }
+        if (strcmp(code, "DISK_LIMIT_EXCEEDED") == 0) {
+            return TAMGA_ERR_DISK_LIMIT_EXCEEDED;
+        }
+        if (strcmp(code, "TOO_MANY_PROCESSES") == 0) {
+            return TAMGA_ERR_TOO_MANY_PROCESSES;
+        }
+        /*
+         * These three arrive as 401 and would otherwise collapse into the
+         * generic TAMGA_ERR_UNAUTHORIZED below, which reads as "the
+         * credential was wrong" and invites a re-prompt. None of them is:
+         * the credential is exactly right and the licence, or its policy,
+         * refuses it. LICENSE_NOT_ALLOWED in particular is a provisioning
+         * precondition -- authentication_strategy defaults to TOKEN -- and no
+         * amount of retrying or re-entering a key changes it.
+         */
+        if (strcmp(code, "LICENSE_SUSPENDED") == 0) {
+            return TAMGA_ERR_LICENSE_SUSPENDED;
+        }
+        if (strcmp(code, "LICENSE_EXPIRED") == 0) {
+            return TAMGA_ERR_LICENSE_EXPIRED;
+        }
+        if (strcmp(code, "LICENSE_NOT_ALLOWED") == 0) {
+            return TAMGA_ERR_LICENSE_NOT_ALLOWED;
         }
     }
 

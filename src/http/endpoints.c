@@ -561,10 +561,31 @@ TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *li
 
     status = tamga_client_create_machine(client, license_id, fingerprint, options_json, &created);
     if (status != TAMGA_OK || created == NULL) {
-        /* A successful send always yields a response, but the machine id is
+        /*
+         * Creation DOES enforce the licence's limits, and under a strict
+         * overage strategy it is where an over-limit activation is rejected:
+         * 422 with MACHINE_LIMIT_EXCEEDED, CORE_LIMIT_EXCEEDED,
+         * MEMORY_LIMIT_EXCEEDED or DISK_LIMIT_EXCEEDED, now mapped to their
+         * own error codes. There is no machine row in that case, so there is
+         * nothing to validate and -- critically -- nothing to delete: issuing
+         * the rollback DELETE here would address a machine that was never
+         * created.
+         *
+         * The creation response is handed back rather than dropped, so the
+         * caller can read the server's own code and status off it, matching
+         * what the validate-failure path below already does.
+         * tamga_validation_code_from_error() turns the returned code into the
+         * validation code that means the same thing.
+         *
+         * A successful send always yields a response, but the machine id is
          * read out of it below, and a null there would be a crash rather than
-         * an error -- so the invariant is checked, not assumed. */
-        tamga_response_free(created);
+         * an error -- so the invariant is checked, not assumed.
+         */
+        if (out_response != NULL && created != NULL) {
+            *out_response = created;
+        } else {
+            tamga_response_free(created);
+        }
         return (status != TAMGA_OK)
                    ? status
                    : tamga_error_set(TAMGA_ERR_UNKNOWN,
@@ -573,10 +594,10 @@ TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *li
     }
 
     /*
-     * Creation does not enforce seat limits -- they surface here. This is the
-     * only way to find out whether an activation was one too many, which is
-     * why create and validate are composed rather than left to the caller to
-     * remember to pair.
+     * Under ALLOW_ACCESS or ALLOW_1_25X_OVERAGE the creation above succeeded
+     * despite the licence being over its limit, and this is where that
+     * surfaces. Composing create with validate rather than leaving the pair
+     * to the caller is what makes both strategies produce a usable answer.
      */
     status = tamga_client_validate_by_id(client, license_id, scope_json, false, NULL, &validated);
 

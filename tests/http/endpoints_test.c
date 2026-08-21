@@ -424,9 +424,10 @@ TT_TEST(has_entitlement_matches_on_code_not_name) {
 }
 
 /*
- * Creation does not enforce seat limits -- they surface only through
- * validation, which is why these two calls are composed rather than left to
- * the caller to remember to pair.
+ * Creation enforces the licence's limits too. Which of the two ways an
+ * over-limit activation is reported depends on the policy's overage strategy,
+ * and both are live -- which is why these calls are composed rather than left
+ * to the caller to remember to pair.
  */
 TT_TEST(activate_machine_creates_then_validates) {
     MockTransport mock;
@@ -447,6 +448,97 @@ TT_TEST(activate_machine_creates_then_validates) {
     TT_ASSERT_NOT_NULL(strstr(mock.calls[0].url, "/machines"));
     TT_ASSERT_NOT_NULL(strstr(mock.calls[1].url, "/actions/validate"));
     TT_ASSERT(tamga_response_validation_is_valid(response));
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * A strict overage strategy rejects the CREATE itself, so there is no machine
+ * row and nothing to roll back. The rollback DELETE must not be issued --
+ * it would address a machine that was never made -- and the validation must
+ * not be attempted either, because the activation already failed.
+ *
+ * The body is the server's real shape: JSON:API `status` is the STRING "422".
+ */
+TT_TEST(activate_machine_reports_a_creation_time_limit_without_deleting) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 422,
+               "{\"errors\":[{\"id\":\"01926b3e-0000-7000-8000-00000000000f\","
+               "\"status\":\"422\",\"code\":\"MACHINE_LIMIT_EXCEEDED\","
+               "\"title\":\"Unprocessable Entity\",\"detail\":\"machine limit exceeded\"}]}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(
+        tamga_client_activate_machine(client, LICENSE_ID, "fp-1", NULL, NULL, true, &response),
+        TAMGA_ERR_MACHINE_LIMIT_EXCEEDED);
+
+    /* Exactly one call: the create. No validate, and above all no DELETE. */
+    TT_ASSERT_EQ_SIZE(mock.call_count, 1u);
+    TT_ASSERT_EQ_STR(mock.calls[0].method, "POST");
+    TT_ASSERT_NOT_NULL(strstr(mock.calls[0].url, "/machines"));
+
+    /* The creation error is handed back, so the server's own code survives. */
+    TT_ASSERT_NOT_NULL(response);
+    TT_ASSERT_EQ_INT(tamga_response_status(response), 422);
+    TT_ASSERT_EQ_STR(tamga_response_error_code(response), "MACHINE_LIMIT_EXCEEDED");
+
+    /* And it folds onto the validation code that means the same thing, so one
+     * caller branch covers both strategies. */
+    TT_ASSERT_EQ_INT(tamga_validation_code_from_error(TAMGA_ERR_MACHINE_LIMIT_EXCEEDED),
+                     TAMGA_VALIDATION_TOO_MANY_MACHINES);
+    TT_ASSERT(tamga_validation_code_is_overage(
+        tamga_validation_code_from_error(TAMGA_ERR_MACHINE_LIMIT_EXCEEDED)));
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * The same licence state under ALLOW_ACCESS / ALLOW_1_25X_OVERAGE: the
+ * server's create-time limit check runs through the policy's overage strategy
+ * and lets the creation through, so the limit only appears at validation --
+ * and the rollback path is the only thing that stops an orphaned machine row
+ * being left behind. This is why the create-time branch above is an addition
+ * to this path rather than a replacement for it.
+ */
+TT_TEST(activate_machine_still_rolls_back_when_the_overage_strategy_allows_the_create) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    /* 201, not 422: the overage strategy allowed it. */
+    mock_reply(&mock, 201,
+               "{\"data\":{\"type\":\"machines\",\"id\":\"01926b3e-0000-7000-8000-000000000002\","
+               "\"attributes\":{\"fingerprint\":\"fp-1\",\"cores\":4,\"memory\":16384,"
+               "\"disk\":512000}}}");
+    mock_reply(&mock, 200,
+               "{\"data\":{\"type\":\"licenses\",\"id\":\"01926b3e-0000-7000-8000-000000000001\"},"
+               "\"meta\":{\"ts\":\"2026-08-21T00:00:00Z\",\"valid\":false,"
+               "\"detail\":\"too many machines\",\"code\":\"TOO_MANY_MACHINES\"}}");
+    mock_reply(&mock, 204, "");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(
+        tamga_client_activate_machine(client, LICENSE_ID, "fp-1", NULL, NULL, true, &response),
+        TAMGA_OK);
+
+    TT_ASSERT_EQ_SIZE(mock.call_count, 3u);
+    TT_ASSERT_EQ_STR(mock.calls[1].method, "POST");
+    TT_ASSERT_NOT_NULL(strstr(mock.calls[1].url, "/actions/validate"));
+    TT_ASSERT_EQ_STR(mock.calls[2].method, "DELETE");
+    TT_ASSERT_NOT_NULL(strstr(mock.calls[2].url, "/machines/01926b3e-0000-7000-8000-000000000002"));
+
+    TT_ASSERT_FALSE(tamga_response_validation_is_valid(response));
+    TT_ASSERT_EQ_INT(tamga_response_validation_code_enum(response),
+                     TAMGA_VALIDATION_TOO_MANY_MACHINES);
 
     tamga_response_free(response);
     tamga_client_free(client);
@@ -524,6 +616,52 @@ TT_TEST(validation_codes_round_trip) {
     TT_ASSERT_FALSE(tamga_validation_code_is_overage(TAMGA_VALIDATION_VALID));
 }
 
+/* The server reports the same over-limit condition in two vocabularies
+ * depending on the policy's overage strategy; the fold has to line them up
+ * exactly, or a caller handling one shape silently mishandles the other. */
+TT_TEST(creation_time_limits_fold_onto_their_validation_codes) {
+    TT_ASSERT_EQ_INT(tamga_validation_code_from_error(TAMGA_ERR_MACHINE_LIMIT_EXCEEDED),
+                     TAMGA_VALIDATION_TOO_MANY_MACHINES);
+    TT_ASSERT_EQ_INT(tamga_validation_code_from_error(TAMGA_ERR_CORE_LIMIT_EXCEEDED),
+                     TAMGA_VALIDATION_TOO_MANY_CORES);
+    TT_ASSERT_EQ_INT(tamga_validation_code_from_error(TAMGA_ERR_MEMORY_LIMIT_EXCEEDED),
+                     TAMGA_VALIDATION_TOO_MUCH_MEMORY);
+    TT_ASSERT_EQ_INT(tamga_validation_code_from_error(TAMGA_ERR_DISK_LIMIT_EXCEEDED),
+                     TAMGA_VALIDATION_TOO_MUCH_DISK);
+    TT_ASSERT_EQ_INT(tamga_validation_code_from_error(TAMGA_ERR_TOO_MANY_PROCESSES),
+                     TAMGA_VALIDATION_TOO_MANY_PROCESSES);
+
+    /* Anything else is UNKNOWN -- never VALID. A caller reading "not a limit"
+     * as "fine" would pass every other failure straight through. */
+    TT_ASSERT_EQ_INT(tamga_validation_code_from_error(TAMGA_OK), TAMGA_VALIDATION_UNKNOWN);
+    TT_ASSERT_EQ_INT(tamga_validation_code_from_error(TAMGA_ERR_LICENSE_NOT_ALLOWED),
+                     TAMGA_VALIDATION_UNKNOWN);
+    TT_ASSERT_EQ_INT(tamga_validation_code_from_error(TAMGA_ERR_TRANSPORT),
+                     TAMGA_VALIDATION_UNKNOWN);
+    TT_ASSERT_EQ_INT(tamga_validation_code_from_error((TamgaErrorCode)9999),
+                     TAMGA_VALIDATION_UNKNOWN);
+}
+
+/* Every appended code has a name. A missing case falls through to
+ * "TAMGA_ERR_UNKNOWN", which turns a precise server rejection into an
+ * unreadable log line at exactly the moment somebody is reading logs. */
+TT_TEST(the_appended_error_codes_all_have_names) {
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_MACHINE_LIMIT_EXCEEDED),
+                     "TAMGA_ERR_MACHINE_LIMIT_EXCEEDED");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_CORE_LIMIT_EXCEEDED),
+                     "TAMGA_ERR_CORE_LIMIT_EXCEEDED");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_MEMORY_LIMIT_EXCEEDED),
+                     "TAMGA_ERR_MEMORY_LIMIT_EXCEEDED");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_DISK_LIMIT_EXCEEDED),
+                     "TAMGA_ERR_DISK_LIMIT_EXCEEDED");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_TOO_MANY_PROCESSES),
+                     "TAMGA_ERR_TOO_MANY_PROCESSES");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_LICENSE_SUSPENDED), "TAMGA_ERR_LICENSE_SUSPENDED");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_LICENSE_EXPIRED), "TAMGA_ERR_LICENSE_EXPIRED");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_LICENSE_NOT_ALLOWED),
+                     "TAMGA_ERR_LICENSE_NOT_ALLOWED");
+}
+
 /* An identifier that is not a UUID never reaches the URL builder -- otherwise
  * one containing a slash would silently address a different endpoint. */
 TT_TEST(identifiers_must_be_uuids) {
@@ -567,9 +705,13 @@ int main(void) {
     TT_RUN(the_next_page_cursor_is_derived_from_a_full_page_only);
     TT_RUN(has_entitlement_matches_on_code_not_name);
     TT_RUN(activate_machine_creates_then_validates);
+    TT_RUN(activate_machine_reports_a_creation_time_limit_without_deleting);
+    TT_RUN(activate_machine_still_rolls_back_when_the_overage_strategy_allows_the_create);
     TT_RUN(activate_machine_undoes_an_over_limit_activation);
     TT_RUN(activate_machine_keeps_the_machine_on_a_non_overage_failure);
     TT_RUN(validation_codes_round_trip);
+    TT_RUN(creation_time_limits_fold_onto_their_validation_codes);
+    TT_RUN(the_appended_error_codes_all_have_names);
     TT_RUN(identifiers_must_be_uuids);
     TT_RUN(identifiers_are_normalised_into_the_path);
     return TT_SUMMARY();

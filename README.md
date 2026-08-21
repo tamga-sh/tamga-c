@@ -84,6 +84,8 @@ TamgaClient *client = NULL;
 TamgaResponse *response = NULL;
 
 tamga_client_new("<account-id>", "api.tamga.sh", &client);
+/* Licence-key auth needs the policy's authentication_strategy set to LICENSE
+   or MIXED -- the default TOKEN answers 401 LICENSE_NOT_ALLOWED. */
 tamga_client_set_auth(client, TAMGA_AUTH_LICENSE, "<licence-key>", NULL);
 
 if (tamga_client_validate_by_key(client, "<licence-key>", NULL, &response) == TAMGA_OK) {
@@ -238,10 +240,58 @@ derived from the licence key *and* the machine's fingerprint, so a file issued
 for one machine cannot be decrypted on another even by someone holding the
 licence key.
 
-**Registering a machine does not check seat limits.** Creation succeeds even
-when a licence is at its maximum; the limit surfaces on the next validation.
-Use `tamga_client_activate_machine()`, which composes the two and can undo an
-over-limit activation.
+**Licence-key authentication is off by default.** `TAMGA_AUTH_LICENSE` only
+works when the licence's policy sets `authentication_strategy` to `LICENSE` or
+`MIXED`. The column defaults to `TOKEN`, and `NONE` refuses licence keys too —
+either one answers `401 LICENSE_NOT_ALLOWED`
+(`TAMGA_ERR_LICENSE_NOT_ALLOWED`) on *every* call. That is a provisioning
+precondition, not a transient failure and not a bad key, so retrying or
+re-prompting for the key never helps. Two calls stay closed to a licence key
+whatever the strategy: `tamga_client_reset_heartbeat()` and
+`tamga_client_generate_offline_proof()` are role-gated to admin, developer,
+product and environment tokens and always answer `403`.
+
+**An over-limit activation is reported two different ways.** Registering a
+machine *does* check the licence's limits, and what happens next is the
+policy's overage strategy. Under a strict strategy the creation itself is
+rejected with `422` and one of the `TAMGA_ERR_*_LIMIT_EXCEEDED` codes. Under
+`ALLOW_ACCESS` or `ALLOW_1_25X_OVERAGE` it succeeds and the same limit only
+appears on the next validation. Use `tamga_client_activate_machine()`, which
+handles both: it returns the limit code directly on a rejected creation, and
+undoes an accepted-then-over-limit one. `tamga_validation_code_from_error()`
+folds the first vocabulary onto the second so one branch covers both.
+
+**`memory` and `disk` are megabytes.** Not bytes. The server sums them into
+the licence's running memory and disk totals, which the limits are checked
+against — reporting 16 GiB as `17179869184` instead of `16384` inflates that
+total by a factor of a million and trips `MEMORY_LIMIT_EXCEEDED` on somebody
+else's activation.
+
+**Entitlements cannot be paginated.** `GET /licenses/{id}/entitlements` accepts
+`page[after]` and ignores it: the listing is a union of direct and
+policy-inherited rows, which no single cursor describes. `limit` bounds it
+instead, defaulting to 25 and capped at 100 — so a licence with more than 100
+effective entitlements cannot be read out in full, and a `false` from
+`tamga_client_has_entitlement()` is only authoritative below that ceiling.
+Never loop on `tamga_response_next_cursor()` for this route; it would return
+the same first page forever. It works correctly for
+`tamga_client_list_components()`, where the server really does apply the
+cursor.
+
+**`scope.version` and `scope.checksum` fail the whole call.** They are not
+ignored: the server rejects either with `422 SCOPE_NOT_SUPPORTED` before any
+validation runs, so no verdict comes back at all. The other six scope
+members — `product`, `policy`, `user`, `environment`, `entitlements` and
+`fingerprint` — are enforced, and a mismatch is a normal validation outcome
+rather than an error.
+
+**Quick-validate silently skips its write when the request carries `Origin`.**
+`tamga_client_quick_validate()` normally stamps `last_validated_at`, but the
+server skips that whenever an `Origin` header is present — and the two
+responses are identical, so there is no way to tell. This SDK's own transports
+never send `Origin`; one registered through `tamga_client_set_transport()`, or
+a proxy in front of it, can. When the write matters, use
+`tamga_client_validate_by_id()`.
 
 **Threading.** Every function is safe to call concurrently on distinct
 handles, and the last-error slot is per-thread. A single `TamgaClient` or

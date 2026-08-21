@@ -20,7 +20,15 @@
 
 /** The `Tamga-Version` sent unless overridden -- the server's own default. */
 #define TAMGA_DEFAULT_API_VERSION "1.8"
-#define TAMGA_DEFAULT_TIMEOUT_MS 30000u
+/*
+ * Deliberately longer than the server's own 30-second request deadline.
+ * Matching it exactly means racing it, and the race is lost in the least
+ * useful direction: the local timeout fires first, the caller sees a
+ * transport failure rather than the server's 504, and the `x-request-id` that
+ * response carries -- the one correlation id a slow-call support request
+ * needs -- is never seen.
+ */
+#define TAMGA_DEFAULT_TIMEOUT_MS 45000u
 /*
  * Three retries.
  *

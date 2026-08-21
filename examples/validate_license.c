@@ -48,8 +48,11 @@ int main(int argc, char **argv) {
     }
 
     /* The licence transport authenticates with the end user's own key, which
-     * is what an embedded application has. Note the licence's policy must
-     * allow it: authentication_strategy must be LICENSE or MIXED. */
+     * is what an embedded application has. The licence's policy has to opt
+     * in: authentication_strategy must be LICENSE or MIXED. It defaults to
+     * TOKEN, and NONE refuses licence keys too -- either one answers 401
+     * LICENSE_NOT_ALLOWED on every call, which is a provisioning
+     * precondition rather than a bad key, so retrying never helps. */
     code = tamga_client_set_auth(client, TAMGA_AUTH_LICENSE, license_key, NULL);
     if (code != TAMGA_OK) {
         (void)fprintf(stderr, "could not set credentials: %s\n", tamga_last_error_message());

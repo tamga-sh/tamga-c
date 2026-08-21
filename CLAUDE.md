@@ -223,6 +223,48 @@ and in three request builders, failing them one at a time -- 586 injections --
 and asserts each run either succeeds or returns `TAMGA_ERR_OUT_OF_MEMORY`,
 with no blocks left outstanding. Every misreport above was found by it.
 
+### The same over-limit activation is reported two different ways
+
+Creation *does* enforce the licence's limits, and the server's create-time
+check runs through the policy's overage strategy. Under a strict strategy
+`POST /machines` is rejected with `422 MACHINE_LIMIT_EXCEEDED` (or the core,
+memory, disk variant). Under `ALLOW_ACCESS` or `ALLOW_1_25X_OVERAGE` the same
+request succeeds and the limit only appears in the following validation as
+`TOO_MANY_MACHINES`. Both are live for the same code path, so
+`tamga_client_activate_machine()` carries both branches: the create-time one
+returns the limit error and issues **no** rollback DELETE (there is no row to
+delete), while the overage one still creates, validates and rolls back.
+`tamga_validation_code_from_error()` exists so a caller writes one branch
+instead of two.
+
+Pinned by `activate_machine_reports_a_creation_time_limit_without_deleting`
+and `activate_machine_still_rolls_back_when_the_overage_strategy_allows_the_create`.
+Do not delete either — the pair is the point.
+
+### Licence-key authentication is off unless the policy opts in
+
+`authentication_strategy` defaults to `TOKEN`, and `NONE` refuses licence keys
+too, so `TAMGA_AUTH_LICENSE` answers `401 LICENSE_NOT_ALLOWED` on a default
+policy. It is a provisioning precondition, not a bad key and not a transient
+error, which is why it has its own code rather than collapsing into
+`TAMGA_ERR_UNAUTHORIZED` and inviting a re-prompt. `LICENSE_SUSPENDED` and
+`LICENSE_EXPIRED` arrive the same way, also as 401.
+
+Separately, `reset-heartbeat` and `generate-offline-proof` are role-gated
+above a licence key and always answer `403` to one, whatever its permissions.
+
+### The error enum grows, and error-code JSON `status` is a string
+
+New `TamgaErrorCode` values are appended as the server widens its error
+vocabulary. Consumers must carry a `default:` case; `tests/c/
+abi_surface_test.c` pins the first and last value of each appended block so an
+insertion into the middle fails the build rather than silently renumbering.
+
+When writing a test fixture for a JSON:API error document, `status` is the
+**string** `"422"`, not the number. The mapping reads `code` and never
+`status`, which is exactly why the real shape has to be in the test — nothing
+would fail if it drifted.
+
 ### The clock is a security input
 
 `tamga_time_now_unix` returns `bool`. The licence-file expiry check is
