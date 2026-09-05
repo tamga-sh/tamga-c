@@ -456,6 +456,19 @@ TT_TEST(json_api_error_codes_map_to_typed_results) {
         {401, "{\"errors\":[{\"status\":\"401\",\"code\":\"LICENSE_EXPIRED\"}]}",
          TAMGA_ERR_LICENSE_EXPIRED},
         /*
+         * The API patch's two new 422s, for what used to be a 500. `status`
+         * is the JSON:API STRING here, as everywhere above; this SDK never
+         * reads a body status at all (the HTTP status is what is used), which
+         * the pre-existing rows of this table already pin.
+         */
+        {422,
+         "{\"errors\":[{\"id\":\"01926b3e-0000-7000-8000-00000000000f\",\"status\":\"422\","
+         "\"code\":\"SIGNING_KEY_MISSING\",\"title\":\"Unprocessable Entity\","
+         "\"detail\":\"the account has no Ed25519 signing key\"}]}",
+         TAMGA_ERR_SIGNING_KEY_MISSING},
+        {422, "{\"errors\":[{\"status\":\"422\",\"code\":\"SECRET_KEY_MISSING\"}]}",
+         TAMGA_ERR_SECRET_KEY_MISSING},
+        /*
          * `scope.version` / `scope.checksum` fail the whole validate call.
          * This SDK has no dedicated code for it; the point of the assertion
          * is that the outcome is still usable -- the server's own string

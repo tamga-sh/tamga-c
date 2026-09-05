@@ -229,18 +229,18 @@ static TamgaErrorCode tamga_license_finish(TamgaJson *payload, int64_t now_unix,
 
 /*
  * The shared body of both entry points. Exactly one of `ed25519_pubkey` and
- * `keys` is non-NULL, and which one decides the ORDER of the two steps below.
+ * `keys` is non-NULL, and on BOTH the signature is checked before a byte of
+ * `enc` is decoded.
  *
- * With a single key, the signature is checked first and nothing parses bytes
- * an attacker chose -- the order this format is designed for, and the one the
- * public tamga_license_file_verify() keeps.
- *
- * With a key set, the key to check against is named inside the payload, so the
- * payload has to be decoded (and, when encrypted, decrypted) first. That is
- * sound because the only value taken from those bytes before verification is
- * the `kid`, which can SELECT from keys the caller already trusts and can
- * never SUPPLY one. It does mean the JSON parser sees unverified bytes, which
- * is why that parser is fuzzed, depth-capped and length-capped.
+ * With a single key that is the order the format is designed for. With a key
+ * set, every held key is tried against the signature over enc's base64
+ * STRING (tamga_key_set_find_verifier()); the `kid` the payload names is read
+ * only when none verifies, and only to label the failure
+ * (tamga_key_set_label_failure()). So the JSON parser and the cipher see
+ * attacker-chosen bytes on exactly one path -- a signature that has already
+ * failed -- and nothing they produce is trusted: the one value read is the
+ * `kid`, and it can only choose a LABEL, never a key. That parser is fuzzed,
+ * depth-capped and length-capped for the same reason as before.
  */
 static TamgaErrorCode tamga_license_file_verify_core(const char *pem, size_t pem_len,
                                                      const unsigned char *ed25519_pubkey,
@@ -256,8 +256,7 @@ static TamgaErrorCode tamga_license_file_verify_core(const char *pem, size_t pem
     size_t plaintext_len = 0u;
     size_t plaintext_capacity = 0u;
     TamgaJson *payload = NULL;
-    unsigned char selected[TAMGA_ED25519_PUBKEY_LEN];
-    const unsigned char *verifier = ed25519_pubkey;
+    bool verified;
 
     if (pem == NULL || out_resource == NULL || (ed25519_pubkey == NULL && keys == NULL)) {
         return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "a required argument was null");
@@ -275,46 +274,45 @@ static TamgaErrorCode tamga_license_file_verify_core(const char *pem, size_t pem
         return status;
     }
 
-    if (keys != NULL) {
-        status = tamga_license_decode_payload(&cert, encrypted, license_key, &plaintext,
-                                              &plaintext_len, &plaintext_capacity);
-        if (status == TAMGA_OK) {
-            status = tamga_license_parse_payload(plaintext, plaintext_len, &payload);
-            /* Freed at the CAPACITY it was allocated with, never at the length
-             * AES-GCM reported -- the difference is the tag, and leaving it
-             * behind leaves licence-key-derived plaintext in freed memory. */
-            tamga_secure_free(plaintext, plaintext_capacity);
-        }
-        if (status == TAMGA_OK) {
-            status = tamga_key_set_select(
-                keys, tamga_claims_key_id(tamga_json_object_get(payload, "meta")), selected);
-            verifier = selected;
-        }
-    }
-
     /*
      * ⚠️ Verify against enc's base64 STRING bytes, without decoding them.
      * Decoding first and verifying the decoded bytes is the classic mistake
      * with this format and fails against every real server-issued file.
      */
-    if (status == TAMGA_OK &&
-        !tamga_ed25519_verify(verifier, (const unsigned char *)cert.enc, cert.enc_len, signature)) {
-        status =
-            tamga_error_set(TAMGA_ERR_SIGNATURE_INVALID, "licence-file signature did not verify");
+    if (keys != NULL) {
+        verified = tamga_key_set_find_verifier(keys, (const unsigned char *)cert.enc, cert.enc_len,
+                                               signature, TAMGA_ED25519_SIG_LEN, NULL);
+    } else {
+        verified = tamga_ed25519_verify(ed25519_pubkey, (const unsigned char *)cert.enc,
+                                        cert.enc_len, signature);
     }
     tamga_free(signature);
 
-    /* The single-key path decodes only now, with the signature behind it. */
-    if (status == TAMGA_OK && payload == NULL) {
-        status = tamga_license_decode_payload(&cert, encrypted, license_key, &plaintext,
-                                              &plaintext_len, &plaintext_capacity);
-        if (status == TAMGA_OK) {
-            status = tamga_license_parse_payload(plaintext, plaintext_len, &payload);
-            tamga_secure_free(plaintext, plaintext_capacity);
-        }
+    if (!verified && keys == NULL) {
+        /* Single key: nothing parses bytes an attacker chose. */
+        tamga_cert_free(&cert);
+        return tamga_error_set(TAMGA_ERR_SIGNATURE_INVALID,
+                               "licence-file signature did not verify");
+    }
+
+    /* Decoded only now: with the signature behind it, or -- on a key-set
+     * failure -- solely so the kid can label the failure. */
+    status = tamga_license_decode_payload(&cert, encrypted, license_key, &plaintext, &plaintext_len,
+                                          &plaintext_capacity);
+    if (status == TAMGA_OK) {
+        status = tamga_license_parse_payload(plaintext, plaintext_len, &payload);
+        /* Freed at the CAPACITY it was allocated with, never at the length
+         * AES-GCM reported -- the difference is the tag, and leaving it
+         * behind leaves licence-key-derived plaintext in freed memory. */
+        tamga_secure_free(plaintext, plaintext_capacity);
     }
     tamga_cert_free(&cert);
 
+    if (!verified) {
+        /* A key set, and no held key signed this: the payload above was
+         * opened only so its kid can label the failure. */
+        status = tamga_key_set_label_failure(keys, status, payload);
+    }
     if (status != TAMGA_OK) {
         tamga_json_free(payload);
         return status;

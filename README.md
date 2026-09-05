@@ -314,10 +314,11 @@ whatever scheme signed the file. Those get
 `tamga_machine_file_verify()`. Nothing is lost, because only the Ed25519 key is
 ever rotated.
 
-**An empty key set is a healthy account.** `GET /signing-keys` answers
-`{"data": []}` for an account that has never rotated — the table is written
-only by the rotation handler. Read that as "nothing has rotated yet", not as a
-fault.
+**An empty key set was a healthy account — on a pre-patch server.**
+`GET /signing-keys` used to answer `{"data": []}` until the first rotation;
+since the API patch every account publishes a key from creation and the
+startup sweep backfills older ones, so an empty set now means the fetch or the
+pinned list is wrong.
 
 **Machine files need the fingerprint.** An encrypted machine file's key is
 derived from the licence key *and* the machine's fingerprint, so a file issued

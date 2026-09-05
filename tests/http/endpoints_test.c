@@ -1132,6 +1132,9 @@ TT_TEST(finding_a_machine_walks_past_a_page_that_does_not_hold_it) {
  * conflict with no way forward. The server checks fingerprint uniqueness
  * BEFORE the seat limits precisely so this is not reported as "buy more
  * seats"; carrying on is the intended reading.
+ *
+ * This is the no-`meta` shape -- a pre-patch server, or a conflict the server
+ * would not attribute to this licence -- so the scoped lookup decides.
  */
 TT_TEST(an_already_activated_machine_is_not_an_error) {
     MockTransport mock;
@@ -1161,6 +1164,77 @@ TT_TEST(an_already_activated_machine_is_not_an_error) {
      * auto_delete_on_overage governs only the create path. */
     TT_ASSERT_EQ_STR(mock.calls[2].method, "POST");
     TT_ASSERT_NOT_NULL(strstr(mock.calls[2].url, "/actions/validate"));
+    TT_ASSERT(tamga_response_validation_is_valid(response));
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * The API patch names the conflicting machine in the 409 itself --
+ * `errors[0].meta.machineId` -- and does so ONLY when that machine is on
+ * the requested licence, which is the one fact the scoped lookup existed
+ * to establish. So when it is there the lookup is skipped: create,
+ * validate, done. The body is the exact wire shape the API plan specifies,
+ * `status` as the JSON:API STRING included.
+ */
+TT_TEST(a_conflict_that_names_the_machine_is_adopted_without_a_lookup) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 409,
+               "{\"errors\":[{\"id\":\"01926b3e-0000-7000-8000-00000000000f\",\"status\":\"409\","
+               "\"code\":\"FINGERPRINT_TAKEN\",\"title\":\"Conflict\","
+               "\"detail\":\"already activated\","
+               "\"meta\":{\"machineId\":\"01926b3e-0000-7000-8000-000000000002\"}}]}");
+    mock_reply(&mock, 200, "{\"data\":{},\"meta\":{\"valid\":true,\"code\":\"VALID\"}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_activate_machine_idempotent(client, LICENSE_ID, "fp-1", NULL,
+                                                              NULL, true, &response),
+                     TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 2u);
+    TT_ASSERT_EQ_STR(mock.calls[0].method, "POST");
+    TT_ASSERT_NOT_NULL(strstr(mock.calls[0].url, "/machines"));
+    TT_ASSERT_EQ_STR(mock.calls[1].method, "POST");
+    TT_ASSERT_NOT_NULL(strstr(mock.calls[1].url, "/actions/validate"));
+    TT_ASSERT(tamga_response_validation_is_valid(response));
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * A `meta` that names no usable machine -- the wrong type, say -- is treated
+ * exactly like no `meta`: the scoped lookup decides, as it always did.
+ */
+TT_TEST(a_conflict_whose_meta_names_no_machine_still_falls_back_to_the_lookup) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 409,
+               "{\"errors\":[{\"status\":\"409\",\"code\":\"FINGERPRINT_TAKEN\","
+               "\"title\":\"Conflict\",\"detail\":\"already activated\","
+               "\"meta\":{\"machineId\":42}}]}");
+    mock_reply(&mock, 200,
+               "{\"data\":[{\"id\":\"01926b3e-0000-7000-8000-000000000002\","
+               "\"attributes\":{\"fingerprint\":\"fp-1\"}}],"
+               "\"meta\":{\"page\":{\"number\":1,\"size\":100,\"total\":1,\"totalPages\":1}}}");
+    mock_reply(&mock, 200, "{\"data\":{},\"meta\":{\"valid\":true,\"code\":\"VALID\"}}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_activate_machine_idempotent(client, LICENSE_ID, "fp-1", NULL,
+                                                              NULL, true, &response),
+                     TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(mock.call_count, 3u);
+    TT_ASSERT_EQ_STR(mock.calls[1].method, "GET");
+    TT_ASSERT_NOT_NULL(strstr(mock.calls[1].url, "filter%5Bq%5D=fp-1"));
     TT_ASSERT(tamga_response_validation_is_valid(response));
 
     tamga_response_free(response);
@@ -1440,10 +1514,14 @@ TT_TEST(a_licence_key_is_refused_the_signing_key_listing) {
 }
 
 /*
- * An empty collection is the ORDINARY state of a healthy account:
- * `account_signing_keys` is written only by the rotation handler, so an
- * account that has never rotated has no rows. Reading that as a fault would
- * make every un-rotated account look broken.
+ * Pins parsing of an empty `{"data":[]}` collection: a mock reply, not a live
+ * server, so this says nothing about what a real server currently sends. That
+ * shape was the routine answer pre-patch, when `account_signing_keys` was
+ * written only by the rotation handler and an account that had never rotated
+ * had no rows; see README.md's note that a post-patch server should not send
+ * an empty collection at all. Whatever the reason a caller receives one -- a
+ * pre-patch server, a stale proxy or cache -- the SDK still has to parse it
+ * without crashing or misreporting.
  */
 TT_TEST(an_account_that_never_rotated_answers_with_an_empty_collection) {
     MockTransport mock;
@@ -1911,6 +1989,8 @@ int main(void) {
     TT_RUN(finding_a_machine_by_fingerprint_demands_an_exact_match);
     TT_RUN(finding_a_machine_walks_past_a_page_that_does_not_hold_it);
     TT_RUN(an_already_activated_machine_is_not_an_error);
+    TT_RUN(a_conflict_that_names_the_machine_is_adopted_without_a_lookup);
+    TT_RUN(a_conflict_whose_meta_names_no_machine_still_falls_back_to_the_lookup);
     TT_RUN(an_idempotent_activation_still_refuses_another_licences_fingerprint);
     TT_RUN(an_idempotent_activation_says_when_the_lookup_itself_failed);
     TT_RUN(the_upgrade_check_sends_every_required_parameter);

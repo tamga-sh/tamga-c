@@ -473,3 +473,57 @@ TamgaErrorCode tamga_key_set_select(const TamgaSigningKeySet *set, const char *k
                            "key set that has not caught up with a rotation, not a forged file",
                            (int)TAMGA_KEY_ID_DIAGNOSTIC_CAP, key_id, tamga_key_set_count(set));
 }
+
+bool tamga_key_set_find_verifier(const TamgaSigningKeySet *set, const unsigned char *message,
+                                 size_t message_len, const unsigned char *signature,
+                                 size_t signature_len, unsigned char *out_public_key) {
+    size_t i;
+
+    if (set == NULL || message == NULL || signature == NULL ||
+        signature_len != TAMGA_ED25519_SIG_LEN) {
+        return false;
+    }
+    for (i = 0u; i < set->count; i++) {
+        /* ⚠️ Over enc's base64 STRING bytes -- the caller passes them
+         * undecoded, and that is the whole point of running here first. */
+        if (tamga_ed25519_verify(set->entries[i].public_key, message, message_len, signature)) {
+            if (out_public_key != NULL) {
+                memcpy(out_public_key, set->entries[i].public_key, TAMGA_ED25519_PUBKEY_LEN);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+TamgaErrorCode tamga_key_set_label_failure(const TamgaSigningKeySet *set,
+                                           TamgaErrorCode probe_status, const TamgaJson *payload) {
+    TamgaErrorCode selected;
+
+    if (probe_status == TAMGA_ERR_OUT_OF_MEMORY || probe_status == TAMGA_ERR_NULL_ARGUMENT) {
+        /* Not a verdict either way, and the slot already carries the
+         * message: an allocation failure must never be read as a forgery,
+         * and a missing licence key or fingerprint is the caller's to fix. */
+        return probe_status;
+    }
+    if (probe_status != TAMGA_OK) {
+        return tamga_error_set(TAMGA_ERR_SIGNATURE_INVALID,
+                               "signature did not verify under any held key, and the payload "
+                               "could not be read to name the key it claims");
+    }
+    selected = tamga_key_set_select(
+        set, tamga_claims_key_id(tamga_json_object_get(payload, "meta")), NULL);
+    if (selected == TAMGA_OK) {
+        return tamga_error_set(TAMGA_ERR_SIGNATURE_INVALID,
+                               "signature did not verify under any held key, and the kid the "
+                               "file names IS held: a forged or altered file, not a stale set");
+    }
+    if (selected == TAMGA_ERR_INVALID_JSON) {
+        return tamga_error_set(TAMGA_ERR_SIGNATURE_INVALID,
+                               "signature did not verify under any held key, and the payload "
+                               "names no kid to label the failure by");
+    }
+    /* TAMGA_ERR_UNKNOWN_SIGNING_KEY or TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED,
+     * with tamga_key_set_select()'s own message already in the slot. */
+    return selected;
+}
