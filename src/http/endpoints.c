@@ -746,74 +746,56 @@ TamgaErrorCode tamga_client_update_machine(TamgaClient *client, const char *mach
     return status;
 }
 
-TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *license_id,
-                                             const char *fingerprint, const char *options_json,
-                                             const char *scope_json, bool auto_delete_on_overage,
-                                             TamgaResponse **out_response) {
-    TamgaResponse *created = NULL;
+/*
+ * What happens when the create itself fails. Shared by the plain and the
+ * idempotent activation so both hand back the same thing on the same path.
+ *
+ * Creation DOES enforce the licence's limits, and under a strict overage
+ * strategy it is where an over-limit activation is rejected: 422 with
+ * MACHINE_LIMIT_EXCEEDED, CORE_LIMIT_EXCEEDED, MEMORY_LIMIT_EXCEEDED or
+ * DISK_LIMIT_EXCEEDED. There is no machine row then, so nothing to validate
+ * and -- critically -- nothing to delete. On that path ALONE the creation
+ * response is handed back, so the caller can feed the code to
+ * tamga_validation_code_from_error(). Every other failure keeps the 1.3.0
+ * contract exactly: `created` is freed here and `*out_response` stays NULL.
+ * Widening that would leak one TamgaResponse per failed activation in
+ * caller code that did not change, on a patch upgrade. Consumes `created`.
+ */
+static TamgaErrorCode tamga_activate_create_failed(TamgaErrorCode status, TamgaResponse *created,
+                                                   TamgaResponse **out_response) {
+    bool is_create_time_limit =
+        (created != NULL) && (tamga_validation_code_from_error(status) != TAMGA_VALIDATION_UNKNOWN);
+
+    if (out_response != NULL && is_create_time_limit) {
+        *out_response = created;
+    } else {
+        tamga_response_free(created);
+    }
+    return (status != TAMGA_OK)
+               ? status
+               : tamga_error_set(TAMGA_ERR_UNKNOWN,
+                                 "the machine was created but the server returned no resource");
+}
+
+/*
+ * Everything after a successful create: the validation, and the rollback
+ * DELETE when the verdict is an overage and the caller asked for it. Only a
+ * row THIS call created ever reaches here, which is what keeps the rollback
+ * away from an adopted machine. Consumes `created`.
+ */
+static TamgaErrorCode tamga_activate_after_create(TamgaClient *client, const char *license_id,
+                                                  const char *scope_json,
+                                                  bool auto_delete_on_overage,
+                                                  TamgaResponse *created,
+                                                  TamgaResponse **out_response) {
     TamgaResponse *validated = NULL;
     TamgaErrorCode status;
     const char *machine_id = NULL;
 
-    tamga_error_clear();
-    if (out_response != NULL) {
-        *out_response = NULL;
-    }
-
-    status = tamga_client_create_machine(client, license_id, fingerprint, options_json, &created);
-    if (status != TAMGA_OK || created == NULL) {
-        /*
-         * Creation DOES enforce the licence's limits, and under a strict
-         * overage strategy it is where an over-limit activation is rejected:
-         * 422 with MACHINE_LIMIT_EXCEEDED, CORE_LIMIT_EXCEEDED,
-         * MEMORY_LIMIT_EXCEEDED or DISK_LIMIT_EXCEEDED, now mapped to their
-         * own error codes. There is no machine row in that case, so there is
-         * nothing to validate and -- critically -- nothing to delete: issuing
-         * the rollback DELETE here would address a machine that was never
-         * created.
-         *
-         * On that path ALONE the creation response is handed back, so the
-         * caller can read the server's own code and status off it and feed
-         * the returned code to tamga_validation_code_from_error(). Every
-         * other creation failure keeps the pre-1.3.1 behaviour exactly:
-         * `created` is freed here and `*out_response` stays NULL.
-         *
-         * ⚠️ That is deliberately narrower than the validate-failure path
-         * below, which hands its response back on every outcome. The
-         * asymmetry is known and is not an oversight to tidy away. Widening
-         * this branch would start handing a response to callers that have
-         * read `*out_response == NULL` as "activation failed, nothing to
-         * free" since 1.3.0 -- leaking one TamgaResponse per failed
-         * activation in code that did not change, on a patch upgrade. The
-         * limit codes are new in 1.3.1, so no caller can hold an expectation
-         * about them; widening the rest is a contract change and belongs in a
-         * release that announces one.
-         *
-         * A successful send always yields a response, but the machine id is
-         * read out of it below, and a null there would be a crash rather than
-         * an error -- so the invariant is checked, not assumed.
-         */
-        bool is_create_time_limit =
-            (created != NULL) &&
-            (tamga_validation_code_from_error(status) != TAMGA_VALIDATION_UNKNOWN);
-
-        if (out_response != NULL && is_create_time_limit) {
-            *out_response = created;
-        } else {
-            tamga_response_free(created);
-        }
-        return (status != TAMGA_OK)
-                   ? status
-                   : tamga_error_set(TAMGA_ERR_UNKNOWN,
-                                     "the machine was created but the server returned no "
-                                     "resource");
-    }
-
     /*
-     * Under ALLOW_ACCESS or ALLOW_1_25X_OVERAGE the creation above succeeded
+     * Under ALLOW_ACCESS or ALLOW_1_25X_OVERAGE the creation succeeded
      * despite the licence being over its limit, and this is where that
-     * surfaces. Composing create with validate rather than leaving the pair
-     * to the caller is what makes both strategies produce a usable answer.
+     * surfaces.
      */
     status = tamga_client_validate_by_id(client, license_id, scope_json, false, NULL, &validated);
 
@@ -827,17 +809,13 @@ TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *li
             machine_id = tamga_json_as_string(tamga_json_object_get(data, "id"), NULL);
         }
         if (machine_id != NULL) {
-            /*
-             * A failed deletion is deliberately not surfaced: the validation
-             * result is what the caller asked for, and replacing it with a
-             * cleanup error would hide the actual answer. A machine left
-             * behind is still visible to normal machine management.
-             */
+            /* A failed deletion is deliberately not surfaced: the validation
+             * result is what the caller asked for. */
             (void)tamga_client_delete_machine(client, machine_id, &deleted);
             tamga_response_free(deleted);
         }
-        /* The delete cleared the thread's error slot on its way through; the
-         * validation succeeded, so an empty slot is the correct state. */
+        /* The delete cleared the thread's error slot; the validation
+         * succeeded, so an empty slot is the correct state. */
         tamga_error_clear();
     }
 
@@ -848,6 +826,26 @@ TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *li
         tamga_response_free(validated);
     }
     return status;
+}
+
+TamgaErrorCode tamga_client_activate_machine(TamgaClient *client, const char *license_id,
+                                             const char *fingerprint, const char *options_json,
+                                             const char *scope_json, bool auto_delete_on_overage,
+                                             TamgaResponse **out_response) {
+    TamgaResponse *created = NULL;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (out_response != NULL) {
+        *out_response = NULL;
+    }
+
+    status = tamga_client_create_machine(client, license_id, fingerprint, options_json, &created);
+    if (status != TAMGA_OK || created == NULL) {
+        return tamga_activate_create_failed(status, created, out_response);
+    }
+    return tamga_activate_after_create(client, license_id, scope_json, auto_delete_on_overage,
+                                       created, out_response);
 }
 
 /* --- the machine collection, and the way out of FINGERPRINT_TAKEN --------
@@ -1036,9 +1034,46 @@ TamgaErrorCode tamga_client_find_machine_by_fingerprint(TamgaClient *client, con
     return TAMGA_OK;
 }
 
+/*
+ * The machine a `409 FINGERPRINT_TAKEN` names, or NULL.
+ *
+ * Wire shape (API patch): `errors[0].meta.machineId`, present ONLY when the
+ * machine holding the fingerprint is on the requested licence. A conflict
+ * raised against another licence's machine under UNIQUE_PER_POLICY or
+ * UNIQUE_PER_ACCOUNT carries no `meta`, and a pre-patch server never sends
+ * it; either absence means the scoped lookup decides, as it always did.
+ * Returns an owned copy. A failed copy is reported through `*out_status` so
+ * it is never read as "not named".
+ */
+static char *tamga_conflict_machine_id(const TamgaResponse *created, TamgaErrorCode *out_status) {
+    const TamgaJson *errors;
+    const TamgaJson *first;
+    const TamgaJson *meta;
+    const char *machine_id;
+    char *copy;
+
+    *out_status = TAMGA_OK;
+    if (created == NULL || created->json == NULL) {
+        return NULL;
+    }
+    errors = tamga_json_object_get(created->json, "errors");
+    first = tamga_json_array_at(errors, 0u);
+    meta = tamga_json_object_get(first, "meta");
+    machine_id = tamga_json_as_string(tamga_json_object_get(meta, "machineId"), NULL);
+    if (machine_id == NULL) {
+        return NULL;
+    }
+    copy = tamga_strdup(machine_id);
+    if (copy == NULL) {
+        *out_status = TAMGA_ERR_OUT_OF_MEMORY;
+    }
+    return copy;
+}
+
 TamgaErrorCode tamga_client_activate_machine_idempotent(
     TamgaClient *client, const char *license_id, const char *fingerprint, const char *options_json,
     const char *scope_json, bool auto_delete_on_overage, TamgaResponse **out_response) {
+    TamgaResponse *created = NULL;
     char *existing_id = NULL;
     TamgaErrorCode status;
     TamgaErrorCode lookup;
@@ -1048,11 +1083,15 @@ TamgaErrorCode tamga_client_activate_machine_idempotent(
         *out_response = NULL;
     }
 
-    status = tamga_client_activate_machine(client, license_id, fingerprint, options_json,
-                                           scope_json, auto_delete_on_overage, out_response);
-    if (status != TAMGA_ERR_FINGERPRINT_TAKEN) {
-        return status;
+    status = tamga_client_create_machine(client, license_id, fingerprint, options_json, &created);
+    if (status == TAMGA_OK && created != NULL) {
+        return tamga_activate_after_create(client, license_id, scope_json, auto_delete_on_overage,
+                                           created, out_response);
     }
+    if (status != TAMGA_ERR_FINGERPRINT_TAKEN) {
+        return tamga_activate_create_failed(status, created, out_response);
+    }
+
     /*
      * The creation was refused because this fingerprint is already activated.
      * The server's own comment on that branch (tamga-api
@@ -1061,67 +1100,83 @@ TamgaErrorCode tamga_client_activate_machine_idempotent(
      * precisely so a re-activation is not reported as "buy more seats". This
      * is the carrying on.
      *
-     * `tamga_client_activate_machine` has already freed the creation response
-     * and left *out_response NULL on this path, so there is nothing to
-     * reclaim before the lookup.
+     * A post-patch server names the machine holding the fingerprint right in
+     * this response, at `errors[0].meta.machineId`, and only when that
+     * machine is on the requested licence -- the one fact the scoped lookup
+     * below exists to establish. When it is there the lookup is skipped
+     * entirely: this is that check.
      */
-    /*
-     * The lookup is scoped to the licence being activated, using the server's
-     * own `filter[license]`, and that scope is the correctness argument for
-     * this whole function. Widening it to the account would be a seat-sharing
-     * bug, not a better diagnostic.
-     *
-     * The conflict is raised under the policy's `machine_uniqueness_strategy`,
-     * and all three of its scopes are SUPERSETS of "a machine on this licence
-     * with this fingerprint" -- every one of the EXISTS checks in
-     * tamga-api `machines/service.rs` includes the caller's own licence rows:
-     * UNIQUE_PER_LICENSE matches on `license_id = $2` directly,
-     * UNIQUE_PER_POLICY joins licences on the policy this licence already
-     * has, and UNIQUE_PER_ACCOUNT covers every machine in the account.
-     *
-     * So a genuine re-activation raises the conflict under all three, and a
-     * licence-scoped lookup finds it under all three. What an account-wide
-     * lookup would add is exactly the cross-licence case -- and that is the
-     * case the server refuses on purpose: its comment says the wider scopes
-     * exist to stop a customer registering one fingerprint against N licences
-     * and sharing seats. Returning that machine and reporting success would
-     * leave the caller heartbeating and checking out a machine its licence
-     * does not own, with its own machines_count still zero, and no way to
-     * notice because the resource carries no licence id.
-     *
-     * The scoped lookup therefore hits in exactly the cases where carrying on
-     * is legitimate and misses in exactly the cases where it is not. A caller
-     * that wants to know WHICH licence holds the fingerprint can ask
-     * account-wide with tamga_client_list_machines(client, NULL, fingerprint,
-     * ...); that is a diagnostic, and it is deliberately a separate call.
-     *
-     * The machine resource carries no licence id and no relationships, so
-     * asking the server to filter is also the only way to establish this at
-     * all.
-     */
-    lookup =
-        tamga_client_find_machine_by_fingerprint(client, license_id, fingerprint, &existing_id);
-    if (lookup == TAMGA_ERR_OUT_OF_MEMORY) {
-        return lookup;
-    }
+    existing_id = tamga_conflict_machine_id(created, &lookup);
+    tamga_response_free(created);
     if (lookup != TAMGA_OK) {
-        /* The lookup itself failed -- most often 403, because the credential
-         * carries no `machine.read`. The activation genuinely did not happen,
-         * so the conflict is still the answer, but the reason it could not be
-         * resolved is named rather than folded into the branch below. */
-        tamga_string_free(existing_id);
-        return tamga_error_set(TAMGA_ERR_FINGERPRINT_TAKEN,
-                               "the fingerprint is already activated, and the existing machine "
-                               "could not be looked up (%s)",
-                               tamga_error_name(lookup));
+        return tamga_error_set(lookup, "could not read the conflict response");
     }
+
     if (existing_id == NULL) {
-        /* This licence really has no machine with that fingerprint, so the
-         * conflict belongs to another licence under a wider uniqueness scope.
-         * It stands, unchanged. */
-        return tamga_error_set(TAMGA_ERR_FINGERPRINT_TAKEN,
-                               "the fingerprint is already activated on a different licence "
-                               "under the policy's uniqueness scope");
+        /*
+         * The API patch names the conflicting machine in the 409 itself only
+         * when it is on the requested licence, so its absence here means
+         * either a pre-patch server or a conflict against another licence's
+         * machine -- the scoped lookup is what tells those apart.
+         *
+         * The lookup is scoped to the licence being activated, using the
+         * server's own `filter[license]`, and that scope is the correctness
+         * argument for this whole function. Widening it to the account would
+         * be a seat-sharing bug, not a better diagnostic.
+         *
+         * The conflict is raised under the policy's `machine_uniqueness_strategy`,
+         * and all three of its scopes are SUPERSETS of "a machine on this licence
+         * with this fingerprint" -- every one of the EXISTS checks in
+         * tamga-api `machines/service.rs` includes the caller's own licence rows:
+         * UNIQUE_PER_LICENSE matches on `license_id = $2` directly,
+         * UNIQUE_PER_POLICY joins licences on the policy this licence already
+         * has, and UNIQUE_PER_ACCOUNT covers every machine in the account.
+         *
+         * So a genuine re-activation raises the conflict under all three, and a
+         * licence-scoped lookup finds it under all three. What an account-wide
+         * lookup would add is exactly the cross-licence case -- and that is the
+         * case the server refuses on purpose: its comment says the wider scopes
+         * exist to stop a customer registering one fingerprint against N licences
+         * and sharing seats. Returning that machine and reporting success would
+         * leave the caller heartbeating and checking out a machine its licence
+         * does not own, with its own machines_count still zero, and no way to
+         * notice because the resource carries no licence id.
+         *
+         * The scoped lookup therefore hits in exactly the cases where carrying on
+         * is legitimate and misses in exactly the cases where it is not. A caller
+         * that wants to know WHICH licence holds the fingerprint can ask
+         * account-wide with tamga_client_list_machines(client, NULL, fingerprint,
+         * ...); that is a diagnostic, and it is deliberately a separate call.
+         *
+         * The machine resource carries no licence id and no relationships, so
+         * asking the server to filter is also the only way to establish this at
+         * all.
+         */
+        lookup =
+            tamga_client_find_machine_by_fingerprint(client, license_id, fingerprint, &existing_id);
+        if (lookup == TAMGA_ERR_OUT_OF_MEMORY) {
+            return lookup;
+        }
+        if (lookup != TAMGA_OK) {
+            /* The lookup itself failed -- most often 403, because the
+             * credential carries no `machine.read`. The activation genuinely
+             * did not happen, so the conflict is still the answer, but the
+             * reason it could not be resolved is named rather than folded
+             * into the branch below. */
+            tamga_string_free(existing_id);
+            return tamga_error_set(TAMGA_ERR_FINGERPRINT_TAKEN,
+                                   "the fingerprint is already activated, and the existing "
+                                   "machine could not be looked up (%s)",
+                                   tamga_error_name(lookup));
+        }
+        if (existing_id == NULL) {
+            /* This licence really has no machine with that fingerprint, so
+             * the conflict belongs to another licence under a wider
+             * uniqueness scope. It stands, unchanged. */
+            return tamga_error_set(TAMGA_ERR_FINGERPRINT_TAKEN,
+                                   "the fingerprint is already activated on a different licence "
+                                   "under the policy's uniqueness scope");
+        }
     }
 
     /*
