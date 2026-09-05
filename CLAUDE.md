@@ -209,13 +209,12 @@ wrong selection fails closed — but a fallback would swallow the very signal
 does not have. `a_fetched_key_set_indexes_by_the_served_id_not_the_computed_one`
 pins the absence of the second path.
 
-⚠️ Choosing a key by `kid` inverts this format's usual order: the `kid` lives
-inside `enc`, so `enc` is decoded (and decrypted) **before** the signature is
-checked. That is sound only because the `kid` can select from keys the caller
-already trusts and can never introduce one, and because there is deliberately
-no "try every key" fallback — which would accept the same files while
-destroying the distinction the whole feature exists to draw. The single-key
-entry points keep the old order and are unchanged.
+Every held key is tried against the signature before a byte of `enc` is
+decoded; the `kid` is read only when none verifies, to label the failure (held
+→ forgery, unknown → stale set, `e3b0…` → not published). The single-key and
+key-set paths share one order now, and a `TAMGA_ERR_DECRYPTION_FAILED` after a
+verified signature can only mean the wrong licence key or fingerprint. Do not
+reinstate kid-selects-the-key.
 
 ### The two key derivations are not interchangeable
 
