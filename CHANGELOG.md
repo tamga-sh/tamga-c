@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.4](https://github.com/tamga-sh/tamga-c/compare/v1.3.3...v1.3.4) (2026-09-05)
+
+
+### Bug Fixes
+
+* audit D16 key-set ordering and API-patch fallout (1.3.4) ([4e865f6](https://github.com/tamga-sh/tamga-c/commit/4e865f6445cd30c76507c8e8890b402a97847c24))
+* **checkout:** verify against every held key before decoding a byte of enc ([bf2a05f](https://github.com/tamga-sh/tamga-c/commit/bf2a05fc977ec99887693d7a88b624e274af4ad5))
+* **http:** adopt the machine a FINGERPRINT_TAKEN conflict names without the scoped lookup ([7ed4923](https://github.com/tamga-sh/tamga-c/commit/7ed49234ecdcb2e2c2e23520adcb5b31761064ad))
+* map SIGNING_KEY_MISSING and SECRET_KEY_MISSING to appended error codes 41 and 42 ([cd3803d](https://github.com/tamga-sh/tamga-c/commit/cd3803dd674f814b110d1abb46138b4229929e9e))
+
 ## [1.3.3](https://github.com/tamga-sh/tamga-c/compare/v1.3.2...v1.3.3) (2026-08-21)
 
 
