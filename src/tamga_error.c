@@ -143,6 +143,10 @@ const char *tamga_error_name(TamgaErrorCode code) {
         return "TAMGA_ERR_KEY_ID_NOT_APPLICABLE";
     case TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT:
         return "TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT";
+    case TAMGA_ERR_SIGNING_KEY_MISSING:
+        return "TAMGA_ERR_SIGNING_KEY_MISSING";
+    case TAMGA_ERR_SECRET_KEY_MISSING:
+        return "TAMGA_ERR_SECRET_KEY_MISSING";
     default:
         return "TAMGA_ERR_UNKNOWN";
     }

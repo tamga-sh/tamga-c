@@ -48,6 +48,10 @@ TT_TEST(error_names_cover_every_declared_code) {
     TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_LENGTH_INVALID), "TAMGA_ERR_LENGTH_INVALID");
     TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_EXPIRED), "TAMGA_ERR_EXPIRED");
     TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_OUT_OF_MEMORY), "TAMGA_ERR_OUT_OF_MEMORY");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_SIGNING_KEY_MISSING),
+                     "TAMGA_ERR_SIGNING_KEY_MISSING");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_SECRET_KEY_MISSING),
+                     "TAMGA_ERR_SECRET_KEY_MISSING");
     TT_ASSERT_EQ_STR(tamga_error_name((TamgaErrorCode)9999), "TAMGA_ERR_UNKNOWN");
 }
 

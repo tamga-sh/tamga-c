@@ -59,6 +59,12 @@ _Static_assert(TAMGA_ERR_KEY_ID_NOT_APPLICABLE == 39, "appended ABI value change
  * the block are the same assertion; a second one goes after it, never in front.
  */
 _Static_assert(TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT == 40, "appended ABI value changed");
+/*
+ * The server-side signing-material block, appended in 1.3.4. Both ends
+ * pinned, for the same reason every block above pins its ends.
+ */
+_Static_assert(TAMGA_ERR_SIGNING_KEY_MISSING == 41, "appended ABI value changed");
+_Static_assert(TAMGA_ERR_SECRET_KEY_MISSING == 42, "appended ABI value changed");
 
 /* --- the fingerprint shape ---------------------------------------------- */
 /*

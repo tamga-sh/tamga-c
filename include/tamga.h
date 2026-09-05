@@ -356,7 +356,35 @@ typedef enum TamgaErrorCode {
      * tamga_last_error_message() names the offending component's index, and
      * its label where the label itself is not the problem.
      */
-    TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT = 40
+    TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT = 40,
+
+    /* --- signing material the server cannot find, added in 1.3.4 ---------
+     *
+     * Appended after the fingerprint block, never interleaved with it. Both
+     * are `422`s the server started sending in its own patch for conditions
+     * that were a `500` before; a caller built against an older header sees
+     * TAMGA_ERR_API with the code string on tamga_response_error_code(),
+     * which is the correct handling.
+     */
+
+    /**
+     * `422 SIGNING_KEY_MISSING`: the account has no Ed25519 signing key, so
+     * the server cannot sign what was asked of it. Reachable from
+     * tamga_client_check_out_license(), tamga_client_check_out_machine()
+     * (and their `_json` forms) and tamga_client_generate_offline_proof().
+     * Not retryable: the key has to be provisioned. A post-patch server
+     * creates one with every account and backfills existing accounts at
+     * startup, so seeing this is a repair signal, not a routine outcome.
+     */
+    TAMGA_ERR_SIGNING_KEY_MISSING = 41,
+    /**
+     * `422 SECRET_KEY_MISSING`: the account has no secret key, so the server
+     * cannot mint a token. No call in this SDK mints one, so this is
+     * reachable only through a route a caller drives through its own
+     * transport; it is mapped so the code is not TAMGA_ERR_API there. Not
+     * retryable.
+     */
+    TAMGA_ERR_SECRET_KEY_MISSING = 42
 } TamgaErrorCode;
 
 /* ======================================================================
@@ -754,17 +782,19 @@ TAMGA_API enum TamgaErrorCode tamga_license_file_verify(const char *pem, uintptr
  *   - the `kid` is in the set but the signature fails ->
  *     `TAMGA_ERR_SIGNATURE_INVALID`. Refuse the file.
  *
- * ⚠️ One ordering difference from tamga_license_file_verify() is worth knowing
- * before choosing between them. Selecting a key needs the `kid`, and the `kid`
- * lives inside `enc` -- so `enc` is decoded, and for an encrypted file
- * decrypted under the licence key, BEFORE the signature is checked. A
- * malformed or undecryptable file therefore reports that rather than a
- * signature failure, and this entry point runs the JSON parser over bytes
- * whose signature has not yet been established. Nothing from those bytes is
- * trusted: the single value taken from them before verification is the `kid`,
- * and it can only ever SELECT from keys the caller supplied -- it can never
- * introduce one, and there is deliberately no "try every key" fallback, which
- * would accept the same files while destroying the distinction above.
+ * The order is the same as tamga_license_file_verify()'s: every key the set
+ * holds is tried against the signature over `enc`'s base64 STRING before a
+ * byte of `enc` is decoded, so nothing attacker-chosen reaches the decoder,
+ * the cipher or the JSON parser on the success path. When no key verifies,
+ * `enc` is decoded -- and, for an encrypted file, decrypted under the licence
+ * key -- solely to read `meta.kid` and label the failure: held ->
+ * `TAMGA_ERR_SIGNATURE_INVALID`, `TAMGA_UNPUBLISHED_KEY_ID` ->
+ * `TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED`, otherwise
+ * `TAMGA_ERR_UNKNOWN_SIGNING_KEY`; a payload that cannot be read at all leaves
+ * `TAMGA_ERR_SIGNATURE_INVALID` standing, and a missing `license_key` (or
+ * `fingerprint`) is still `TAMGA_ERR_NULL_ARGUMENT`. Once a signature has
+ * verified, `TAMGA_ERR_DECRYPTION_FAILED` can only mean the wrong licence key
+ * (or fingerprint).
  *
  * `keys` is borrowed for the duration of the call and may be shared across
  * threads as long as nothing mutates it concurrently. Everything else --
@@ -867,11 +897,19 @@ tamga_machine_file_verify(const char *pem, uintptr_t pem_len, uint32_t scheme,
  * refused the same way on both paths, rather than being reported as a `kid`
  * problem.
  *
- * The same key-selection outcomes and the same pre-verification decode
- * ordering apply as in tamga_license_file_verify_with_key_set(); see there.
- * `license_key` and `fingerprint` are needed only for an encrypted file, and
- * on this path they are needed BEFORE the signature is checked rather than
- * after.
+ * The order is the same as tamga_license_file_verify()'s: every key the set
+ * holds is tried against the signature over `enc`'s base64 STRING before a
+ * byte of `enc` is decoded, so nothing attacker-chosen reaches the decoder,
+ * the cipher or the JSON parser on the success path. When no key verifies,
+ * `enc` is decoded -- and, for an encrypted file, decrypted under the licence
+ * key -- solely to read `meta.kid` and label the failure: held ->
+ * `TAMGA_ERR_SIGNATURE_INVALID`, `TAMGA_UNPUBLISHED_KEY_ID` ->
+ * `TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED`, otherwise
+ * `TAMGA_ERR_UNKNOWN_SIGNING_KEY`; a payload that cannot be read at all leaves
+ * `TAMGA_ERR_SIGNATURE_INVALID` standing, and a missing `license_key` (or
+ * `fingerprint`) is still `TAMGA_ERR_NULL_ARGUMENT`. Once a signature has
+ * verified, `TAMGA_ERR_DECRYPTION_FAILED` can only mean the wrong licence key
+ * (or fingerprint).
  */
 TAMGA_API enum TamgaErrorCode tamga_machine_file_verify_with_key_set(
     const char *pem, uintptr_t pem_len, uint32_t scheme, const struct TamgaSigningKeySet *keys,
@@ -1405,10 +1443,13 @@ TAMGA_API const char *tamga_response_validation_detail(const TamgaResponse *resp
 /**
  * The `meta.code` a validation endpoint returns.
  *
- * All 24 server-declared values are listed, but only 16 are actually
- * reachable today -- the reachable ones are marked below. The rest are
- * declared server-side for forward compatibility and never emitted; do not
- * write logic that waits for one.
+ * All 24 server-declared values are listed. Nineteen are reachable: the
+ * sixteen marked below plus `TOO_MANY_USERS` (every validate endpoint) and
+ * `HEARTBEAT_NOT_STARTED`/`HEARTBEAT_DEAD` (a `scope.fingerprint` match under
+ * a `require_heartbeat` policy). The other five -- `NOT_FOUND`, `BANNED`,
+ * `COMPONENTS_SCOPE_MISMATCH`, `CHECKSUM_SCOPE_MISMATCH`,
+ * `VERSION_SCOPE_MISMATCH` -- are declared server-side and never emitted; do
+ * not write logic that waits for one.
  *
  * `TAMGA_VALIDATION_UNKNOWN` covers any value a future server adds. Callers
  * that need the exact string should use tamga_response_validation_code(),
@@ -1419,7 +1460,7 @@ typedef enum TamgaValidationCode {
     TAMGA_VALIDATION_VALID = 0,
     /** Declared, never emitted -- the handler returns 404 instead. */
     TAMGA_VALIDATION_NOT_FOUND = 1,
-    /** Declared, not wired into any validation path. */
+    /** Declared, never emitted -- there is no banning feature. */
     TAMGA_VALIDATION_BANNED = 2,
     /** Reachable. */
     TAMGA_VALIDATION_SUSPENDED = 3,
@@ -1440,11 +1481,13 @@ typedef enum TamgaValidationCode {
     TAMGA_VALIDATION_TOO_MUCH_DISK = 10,
     /** Reachable. */
     TAMGA_VALIDATION_TOO_MANY_PROCESSES = 11,
-    /** Declared, not wired into any validation path. */
+    /** Reachable. users over policy.max_users, on every validate endpoint. */
     TAMGA_VALIDATION_TOO_MANY_USERS = 12,
-    /** Declared, not wired into any validation path. */
+    /** Reachable. scope.fingerprint matched a machine whose heartbeat is
+     *  dead, under a require_heartbeat policy. */
     TAMGA_VALIDATION_HEARTBEAT_DEAD = 13,
-    /** Declared, not wired into any validation path. */
+    /** Reachable. scope.fingerprint matched a machine that has never pinged,
+     *  under a require_heartbeat policy. */
     TAMGA_VALIDATION_HEARTBEAT_NOT_STARTED = 14,
     /** Reachable. */
     TAMGA_VALIDATION_PRODUCT_SCOPE_MISMATCH = 15,
@@ -1846,6 +1889,12 @@ TAMGA_API TamgaErrorCode tamga_client_find_machine_by_fingerprint(TamgaClient *c
  * To find out WHICH licence holds a fingerprint, ask account-wide with
  * `tamga_client_list_machines(client, NULL, fingerprint, ...)` — a diagnostic,
  * and deliberately a separate call.
+ *
+ * A post-patch server names the machine holding the fingerprint in the
+ * conflict itself (`errors[0].meta.machineId`), and only when that machine is
+ * on the requested licence; when present the lookup is skipped and the
+ * licence is validated directly. A caller can read the same member from
+ * tamga_response_json() on a tamga_client_create_machine() failure.
  *
  * Needs `machine.read` on top of what tamga_client_activate_machine() needs.
  */

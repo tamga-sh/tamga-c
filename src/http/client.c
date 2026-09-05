@@ -960,6 +960,17 @@ static TamgaErrorCode tamga_map_api_error(TamgaResponse *response) {
         if (strcmp(code, "LICENSE_NOT_ALLOWED") == 0) {
             return TAMGA_ERR_LICENSE_NOT_ALLOWED;
         }
+        /*
+         * Two 422s the server's own patch introduced for conditions that used
+         * to be a 500: the account is missing the key material the request
+         * needs signed or minted. Neither is retryable.
+         */
+        if (strcmp(code, "SIGNING_KEY_MISSING") == 0) {
+            return TAMGA_ERR_SIGNING_KEY_MISSING;
+        }
+        if (strcmp(code, "SECRET_KEY_MISSING") == 0) {
+            return TAMGA_ERR_SECRET_KEY_MISSING;
+        }
     }
 
     /* Falling back on the status keeps 401 and 403 distinct: a missing
