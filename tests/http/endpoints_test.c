@@ -1514,10 +1514,14 @@ TT_TEST(a_licence_key_is_refused_the_signing_key_listing) {
 }
 
 /*
- * An empty collection is the ORDINARY state of a healthy account:
- * `account_signing_keys` is written only by the rotation handler, so an
- * account that has never rotated has no rows. Reading that as a fault would
- * make every un-rotated account look broken.
+ * Pins parsing of an empty `{"data":[]}` collection: a mock reply, not a live
+ * server, so this says nothing about what a real server currently sends. That
+ * shape was the routine answer pre-patch, when `account_signing_keys` was
+ * written only by the rotation handler and an account that had never rotated
+ * had no rows; see README.md's note that a post-patch server should not send
+ * an empty collection at all. Whatever the reason a caller receives one -- a
+ * pre-patch server, a stale proxy or cache -- the SDK still has to parse it
+ * without crashing or misreporting.
  */
 TT_TEST(an_account_that_never_rotated_answers_with_an_empty_collection) {
     MockTransport mock;

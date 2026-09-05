@@ -483,6 +483,107 @@ TT_TEST(an_ed25519_machine_file_verifies_through_the_key_its_kid_names) {
     tamga_signing_key_set_free(set);
 }
 
+TT_TEST(an_encrypted_machine_file_is_verified_before_it_is_decrypted) {
+    char pem[FILE_CAP];
+    size_t pem_len;
+    TamgaSigningKeySet *held = NULL;
+    TamgaSigningKeySet *stale = NULL;
+    TamgaJson *resource = NULL;
+    static const char LICENCE_KEY[] = "TAMGA-FIXTURE-LICENSE-KEY-0001";
+
+    /*
+     * The harder variant of the licence-file pair above: dot-separated `enc`,
+     * a fingerprint-derived key, and the machine-file core got the identical
+     * rewrite. Every held key is tried against the signature BEFORE a byte of
+     * `enc` is opened; the kid inside the ciphertext is read only when none
+     * verifies, and only to label the failure. Two consequences a caller can
+     * observe:
+     *
+     *   - a set that does not hold the signer, plus the wrong licence key:
+     *     a SIGNATURE failure. The ciphertext was opened only to read the
+     *     kid, could not be, and a signature failure with nothing to label
+     *     it by stands as what it is;
+     *   - a set that holds the signer, plus the wrong licence key: a
+     *     DECRYPTION failure -- and because `enc` is inside the signature
+     *     that just passed, that can only mean the wrong key, never an
+     *     altered file.
+     */
+    pem_len = load("server-machine-files/ed25519_encrypted_valid.machine", pem, sizeof(pem));
+    TT_ASSERT(pem_len != (size_t)-1);
+
+    TT_ASSERT_EQ_INT(tamga_signing_key_set_new(&held), TAMGA_OK);
+    TT_ASSERT_EQ_INT(tamga_signing_key_set_add_public_key(held, ED25519_KEY_B64), TAMGA_OK);
+    TT_ASSERT_EQ_INT(tamga_signing_key_set_new(&stale), TAMGA_OK);
+    TT_ASSERT(add_served_key(stale, "0f0f0f0f0f0f0f0f", ROTATED_KEY_B64));
+
+    TT_ASSERT_EQ_INT(tamga_machine_file_verify_at_with_key_set(
+                         pem, pem_len, (uint32_t)TAMGA_SCHEME_ED25519_SIGN, stale, "not-the-key",
+                         FINGERPRINT, BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_ERR_SIGNATURE_INVALID);
+    TT_ASSERT_NULL(resource);
+
+    TT_ASSERT_EQ_INT(tamga_machine_file_verify_at_with_key_set(
+                         pem, pem_len, (uint32_t)TAMGA_SCHEME_ED25519_SIGN, held, "not-the-key",
+                         FINGERPRINT, BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_ERR_DECRYPTION_FAILED);
+    TT_ASSERT_NULL(resource);
+
+    TT_ASSERT_EQ_INT(tamga_machine_file_verify_at_with_key_set(
+                         pem, pem_len, (uint32_t)TAMGA_SCHEME_ED25519_SIGN, held, LICENCE_KEY,
+                         FINGERPRINT, BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_OK);
+    TT_ASSERT_NOT_NULL(resource);
+    tamga_json_free(resource);
+    resource = NULL;
+
+    /* A stale set is still named as stale, given the licence key: the probe
+     * reads the kid and reports the set, not a forgery. */
+    TT_ASSERT_EQ_INT(tamga_machine_file_verify_at_with_key_set(
+                         pem, pem_len, (uint32_t)TAMGA_SCHEME_ED25519_SIGN, stale, LICENCE_KEY,
+                         FINGERPRINT, BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_ERR_UNKNOWN_SIGNING_KEY);
+    TT_ASSERT_NULL(resource);
+
+    /* And with no licence key at all the missing argument is reported as
+     * such, on both sets, rather than dressed up as a verdict. */
+    TT_ASSERT_EQ_INT(tamga_machine_file_verify_at_with_key_set(
+                         pem, pem_len, (uint32_t)TAMGA_SCHEME_ED25519_SIGN, held, NULL, FINGERPRINT,
+                         BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_ERR_NULL_ARGUMENT);
+    TT_ASSERT_EQ_INT(tamga_machine_file_verify_at_with_key_set(
+                         pem, pem_len, (uint32_t)TAMGA_SCHEME_ED25519_SIGN, stale, NULL,
+                         FINGERPRINT, BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_ERR_NULL_ARGUMENT);
+    TT_ASSERT_NULL(resource);
+
+    tamga_signing_key_set_free(held);
+    tamga_signing_key_set_free(stale);
+}
+
+TT_TEST(a_held_key_verifies_a_machine_file_whatever_kid_it_names) {
+    char pem[FILE_CAP];
+    size_t pem_len;
+    TamgaSigningKeySet *set = NULL;
+    TamgaJson *resource = NULL;
+
+    /* The signature decides; the kid only labels a failure. The fixture
+     * names ED25519_KID, and the set holds its signer under a different
+     * served id -- which used to be reported as an unknown signing key. */
+    pem_len = load("server-machine-files/ed25519_plain_valid.machine", pem, sizeof(pem));
+    TT_ASSERT(pem_len != (size_t)-1);
+
+    TT_ASSERT_EQ_INT(tamga_signing_key_set_new(&set), TAMGA_OK);
+    TT_ASSERT(add_served_key(set, "0f0f0f0f0f0f0f0f", ED25519_KEY_B64));
+
+    TT_ASSERT_EQ_INT(tamga_machine_file_verify_at_with_key_set(
+                         pem, pem_len, (uint32_t)TAMGA_SCHEME_ED25519_SIGN, set, NULL, FINGERPRINT,
+                         BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_OK);
+    TT_ASSERT_NOT_NULL(resource);
+    tamga_json_free(resource);
+    tamga_signing_key_set_free(set);
+}
+
 TT_TEST(a_machine_file_signed_under_another_scheme_is_refused_by_name) {
     char pem[FILE_CAP];
     size_t pem_len;
@@ -573,6 +674,8 @@ int main(void) {
     TT_RUN(an_encrypted_licence_file_is_verified_before_it_is_decrypted);
     TT_RUN(a_held_key_verifies_a_file_whatever_kid_it_names);
     TT_RUN(an_ed25519_machine_file_verifies_through_the_key_its_kid_names);
+    TT_RUN(an_encrypted_machine_file_is_verified_before_it_is_decrypted);
+    TT_RUN(a_held_key_verifies_a_machine_file_whatever_kid_it_names);
     TT_RUN(a_machine_file_signed_under_another_scheme_is_refused_by_name);
     TT_RUN(a_machine_files_signed_exp_is_still_enforced_through_a_key_set);
     return TT_SUMMARY();
