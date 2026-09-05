@@ -767,20 +767,26 @@ TAMGA_API enum TamgaErrorCode tamga_license_file_verify(const char *pem, uintptr
                                                         struct TamgaLicenseFile **out_handle);
 
 /**
- * As tamga_license_file_verify(), selecting the public key by the file's own
- * signed `kid` claim from a set of keys the caller already trusts.
+ * As tamga_license_file_verify(), but tried against every key in a set the
+ * caller already trusts rather than one embedded key; the file's own signed
+ * `kid` claim is read only afterward, to label a failure none of them
+ * explains.
  *
  * This is what makes a signing-key rotation survivable. Against one embedded
  * key, a file checked out before the rotation reports exactly the error a
- * forgery does; through a key set the two are separate outcomes:
+ * forgery does; through a key set the two are separate outcomes -- but only
+ * once every held key has failed to verify the signature, since the `kid`
+ * never excludes a key from that attempt: a `kid` the set does not hold can
+ * still verify successfully under a different held key, which reports
+ * `TAMGA_OK` regardless of what the `kid` names. When no held key verifies:
  *
  *   - the `kid` is not in the set -> `TAMGA_ERR_UNKNOWN_SIGNING_KEY`. Refetch
  *     the key set or ship an update, then try again.
  *   - the `kid` is `TAMGA_UNPUBLISHED_KEY_ID` ->
  *     `TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED`. Refetching will never help; this
  *     server published no key at all.
- *   - the `kid` is in the set but the signature fails ->
- *     `TAMGA_ERR_SIGNATURE_INVALID`. Refuse the file.
+ *   - the `kid` is in the set -> `TAMGA_ERR_SIGNATURE_INVALID`. A held key
+ *     did not produce this signature either, so refuse the file.
  *
  * The order is the same as tamga_license_file_verify()'s: every key the set
  * holds is tried against the signature over `enc`'s base64 STRING before a
@@ -875,8 +881,10 @@ tamga_machine_file_verify(const char *pem, uintptr_t pem_len, uint32_t scheme,
                           const char *fingerprint, struct TamgaMachineFile **out_handle);
 
 /**
- * As tamga_machine_file_verify(), selecting the public key by the file's own
- * signed `kid` claim. **Ed25519-signed machine files only.**
+ * As tamga_machine_file_verify(), but tried against every key in `keys`
+ * rather than one embedded key; the file's own signed `kid` claim is read
+ * only afterward, to label a failure none of them explains. **Ed25519-signed
+ * machine files only.**
  *
  * The restriction is the server's, not this SDK's, and it is worth stating
  * precisely because the natural assumption is wrong. A machine file's signing
