@@ -260,8 +260,9 @@ TT_TEST(an_account_that_published_no_key_is_told_apart_from_a_stale_set) {
      * set will never produce a match, so it must not be reported as a set that
      * needs refetching.
      *
-     * The signature here is deliberately not a real one: key selection happens
-     * BEFORE verification on this path, which is exactly what this asserts.
+     * The signature here is deliberately not a real one: no held key verifies
+     * it, and the label comes from the kid the probe reads AFTERWARDS -- which
+     * is exactly what this asserts.
      */
     char payload[512];
     char cert[1024];
@@ -337,40 +338,107 @@ TT_TEST(the_public_entry_point_verifies_against_the_wall_clock) {
     tamga_signing_key_set_free(set);
 }
 
-TT_TEST(an_encrypted_licence_file_is_decrypted_before_its_key_is_chosen) {
+TT_TEST(an_encrypted_licence_file_is_verified_before_it_is_decrypted) {
     char pem[FILE_CAP];
     unsigned char raw_key[32];
     char *key_b64;
     size_t pem_len;
-    TamgaSigningKeySet *set = NULL;
+    TamgaSigningKeySet *held = NULL;
+    TamgaSigningKeySet *stale = NULL;
     TamgaJson *resource = NULL;
     static const char LICENCE_KEY[] = "MUP7-2TQK-7FBF-4Q6H-Y7ZR-9C3V";
 
-    /* The kid lives inside the ciphertext, so this path has to decrypt before
-     * it can choose a key at all -- and therefore needs the licence key
-     * BEFORE the signature is checked rather than after. */
+    /*
+     * D16, stated as the order of two checks. Every held key is tried
+     * against the signature BEFORE a byte of `enc` is opened; the kid inside
+     * the ciphertext is read only when none verifies, and only to label the
+     * failure. Two consequences a caller can observe:
+     *
+     *   - a set that does not hold the signer, plus the wrong licence key:
+     *     a SIGNATURE failure. The ciphertext was opened only to read the
+     *     kid, could not be, and a signature failure with nothing to label
+     *     it by stands as what it is;
+     *   - a set that holds the signer, plus the wrong licence key: a
+     *     DECRYPTION failure -- and because `enc` is inside the signature
+     *     that just passed, that can only mean the wrong key, never an
+     *     altered file.
+     */
     pem_len = load("offline/license_encrypted.lic", pem, sizeof(pem));
     TT_ASSERT(pem_len != (size_t)-1);
     TT_ASSERT_EQ_SIZE(tt_read_fixture("offline/ed25519_pubkey.bin", raw_key, 32u), 32u);
     key_b64 = tamga_base64_encode_alloc(raw_key, 32u);
     TT_ASSERT_NOT_NULL(key_b64);
 
-    TT_ASSERT_EQ_INT(tamga_signing_key_set_new(&set), TAMGA_OK);
-    TT_ASSERT(add_served_key(set, LICENCE_FIXTURE_KID, key_b64));
+    TT_ASSERT_EQ_INT(tamga_signing_key_set_new(&held), TAMGA_OK);
+    TT_ASSERT(add_served_key(held, LICENCE_FIXTURE_KID, key_b64));
     tamga_string_free(key_b64);
+    TT_ASSERT_EQ_INT(tamga_signing_key_set_new(&stale), TAMGA_OK);
+    TT_ASSERT(add_served_key(stale, "0f0f0f0f0f0f0f0f", ROTATED_KEY_B64));
 
-    TT_ASSERT_EQ_INT(tamga_license_file_verify_at_with_key_set(pem, pem_len, set, LICENCE_KEY,
+    TT_ASSERT_EQ_INT(tamga_license_file_verify_at_with_key_set(pem, pem_len, stale, "not-the-key",
+                                                               BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_ERR_SIGNATURE_INVALID);
+    TT_ASSERT_NULL(resource);
+
+    TT_ASSERT_EQ_INT(tamga_license_file_verify_at_with_key_set(pem, pem_len, held, "not-the-key",
+                                                               BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_ERR_DECRYPTION_FAILED);
+    TT_ASSERT_NULL(resource);
+
+    TT_ASSERT_EQ_INT(tamga_license_file_verify_at_with_key_set(pem, pem_len, held, LICENCE_KEY,
                                                                BEFORE_ANY_EXPIRY, &resource, NULL),
                      TAMGA_OK);
     TT_ASSERT_NOT_NULL(resource);
     tamga_json_free(resource);
+    resource = NULL;
 
-    /* Without the licence key it cannot get as far as the kid, and says so as
-     * a missing argument rather than as an unknown signing key. */
-    TT_ASSERT_EQ_INT(tamga_license_file_verify_at_with_key_set(pem, pem_len, set, NULL,
+    /* A stale set is still named as stale, given the licence key: the probe
+     * reads the kid and reports the set, not a forgery. */
+    TT_ASSERT_EQ_INT(tamga_license_file_verify_at_with_key_set(pem, pem_len, stale, LICENCE_KEY,
+                                                               BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_ERR_UNKNOWN_SIGNING_KEY);
+    TT_ASSERT_NULL(resource);
+
+    /* And with no licence key at all the missing argument is reported as
+     * such, on both sets, rather than dressed up as a verdict. */
+    TT_ASSERT_EQ_INT(tamga_license_file_verify_at_with_key_set(pem, pem_len, held, NULL,
+                                                               BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_ERR_NULL_ARGUMENT);
+    TT_ASSERT_EQ_INT(tamga_license_file_verify_at_with_key_set(pem, pem_len, stale, NULL,
                                                                BEFORE_ANY_EXPIRY, &resource, NULL),
                      TAMGA_ERR_NULL_ARGUMENT);
     TT_ASSERT_NULL(resource);
+
+    tamga_signing_key_set_free(held);
+    tamga_signing_key_set_free(stale);
+}
+
+TT_TEST(a_held_key_verifies_a_file_whatever_kid_it_names) {
+    char pem[FILE_CAP];
+    unsigned char raw_key[32];
+    char *key_b64;
+    size_t pem_len;
+    TamgaSigningKeySet *set = NULL;
+    TamgaJson *resource = NULL;
+
+    /* The signature decides; the kid only labels a failure. The fixture
+     * names "key-1", and the set holds its signer under a different served
+     * id -- which used to be reported as an unknown signing key. */
+    pem_len = load("offline/license_plain.lic", pem, sizeof(pem));
+    TT_ASSERT(pem_len != (size_t)-1);
+    TT_ASSERT_EQ_SIZE(tt_read_fixture("offline/ed25519_pubkey.bin", raw_key, 32u), 32u);
+    key_b64 = tamga_base64_encode_alloc(raw_key, 32u);
+    TT_ASSERT_NOT_NULL(key_b64);
+
+    TT_ASSERT_EQ_INT(tamga_signing_key_set_new(&set), TAMGA_OK);
+    TT_ASSERT(add_served_key(set, "0f0f0f0f0f0f0f0f", key_b64));
+    tamga_string_free(key_b64);
+
+    TT_ASSERT_EQ_INT(tamga_license_file_verify_at_with_key_set(pem, pem_len, set, NULL,
+                                                               BEFORE_ANY_EXPIRY, &resource, NULL),
+                     TAMGA_OK);
+    TT_ASSERT_NOT_NULL(resource);
+    tamga_json_free(resource);
     tamga_signing_key_set_free(set);
 }
 
@@ -502,7 +570,8 @@ int main(void) {
     TT_RUN(a_tampered_file_whose_key_is_known_is_still_a_forgery);
     TT_RUN(an_account_that_published_no_key_is_told_apart_from_a_stale_set);
     TT_RUN(the_public_entry_point_verifies_against_the_wall_clock);
-    TT_RUN(an_encrypted_licence_file_is_decrypted_before_its_key_is_chosen);
+    TT_RUN(an_encrypted_licence_file_is_verified_before_it_is_decrypted);
+    TT_RUN(a_held_key_verifies_a_file_whatever_kid_it_names);
     TT_RUN(an_ed25519_machine_file_verifies_through_the_key_its_kid_names);
     TT_RUN(a_machine_file_signed_under_another_scheme_is_refused_by_name);
     TT_RUN(a_machine_files_signed_exp_is_still_enforced_through_a_key_set);

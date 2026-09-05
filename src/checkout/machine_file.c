@@ -156,13 +156,12 @@ static bool tamga_machine_check_signature(uint32_t scheme, const unsigned char *
  * stale doc comment still describes -- cannot open a single real file. The
  * ciphertext half already carries the 16-byte GCM tag.
  *
- * ⚠️ Called AFTER the signature has verified on the single-key path, and
- * BEFORE it on the key-set path -- there, the `kid` that names the key lives
- * inside this very payload, so there is no way round it. The bytes are
- * attacker-chosen in that second case, which is why nothing below leaves the
- * strict base64 decoder and the AEAD: an altered ciphertext fails the GCM tag,
- * and the only value read out of the plaintext before verification is the
- * `kid`, which selects from keys the caller already trusts.
+ * ⚠️ Called after the signature has verified on both paths, with one
+ * exception: when no held key verified a key-set file, it is called on the
+ * failing file solely to read the kid that labels the failure. The bytes are
+ * attacker-chosen in that case, which is why nothing below leaves the strict
+ * base64 decoder and the AEAD, and why nothing read out of the plaintext but
+ * the kid is ever used.
  */
 static TamgaErrorCode tamga_machine_open_encrypted(const char *enc, size_t enc_len,
                                                    const char *license_key, const char *fingerprint,
@@ -450,8 +449,10 @@ static TamgaErrorCode tamga_machine_finish(TamgaJson *payload, int64_t now_unix,
 
 /*
  * The shared body of both entry points. Exactly one of `pubkey` and `keys` is
- * non-NULL, and which one decides the ORDER of the two steps below -- see
- * license_file.c's core, which makes the same trade for the same reason.
+ * non-NULL, and on BOTH the signature is checked before a byte of `enc` is
+ * decoded -- see license_file.c's core, which makes the same trade for the
+ * same reason. The key-set path only ever gets here for
+ * TAMGA_SCHEME_ED25519_SIGN (the wrapper below refuses the rest by name).
  */
 static TamgaErrorCode
 tamga_machine_file_verify_core(const char *pem, size_t pem_len, uint32_t scheme,
@@ -468,10 +469,8 @@ tamga_machine_file_verify_core(const char *pem, size_t pem_len, uint32_t scheme,
     size_t plaintext_len = 0u;
     size_t plaintext_capacity = 0u;
     TamgaJson *payload = NULL;
-    unsigned char selected[TAMGA_ED25519_PUBKEY_LEN];
-    const unsigned char *verifier = pubkey;
-    size_t verifier_len = pubkey_len;
     TamgaBase64Failure why;
+    bool verified;
 
     if (pem == NULL || out_resource == NULL || (pubkey == NULL && keys == NULL)) {
         return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "a required argument was null");
@@ -497,44 +496,37 @@ tamga_machine_file_verify_core(const char *pem, size_t pem_len, uint32_t scheme,
         return tamga_error_set(TAMGA_ERR_INVALID_BASE64, "the signature field is not valid base64");
     }
 
-    if (keys != NULL) {
-        status = tamga_machine_decode_payload(&cert, encrypted, license_key, fingerprint,
-                                              &plaintext, &plaintext_len, &plaintext_capacity);
-        if (status == TAMGA_OK) {
-            status = tamga_machine_parse_payload(plaintext, plaintext_len, &payload);
-            /* At the CAPACITY it was allocated with, not the length GCM
-             * reported -- the difference is the tag. */
-            tamga_secure_free(plaintext, plaintext_capacity);
-        }
-        if (status == TAMGA_OK) {
-            status = tamga_key_set_select(
-                keys, tamga_claims_key_id(tamga_json_object_get(payload, "meta")), selected);
-            verifier = selected;
-            verifier_len = sizeof(selected);
-        }
-    }
-
     /* ⚠️ Over enc's base64 STRING bytes, before decoding -- same rule as the
-     * licence file. On the single-key path below nothing has yet parsed bytes
-     * an attacker chose. */
-    if (status == TAMGA_OK && !tamga_machine_check_signature(
-                                  scheme, verifier, verifier_len, (const unsigned char *)cert.enc,
-                                  cert.enc_len, signature, signature_len)) {
-        status =
-            tamga_error_set(TAMGA_ERR_SIGNATURE_INVALID, "machine-file signature did not verify");
+     * licence file, on BOTH paths. */
+    if (keys != NULL) {
+        verified = tamga_key_set_find_verifier(keys, (const unsigned char *)cert.enc, cert.enc_len,
+                                               signature, signature_len, NULL);
+    } else {
+        verified = tamga_machine_check_signature(scheme, pubkey, pubkey_len,
+                                                 (const unsigned char *)cert.enc, cert.enc_len,
+                                                 signature, signature_len);
     }
     tamga_free(signature);
 
-    if (status == TAMGA_OK && payload == NULL) {
-        status = tamga_machine_decode_payload(&cert, encrypted, license_key, fingerprint,
-                                              &plaintext, &plaintext_len, &plaintext_capacity);
-        if (status == TAMGA_OK) {
-            status = tamga_machine_parse_payload(plaintext, plaintext_len, &payload);
-            tamga_secure_free(plaintext, plaintext_capacity);
-        }
+    if (!verified && keys == NULL) {
+        tamga_cert_free(&cert);
+        return tamga_error_set(TAMGA_ERR_SIGNATURE_INVALID,
+                               "machine-file signature did not verify");
+    }
+
+    status = tamga_machine_decode_payload(&cert, encrypted, license_key, fingerprint, &plaintext,
+                                          &plaintext_len, &plaintext_capacity);
+    if (status == TAMGA_OK) {
+        status = tamga_machine_parse_payload(plaintext, plaintext_len, &payload);
+        /* At the CAPACITY it was allocated with, not the length GCM
+         * reported -- the difference is the tag. */
+        tamga_secure_free(plaintext, plaintext_capacity);
     }
     tamga_cert_free(&cert);
 
+    if (!verified) {
+        status = tamga_key_set_label_failure(keys, status, payload);
+    }
     if (status != TAMGA_OK) {
         tamga_json_free(payload);
         return status;

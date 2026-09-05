@@ -14,15 +14,19 @@
  * wrong way round locks a paying customer out and sends support to the wrong
  * place.
  *
- * # Why reading the `kid` before verifying is sound
+ * # Why trying every key is sound, and what the `kid` is for now
  *
- * The `kid` lives INSIDE the signed payload and is read BEFORE the signature
- * is checked, which is only safe under one rule: it SELECTS from keys the
- * caller already trusts, and can never SUPPLY one. A file naming a `kid` the
- * set does not hold is refused; a file naming one it does hold is verified
- * against exactly that key and nothing else. There is deliberately no
- * "try every key" fallback -- trying them all would accept the same set of
- * files while destroying the distinction this module exists to draw.
+ * Every key the set holds is tried against the signature over `enc`'s base64
+ * STRING before a byte of `enc` is decoded, so the only bytes that reach a
+ * decoder, a cipher or the JSON parser on the success path are bytes a
+ * trusted key has already vouched for. The `kid` is read only afterwards, and
+ * only when no key verified, to LABEL the failure: a `kid` the set holds means
+ * a forgery (TAMGA_ERR_SIGNATURE_INVALID); one it does not hold means a set
+ * that has not caught up with a rotation (TAMGA_ERR_UNKNOWN_SIGNING_KEY). The
+ * distinction this module exists for survives because the `kid` still decides
+ * the label; what changed in 1.3.4 is that a file no longer chooses which key
+ * its signature meets. Trying them all is sound because a set can only be
+ * built from keys the caller supplies, never from anything the file carries.
  *
  * # Ed25519 only
  *
@@ -138,6 +142,40 @@ size_t tamga_key_set_count(const TamgaSigningKeySet *set);
 TAMGA_NODISCARD TamgaErrorCode tamga_key_set_select(const TamgaSigningKeySet *set,
                                                     const char *key_id,
                                                     unsigned char *out_public_key);
+
+/**
+ * Tries every key the set holds against `signature` over `message`, the
+ * base64 STRING bytes of `enc`. True on the first that verifies; the key is
+ * copied to `out_public_key` when that is non-NULL. False when none does, or
+ * when `signature_len` is not the 64 bytes Ed25519 requires.
+ *
+ * Runs BEFORE a byte of `enc` is decoded, so on the success path nothing
+ * attacker-chosen reaches a decoder, a cipher or the JSON parser.
+ */
+TAMGA_NODISCARD bool tamga_key_set_find_verifier(const TamgaSigningKeySet *set,
+                                                 const unsigned char *message, size_t message_len,
+                                                 const unsigned char *signature,
+                                                 size_t signature_len,
+                                                 unsigned char *out_public_key);
+
+/**
+ * Labels a signature no held key verified, from the `kid` the still-unverified
+ * `payload` names.
+ *
+ * `probe_status` is what decoding -- and, for an encrypted file, decrypting --
+ * `enc` solely to read the kid returned, and `payload` the parse when that
+ * succeeded (NULL otherwise). TAMGA_ERR_OUT_OF_MEMORY and
+ * TAMGA_ERR_NULL_ARGUMENT (a missing licence key or fingerprint) propagate
+ * untouched: neither is a verdict, and the second is the caller's to fix. Any
+ * other failure to read the payload leaves TAMGA_ERR_SIGNATURE_INVALID
+ * standing. A readable kid maps through tamga_key_set_select(): held ->
+ * TAMGA_ERR_SIGNATURE_INVALID (a forgery), absent -> TAMGA_ERR_SIGNATURE_INVALID
+ * (nothing to label it by), otherwise TAMGA_ERR_UNKNOWN_SIGNING_KEY or
+ * TAMGA_ERR_SIGNING_KEY_NOT_PUBLISHED. Always leaves the error slot set for
+ * the code it returns.
+ */
+TamgaErrorCode tamga_key_set_label_failure(const TamgaSigningKeySet *set,
+                                           TamgaErrorCode probe_status, const TamgaJson *payload);
 
 /**
  * The `kid` a signed payload's `meta` names, borrowed from the tree and valid
