@@ -1665,6 +1665,147 @@ TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const char *lic
     return TAMGA_OK;
 }
 
+/*
+ * `/licenses/{license_id}/entitlements/{entitlement_id}/actions/{action}` --
+ * built the same way tamga_client_get_entitlement() builds its own two-id
+ * path, because tamga_path() only interpolates one.
+ */
+static char *tamga_entitlement_action_path(const char *license_id, const char *entitlement_id,
+                                           const char *action) {
+    TamgaBuf buf;
+    char canonical[TAMGA_UUID_STRING_SIZE];
+    char *path;
+
+    tamga_buf_init(&buf);
+    /* Both ids were already run through tamga_require_uuid() by the caller
+     * with this same parser, so tamga_uuid_normalize() cannot fail here --
+     * checked anyway rather than discarded, for the reasons given at every
+     * other repeat of this comment in this file. */
+    if (!tamga_uuid_normalize(license_id, canonical)) {
+        tamga_buf_free(&buf);
+        return NULL;
+    }
+    tamga_buf_append_str(&buf, "/licenses/");
+    tamga_buf_append_str(&buf, canonical);
+    tamga_buf_append_str(&buf, "/entitlements/");
+    if (!tamga_uuid_normalize(entitlement_id, canonical)) {
+        tamga_buf_free(&buf);
+        return NULL;
+    }
+    tamga_buf_append_str(&buf, canonical);
+    tamga_buf_append_str(&buf, "/actions/");
+    tamga_buf_append_str(&buf, action);
+    path = tamga_buf_detach_string(&buf, NULL);
+    tamga_buf_free(&buf);
+    return path;
+}
+
+/*
+ * Shared by increment and decrement. `field_name` is "increment" or
+ * "decrement"; `amount` 0 omits the field entirely so the server's own
+ * default of 1 applies, the same "0 means let the server default it" reading
+ * tamga_checkout_body() gives `ttl_seconds`. The body is a FLAT
+ * `{"<field_name>": amount}`, not a JSON:API envelope -- these are actions on
+ * an existing resource, the same shape tamga_client_create_component() and
+ * tamga_client_create_process() already use for their own flat bodies.
+ */
+static TamgaErrorCode tamga_entitlement_usage_action(TamgaClient *client, const char *license_id,
+                                                     const char *entitlement_id,
+                                                     const char *action_suffix,
+                                                     const char *field_name, uint32_t amount,
+                                                     TamgaResponse **out_response) {
+    char *path;
+    char *body = NULL;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (client == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "client and out_response are required");
+    }
+    status = tamga_require_uuid(license_id, "license_id");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    status = tamga_require_uuid(entitlement_id, "entitlement_id");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+
+    path = tamga_entitlement_action_path(license_id, entitlement_id, action_suffix);
+    if (path == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "license_id and entitlement_id must be "
+                                                        "UUIDs");
+    }
+
+    if (amount > 0u) {
+        TamgaJson *root = tamga_json_new_object();
+        if (root == NULL) {
+            tamga_string_free(path);
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+        }
+        if (!tamga_json_object_set(root, field_name, tamga_json_new_int((int64_t)amount))) {
+            tamga_json_free(root);
+            tamga_string_free(path);
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+        }
+        body = tamga_json_write(root, NULL);
+        tamga_json_free(root);
+        if (body == NULL) {
+            tamga_string_free(path);
+            return tamga_error_set(TAMGA_ERR_OUT_OF_MEMORY, "could not build the request");
+        }
+    }
+
+    status = tamga_client_send(client, "POST", path, NULL, body, NULL, true, out_response);
+    tamga_string_free(path);
+    tamga_string_free(body);
+    return status;
+}
+
+TamgaErrorCode tamga_client_increment_entitlement_usage(TamgaClient *client, const char *license_id,
+                                                        const char *entitlement_id, uint32_t amount,
+                                                        TamgaResponse **out_response) {
+    return tamga_entitlement_usage_action(client, license_id, entitlement_id, "increment",
+                                          "increment", amount, out_response);
+}
+
+TamgaErrorCode tamga_client_decrement_entitlement_usage(TamgaClient *client, const char *license_id,
+                                                        const char *entitlement_id, uint32_t amount,
+                                                        TamgaResponse **out_response) {
+    return tamga_entitlement_usage_action(client, license_id, entitlement_id, "decrement",
+                                          "decrement", amount, out_response);
+}
+
+TamgaErrorCode tamga_client_reset_entitlement_usage(TamgaClient *client, const char *license_id,
+                                                    const char *entitlement_id,
+                                                    TamgaResponse **out_response) {
+    char *path;
+    TamgaErrorCode status;
+
+    tamga_error_clear();
+    if (client == NULL || out_response == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "client and out_response are required");
+    }
+    status = tamga_require_uuid(license_id, "license_id");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+    status = tamga_require_uuid(entitlement_id, "entitlement_id");
+    if (status != TAMGA_OK) {
+        return status;
+    }
+
+    path = tamga_entitlement_action_path(license_id, entitlement_id, "reset");
+    if (path == NULL) {
+        return tamga_error_set(TAMGA_ERR_NULL_ARGUMENT, "license_id and entitlement_id must be "
+                                                        "UUIDs");
+    }
+    /* No body, unlike increment/decrement. */
+    status = tamga_client_send(client, "POST", path, NULL, NULL, NULL, true, out_response);
+    tamga_string_free(path);
+    return status;
+}
+
 /* --- signing keys -------------------------------------------------------- */
 
 /*

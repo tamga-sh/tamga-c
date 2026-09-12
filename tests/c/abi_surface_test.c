@@ -66,6 +66,14 @@ _Static_assert(TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT == 40, "appended ABI valu
 _Static_assert(TAMGA_ERR_SIGNING_KEY_MISSING == 41, "appended ABI value changed");
 _Static_assert(TAMGA_ERR_SECRET_KEY_MISSING == 42, "appended ABI value changed");
 
+/*
+ * The entitlement metering block, added for the uses/max_uses -> metered
+ * entitlements migration (docs/entitlement-metering-migration.md). One value
+ * so far, so both ends of the block are the same assertion; a second one
+ * goes after it, never in front.
+ */
+_Static_assert(TAMGA_ERR_METER_LIMIT_EXCEEDED == 43, "appended ABI value changed");
+
 /* --- the fingerprint shape ---------------------------------------------- */
 /*
  * 64 hex characters, being the whole SHA-256 digest -- unlike a `kid`, which

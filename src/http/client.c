@@ -382,6 +382,148 @@ bool tamga_response_heartbeat_window_secs(const TamgaResponse *response, int64_t
     return true;
 }
 
+/* --- entitlements ---------------------------------------------------------
+ *
+ * This SDK has no typed Entitlement struct -- every field is read out of a
+ * TamgaResponse with an accessor, same as artifacts and signing keys below.
+ */
+
+/*
+ * The entitlement resource an accessor should read at `index`.
+ *
+ * Accepts both document shapes, exactly like tamga_response_artifact():
+ * tamga_client_list_entitlements() answers a `data` array, while
+ * tamga_client_get_entitlement() and the three actions in endpoints.c answer
+ * a single `data` object read as a one-element collection -- `index` 0 and
+ * nothing else. `type` is checked for the same reason it is there: every
+ * other single-resource response this SDK returns also has a `data` object,
+ * and without the check the first entitlement accessor called on one would
+ * read its attributes by name and report whatever happened to be missing as
+ * an unreadable entitlement rather than as the wrong response.
+ */
+static const TamgaJson *tamga_response_entitlement(const TamgaResponse *response, uintptr_t index) {
+    const TamgaJson *data;
+    const TamgaJson *resource;
+
+    if (response == NULL || response->json == NULL) {
+        return NULL;
+    }
+    data = tamga_json_object_get(response->json, "data");
+    if (data == NULL) {
+        return NULL;
+    }
+    if (tamga_json_type(data) == TAMGA_JSON_ARRAY) {
+        if ((size_t)index >= tamga_json_array_len(data)) {
+            return NULL;
+        }
+        resource = tamga_json_array_at(data, (size_t)index);
+    } else if (tamga_json_type(data) == TAMGA_JSON_OBJECT && index == 0u) {
+        resource = data;
+    } else {
+        return NULL;
+    }
+    if (resource == NULL || tamga_json_type(resource) != TAMGA_JSON_OBJECT) {
+        return NULL;
+    }
+    {
+        const char *type = tamga_json_as_string(tamga_json_object_get(resource, "type"), NULL);
+        if (type == NULL || strcmp(type, "entitlements") != 0) {
+            return NULL;
+        }
+    }
+    return resource;
+}
+
+uintptr_t tamga_response_entitlement_count(const TamgaResponse *response) {
+    const TamgaJson *data;
+
+    tamga_error_clear();
+    if (response == NULL || response->json == NULL) {
+        return 0u;
+    }
+    data = tamga_json_object_get(response->json, "data");
+    if (data == NULL) {
+        return 0u;
+    }
+    /* The array's length, not the number of rows that turn out to be
+     * readable -- see tamga_response_artifact_count() for why filtering here
+     * would shift every index off the row it names. */
+    if (tamga_json_type(data) == TAMGA_JSON_ARRAY) {
+        return (uintptr_t)tamga_json_array_len(data);
+    }
+    return (tamga_response_entitlement(response, 0u) != NULL) ? 1u : 0u;
+}
+
+const char *tamga_response_entitlement_kind_at(const TamgaResponse *response, uintptr_t index) {
+    const TamgaJson *resource;
+
+    tamga_error_clear();
+    resource = tamga_response_entitlement(response, index);
+    if (resource == NULL) {
+        return NULL;
+    }
+    /* Required server-side, unlike max_value/current_value below -- NULL here
+     * means the index or response was wrong, never a real entitlement with
+     * no kind. */
+    return tamga_json_as_string(
+        tamga_json_object_get(tamga_json_object_get(resource, "attributes"), "kind"), NULL);
+}
+
+bool tamga_response_entitlement_max_value_at(const TamgaResponse *response, uintptr_t index,
+                                             int64_t *out_max_value) {
+    const TamgaJson *resource;
+    const TamgaJson *max_value;
+    int64_t value = 0;
+
+    tamga_error_clear();
+    if (out_max_value == NULL) {
+        return false;
+    }
+    resource = tamga_response_entitlement(response, index);
+    if (resource == NULL) {
+        return false;
+    }
+    /* Nullable: null means unlimited, and that is the ordinary state of a
+     * meter (or the meaningless-but-present value on a flag) with no cap set
+     * -- not a reason to refuse the row. False, writing nothing, is the same
+     * convention tamga_response_artifact_filesize_at() uses for its own
+     * nullable integer. */
+    max_value = tamga_json_object_get(tamga_json_object_get(resource, "attributes"), "max_value");
+    if (max_value == NULL || tamga_json_is_null(max_value) ||
+        !tamga_json_as_int(max_value, &value)) {
+        return false;
+    }
+    *out_max_value = value;
+    return true;
+}
+
+bool tamga_response_entitlement_current_value_at(const TamgaResponse *response, uintptr_t index,
+                                                 int64_t *out_current_value) {
+    const TamgaJson *resource;
+    const TamgaJson *current_value;
+    int64_t value = 0;
+
+    tamga_error_clear();
+    if (out_current_value == NULL) {
+        return false;
+    }
+    resource = tamga_response_entitlement(response, index);
+    if (resource == NULL) {
+        return false;
+    }
+    /* Always present on the licence-scoped shape (0 if never incremented),
+     * unlike max_value above -- absent or unreadable here means this
+     * response is not one that carries a counter (a policy-scoped listing,
+     * for instance), not that the count is unlimited. */
+    current_value =
+        tamga_json_object_get(tamga_json_object_get(resource, "attributes"), "current_value");
+    if (current_value == NULL || !tamga_json_as_int(current_value, &value)) {
+        return false;
+    }
+    *out_current_value = value;
+    return true;
+}
+
 /* The `data` array of a signing-key listing, or NULL when this is not one. */
 static const TamgaJson *tamga_response_signing_keys(const TamgaResponse *response) {
     const TamgaJson *data;
@@ -941,6 +1083,18 @@ static TamgaErrorCode tamga_map_api_error(TamgaResponse *response) {
         }
         if (strcmp(code, "TOO_MANY_PROCESSES") == 0) {
             return TAMGA_ERR_TOO_MANY_PROCESSES;
+        }
+        /*
+         * The entitlement metering migration's own limit code, raised by the
+         * three actions in tamga_client_increment_entitlement_usage() and
+         * friends when an increment would push `current_value` past
+         * `max_value`. Same shape as the five above -- a create/action-time
+         * 422 -- and it replaces the retired TAMGA_VALIDATION_TOO_MANY_USES
+         * validation code the same way those five already coexist with their
+         * own validation-time counterparts.
+         */
+        if (strcmp(code, "METER_LIMIT_EXCEEDED") == 0) {
+            return TAMGA_ERR_METER_LIMIT_EXCEEDED;
         }
         /*
          * These three arrive as 401 and would otherwise collapse into the

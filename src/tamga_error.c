@@ -147,6 +147,8 @@ const char *tamga_error_name(TamgaErrorCode code) {
         return "TAMGA_ERR_SIGNING_KEY_MISSING";
     case TAMGA_ERR_SECRET_KEY_MISSING:
         return "TAMGA_ERR_SECRET_KEY_MISSING";
+    case TAMGA_ERR_METER_LIMIT_EXCEEDED:
+        return "TAMGA_ERR_METER_LIMIT_EXCEEDED";
     default:
         return "TAMGA_ERR_UNKNOWN";
     }
