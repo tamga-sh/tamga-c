@@ -31,7 +31,8 @@ HTTP half needs a transport, which is either an operating-system component
 - read a licence, and the policy behind it
 - generate an offline proof
 - register, list and dispose of components and processes
-- list and query entitlements
+- list and query entitlements, including a `meter` entitlement's own cap and
+  running count, and increment/decrement/reset that count
 - ask whether a newer release is available
 - read the account's signing keys, retired ones included
 - probe the server's health, for when nothing else works
@@ -552,6 +553,43 @@ Never loop on `tamga_response_next_cursor()` for this route; it would return
 the same first page forever. It works correctly for
 `tamga_client_list_components()`, where the server really does apply the
 cursor.
+
+**A `meter` entitlement tracks its own per-licence counter.** Replacing the
+retired global `uses`/`max_uses` counter, any entitlement can now be a named
+meter instead of a plain boolean flag. `kind` (`"flag"` or `"meter"`) is on
+every entitlement this SDK reads; `max_value` (the effective cap, `NULL` =
+unlimited) and `current_value` (the running count) are on the licence-scoped
+listing only. This SDK has no typed `Entitlement` struct, so all three are
+read with accessors the same way an artifact's fields are:
+
+```c
+TamgaResponse *response = NULL;
+
+if (tamga_client_get_entitlement(client, license_id, entitlement_id, &response) == TAMGA_OK) {
+    const char *kind = tamga_response_entitlement_kind_at(response, 0u);
+    int64_t max_value = 0;
+    int64_t current_value = 0;
+    bool has_cap = tamga_response_entitlement_max_value_at(response, 0u, &max_value);
+
+    tamga_response_entitlement_current_value_at(response, 0u, &current_value);
+    printf("%s: %lld / %s\n", kind, (long long)current_value,
+           has_cap ? "capped" : "unlimited");
+}
+tamga_response_free(response);
+
+/* Requires the entitlement to be directly attached to this licence -- one
+   reached only through the licence's policy has no counter row and answers
+   404. amount 0 lets the server's own default of 1 apply. */
+tamga_client_increment_entitlement_usage(client, license_id, entitlement_id, 1u, &response);
+if (tamga_client_increment_entitlement_usage(client, license_id, entitlement_id, 50u,
+                                             &response) == TAMGA_ERR_METER_LIMIT_EXCEEDED) {
+    /* current_value + 50 would exceed max_value. *response still carries the
+       server's error document, so errors[0].meta.entitlement_id is readable
+       from tamga_response_json() -- the same mechanism FINGERPRINT_TAKEN uses
+       for meta.machineId. */
+}
+tamga_client_reset_entitlement_usage(client, license_id, entitlement_id, &response);
+```
 
 **`scope.version` and `scope.checksum` fail the whole call.** They are not
 ignored: the server rejects either with `422 SCOPE_NOT_SUPPORTED` before any

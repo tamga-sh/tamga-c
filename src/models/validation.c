@@ -40,6 +40,10 @@ static const TamgaValidationCodeEntry TAMGA_VALIDATION_CODES[] = {
     {"CHECKSUM_SCOPE_MISMATCH", TAMGA_VALIDATION_CHECKSUM_SCOPE_MISMATCH},
     {"VERSION_SCOPE_MISMATCH", TAMGA_VALIDATION_VERSION_SCOPE_MISMATCH},
     {"ENVIRONMENT_SCOPE_MISMATCH", TAMGA_VALIDATION_ENVIRONMENT_SCOPE_MISMATCH},
+    /* Retired by the entitlement metering migration -- no current server
+     * emits this string, but the entry stays so that a body from an old
+     * server, or a fixture nobody has updated, still parses to the code
+     * rather than falling through to UNKNOWN. See the enum's doc comment. */
     {"TOO_MANY_USES", TAMGA_VALIDATION_TOO_MANY_USES},
 };
 

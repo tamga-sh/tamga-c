@@ -426,6 +426,160 @@ TT_TEST(has_entitlement_matches_on_code_not_name) {
 }
 
 /*
+ * The three meter actions, mirroring machine_actions' shape assertions:
+ * method, path, and (unlike the bare heartbeat actions) a flat body.
+ */
+TT_TEST(entitlement_meter_actions) {
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_increment_entitlement_usage(client, LICENSE_ID,
+                                                                  ENTITLEMENT_ID, 0u, &response),
+                         TAMGA_OK);
+        expect_call(&mock, "POST",
+                    "/licenses/01926b3e-0000-7000-8000-000000000001/entitlements/"
+                    "01926b3e-0000-7000-8000-000000000004/actions/increment");
+        /* amount 0 omits the field so the server's own default of 1 applies --
+         * the same "0 means let the server default it" reading
+         * tamga_client_check_out_license()'s ttl_seconds gets. */
+        expect_body(&mock, "");
+    });
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_increment_entitlement_usage(client, LICENSE_ID,
+                                                                  ENTITLEMENT_ID, 3u, &response),
+                         TAMGA_OK);
+        expect_call(&mock, "POST",
+                    "/licenses/01926b3e-0000-7000-8000-000000000001/entitlements/"
+                    "01926b3e-0000-7000-8000-000000000004/actions/increment");
+        expect_body(&mock, "{\"increment\":3}");
+    });
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(tamga_client_decrement_entitlement_usage(client, LICENSE_ID,
+                                                                  ENTITLEMENT_ID, 2u, &response),
+                         TAMGA_OK);
+        expect_call(&mock, "POST",
+                    "/licenses/01926b3e-0000-7000-8000-000000000001/entitlements/"
+                    "01926b3e-0000-7000-8000-000000000004/actions/decrement");
+        expect_body(&mock, "{\"decrement\":2}");
+    });
+    WITH_CLIENT({
+        TT_ASSERT_EQ_INT(
+            tamga_client_reset_entitlement_usage(client, LICENSE_ID, ENTITLEMENT_ID, &response),
+            TAMGA_OK);
+        expect_call(&mock, "POST",
+                    "/licenses/01926b3e-0000-7000-8000-000000000001/entitlements/"
+                    "01926b3e-0000-7000-8000-000000000004/actions/reset");
+        /* Reset has no body at all, unlike its two siblings. */
+        expect_body(&mock, "");
+    });
+}
+
+/*
+ * The 422 that replaces the retired TOO_MANY_USES validation code. Mirrors
+ * activate_machine_reports_a_creation_time_limit_without_deleting: the
+ * response is handed back on this failure too, so the server's own error
+ * code and the meter's id survive for the caller to read.
+ */
+TT_TEST(entitlement_increment_reports_meter_limit_exceeded) {
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 422,
+               "{\"errors\":[{\"id\":\"01926b3e-0000-7000-8000-00000000000f\","
+               "\"status\":\"422\",\"code\":\"METER_LIMIT_EXCEEDED\","
+               "\"title\":\"Unprocessable Entity\",\"detail\":\"meter limit exceeded\","
+               "\"meta\":{\"entitlement_id\":\"01926b3e-0000-7000-8000-000000000004\"}}]}");
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(
+        tamga_client_increment_entitlement_usage(client, LICENSE_ID, ENTITLEMENT_ID, 5u, &response),
+        TAMGA_ERR_METER_LIMIT_EXCEEDED);
+
+    /* The response is preserved on this error, the same as every other API
+     * error this SDK maps -- not discarded the way a non-limit machine
+     * creation failure is. */
+    TT_ASSERT_NOT_NULL(response);
+    TT_ASSERT_EQ_INT(tamga_response_status(response), 422);
+    TT_ASSERT_EQ_STR(tamga_response_error_code(response), "METER_LIMIT_EXCEEDED");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_METER_LIMIT_EXCEEDED),
+                     "TAMGA_ERR_METER_LIMIT_EXCEEDED");
+
+    /* No typed accessor for meta.entitlement_id -- read it from the raw JSON,
+     * the same mechanism errors[0].meta.machineId already uses for
+     * FINGERPRINT_TAKEN. */
+    {
+        uintptr_t len = 0;
+        const char *json = tamga_response_json(response, &len);
+        TT_ASSERT_NOT_NULL(json);
+        TT_ASSERT_NOT_NULL(strstr(json, "\"entitlement_id\":\"01926b3e-0000-7000-8000-"
+                                        "000000000004\""));
+    }
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
+ * Read the fields the entitlement metering migration added -- `kind`,
+ * `max_value` and `current_value` -- off a licence-scoped listing.
+ */
+TT_TEST(entitlement_kind_and_meter_fields_are_readable) {
+    static const char BODY[] =
+        "{\"data\":["
+        "{\"type\":\"entitlements\",\"id\":\"01926b3e-0000-7000-8000-000000000004\","
+        "\"attributes\":{\"code\":\"REQUESTS\",\"kind\":\"meter\",\"inherited\":false,"
+        "\"max_value\":1000,\"current_value\":650}},"
+        "{\"type\":\"entitlements\",\"id\":\"01926b3e-0000-7000-8000-000000000005\","
+        "\"attributes\":{\"code\":\"PRO\",\"kind\":\"flag\",\"inherited\":true,"
+        "\"max_value\":null,\"current_value\":0}}"
+        "]}";
+    MockTransport mock;
+    TamgaClient *client;
+    TamgaResponse *response = NULL;
+    const char *kind = NULL;
+    int64_t max_value = -1;
+    int64_t current_value = -1;
+
+    mock_reset(&mock);
+    mock_reply(&mock, 200, BODY);
+    client = make_client(&mock);
+    TT_ASSERT_NOT_NULL(client);
+
+    TT_ASSERT_EQ_INT(tamga_client_list_entitlements(client, LICENSE_ID, 0u, NULL, &response),
+                     TAMGA_OK);
+    TT_ASSERT_EQ_SIZE(tamga_response_entitlement_count(response), 2u);
+
+    /* A meter with a real cap: both nullable-integer accessors return true. */
+    kind = tamga_response_entitlement_kind_at(response, 0u);
+    TT_ASSERT_EQ_STR(kind, "meter");
+    TT_ASSERT(tamga_response_entitlement_max_value_at(response, 0u, &max_value));
+    TT_ASSERT_EQ_INT(max_value, 1000);
+    TT_ASSERT(tamga_response_entitlement_current_value_at(response, 0u, &current_value));
+    TT_ASSERT_EQ_INT(current_value, 650);
+
+    /* A flag with an unlimited (null) max_value: false, writing nothing --
+     * the same "false means nothing to read" convention as
+     * tamga_response_artifact_filesize_at(). current_value is still 0, always
+     * present. */
+    kind = tamga_response_entitlement_kind_at(response, 1u);
+    TT_ASSERT_EQ_STR(kind, "flag");
+    max_value = 999;
+    TT_ASSERT_FALSE(tamga_response_entitlement_max_value_at(response, 1u, &max_value));
+    TT_ASSERT_EQ_INT(max_value, 999);
+    TT_ASSERT(tamga_response_entitlement_current_value_at(response, 1u, &current_value));
+    TT_ASSERT_EQ_INT(current_value, 0);
+
+    /* Out of range writes nothing and reports false throughout. */
+    TT_ASSERT_NULL(tamga_response_entitlement_kind_at(response, 2u));
+    TT_ASSERT_FALSE(tamga_response_entitlement_max_value_at(response, 2u, &max_value));
+    TT_ASSERT_FALSE(tamga_response_entitlement_current_value_at(response, 2u, &current_value));
+
+    tamga_response_free(response);
+    tamga_client_free(client);
+}
+
+/*
  * Creation enforces the licence's limits too. Which of the two ways an
  * over-limit activation is reported depends on the policy's overage strategy,
  * and both are live -- which is why these calls are composed rather than left
@@ -706,6 +860,8 @@ TT_TEST(the_appended_error_codes_all_have_names) {
                      "TAMGA_ERR_LICENSE_NOT_ALLOWED");
     TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT),
                      "TAMGA_ERR_INVALID_FINGERPRINT_COMPONENT");
+    TT_ASSERT_EQ_STR(tamga_error_name(TAMGA_ERR_METER_LIMIT_EXCEEDED),
+                     "TAMGA_ERR_METER_LIMIT_EXCEEDED");
 }
 
 /* An identifier that is not a UUID never reaches the URL builder -- otherwise
@@ -1965,6 +2121,9 @@ int main(void) {
     TT_RUN(listings_are_keyset_paginated);
     TT_RUN(the_next_page_cursor_is_derived_from_a_full_page_only);
     TT_RUN(has_entitlement_matches_on_code_not_name);
+    TT_RUN(entitlement_meter_actions);
+    TT_RUN(entitlement_increment_reports_meter_limit_exceeded);
+    TT_RUN(entitlement_kind_and_meter_fields_are_readable);
     TT_RUN(activate_machine_creates_then_validates);
     TT_RUN(activate_machine_reports_a_creation_time_limit_without_deleting);
     TT_RUN(a_non_limit_creation_failure_hands_back_no_response);

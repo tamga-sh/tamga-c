@@ -384,7 +384,28 @@ typedef enum TamgaErrorCode {
      * transport; it is mapped so the code is not TAMGA_ERR_API there. Not
      * retryable.
      */
-    TAMGA_ERR_SECRET_KEY_MISSING = 42
+    TAMGA_ERR_SECRET_KEY_MISSING = 42,
+
+    /* --- entitlement metering, replacing the retired global usage counter,
+     * see docs/entitlement-metering-migration.md -------------------------- */
+
+    /**
+     * `422 METER_LIMIT_EXCEEDED`: tamga_client_increment_entitlement_usage()
+     * asked for more than the entitlement's `max_value` allows --
+     * `current_value + increment > max_value`. Replaces the retired
+     * `TAMGA_VALIDATION_TOO_MANY_USES` validation code, which the same
+     * migration removed; this is a create/action-time 422, not a validation
+     * outcome, the same distinction TAMGA_ERR_MACHINE_LIMIT_EXCEEDED already
+     * draws against TAMGA_VALIDATION_TOO_MANY_MACHINES.
+     *
+     * The failing entitlement's id is `errors[0].meta.entitlement_id` on the
+     * response this call still hands back on this error -- read it with
+     * tamga_response_json(), the same mechanism
+     * tamga_client_activate_machine_idempotent() documents for
+     * `errors[0].meta.machineId` on `FINGERPRINT_TAKEN`. Not retryable with
+     * the same arguments: the cap will not change on its own.
+     */
+    TAMGA_ERR_METER_LIMIT_EXCEEDED = 43
 } TamgaErrorCode;
 
 /* ======================================================================
@@ -1451,12 +1472,14 @@ TAMGA_API const char *tamga_response_validation_detail(const TamgaResponse *resp
 /**
  * The `meta.code` a validation endpoint returns.
  *
- * All 24 server-declared values are listed. Nineteen are reachable: the
- * sixteen marked below plus `TOO_MANY_USERS` (every validate endpoint) and
+ * All 24 server-declared values are listed. Eighteen are reachable: the
+ * fifteen marked below plus `TOO_MANY_USERS` (every validate endpoint) and
  * `HEARTBEAT_NOT_STARTED`/`HEARTBEAT_DEAD` (a `scope.fingerprint` match under
- * a `require_heartbeat` policy). The other five -- `NOT_FOUND`, `BANNED`,
+ * a `require_heartbeat` policy). The other six -- `NOT_FOUND`, `BANNED`,
  * `COMPONENTS_SCOPE_MISMATCH`, `CHECKSUM_SCOPE_MISMATCH`,
- * `VERSION_SCOPE_MISMATCH` -- are declared server-side and never emitted; do
+ * `VERSION_SCOPE_MISMATCH`, `TOO_MANY_USES` -- are declared server-side and
+ * never emitted (the last since the entitlement metering migration retired
+ * the global `uses`/`max_uses` counter and the check that reported it); do
  * not write logic that waits for one.
  *
  * `TAMGA_VALIDATION_UNKNOWN` covers any value a future server adds. Callers
@@ -1513,7 +1536,25 @@ typedef enum TamgaValidationCode {
     TAMGA_VALIDATION_VERSION_SCOPE_MISMATCH = 21,
     /** Reachable. */
     TAMGA_VALIDATION_ENVIRONMENT_SCOPE_MISMATCH = 22,
-    /** Reachable. Strictly `uses >= max_uses`, whatever the overage strategy. */
+    /**
+     * Retired. Through v1.2 this was reachable -- strictly `uses >=
+     * max_uses`, whatever the overage strategy -- but the entitlement
+     * metering migration deleted the global `uses`/`max_uses` counter
+     * server-side (see docs/entitlement-metering-migration.md) along with
+     * the check in `run_validation_with_facts` that emitted this code, so no
+     * current server sends it. Per-entitlement meters
+     * (tamga_client_increment_entitlement_usage() and friends) replace it and
+     * report their own limit as `422 METER_LIMIT_EXCEEDED`
+     * (TAMGA_ERR_METER_LIMIT_EXCEEDED), not as a validation code.
+     *
+     * The number stays assigned rather than being deleted: "Enum values are
+     * appended, never renumbered" (see CLAUDE.md's ABI section) means
+     * removing this member would either leave a hole or renumber
+     * TAMGA_VALIDATION_UNKNOWN down from 24 to 23, and a binary compiled
+     * against an older header would silently mean something different by
+     * that number. Treat this the same as the other declared-but-unreachable
+     * values below -- do not write logic that waits for it.
+     */
     TAMGA_VALIDATION_TOO_MANY_USES = 23,
     /** Any value this SDK does not recognise, including future additions. */
     TAMGA_VALIDATION_UNKNOWN = 24
@@ -2158,6 +2199,146 @@ TAMGA_API TamgaErrorCode tamga_client_get_entitlement(TamgaClient *client, const
 TAMGA_API TamgaErrorCode tamga_client_has_entitlement(TamgaClient *client, const char *license_id,
                                                       const char *code, uint32_t limit,
                                                       bool *out_has);
+
+/* --- entitlement metering ------------------------------------------------
+ *
+ * Replaces the retired global `uses`/`max_uses` counter (see
+ * docs/entitlement-metering-migration.md). Any entitlement can now be a
+ * METER -- a named, per-licence counter with its own cap -- instead of a
+ * plain boolean FLAG. `kind` is on every entitlement response this SDK reads
+ * (tamga_client_list_entitlements(), tamga_client_get_entitlement(), and the
+ * three actions below); `max_value` and `current_value` are on the
+ * licence-scoped shape only, which is the only shape these three functions
+ * read from.
+ *
+ * This SDK has no typed Entitlement struct -- every field is read out of a
+ * TamgaResponse with an accessor, the same design tamga_response_artifact_at()
+ * and tamga_response_signing_key_at() already use for their own resources.
+ */
+
+/**
+ * How many entitlement resources a response carries.
+ *
+ * A listing reports its rows; a single-entitlement response -- from
+ * tamga_client_get_entitlement() or one of the three actions below -- reports
+ * 1, so one loop reads either, the same convention
+ * tamga_response_artifact_count() documents for artifacts. An error document,
+ * or a response from an unrelated call, reports 0.
+ */
+TAMGA_API uintptr_t tamga_response_entitlement_count(const TamgaResponse *response);
+
+/**
+ * `attributes.kind` of the entitlement at `index` -- `"flag"` or `"meter"`.
+ * Borrowed, valid until the response is freed.
+ *
+ * Required and always present server-side, unlike `max_value` and
+ * `current_value` below: a caller that gets NULL back has an out-of-range
+ * `index` or a response that is not an entitlement resource, never a real
+ * entitlement with no kind.
+ */
+TAMGA_API const char *tamga_response_entitlement_kind_at(const TamgaResponse *response,
+                                                         uintptr_t index);
+
+/**
+ * `attributes.max_value` of the entitlement at `index` -- the effective cap:
+ * the licence's own override if it has one, else the policy's default.
+ *
+ * Returns false, writing nothing, when the field is JSON `null` (unlimited)
+ * as well as when `index` is out of range or the response carries no
+ * `max_value` at all -- the same "false means nothing to read" convention as
+ * tamga_response_artifact_filesize_at(). A caller that needs to tell
+ * "unlimited" apart from "this response has no max_value field" (for
+ * example, a policy-scoped listing, which never carries `current_value` and
+ * would otherwise look identical to an unlimited meter) should also check
+ * tamga_response_entitlement_current_value_at() or read
+ * tamga_response_json() directly.
+ *
+ * Present on the licence-scoped and policy-scoped listings; meaningless, but
+ * harmless, when `kind` is `"flag"`.
+ */
+TAMGA_API bool tamga_response_entitlement_max_value_at(const TamgaResponse *response,
+                                                       uintptr_t index, int64_t *out_max_value);
+
+/**
+ * `attributes.current_value` of the entitlement at `index` -- the running
+ * count. Always present on the licence-scoped shape (`0` if never
+ * incremented), so unlike max_value above, false here means `index` was out
+ * of range or this response carries no `current_value` at all, never "the
+ * value is absent".
+ *
+ * ⚠️ `0` does not necessarily mean "never used". It also means "this
+ * entitlement reaches this licence only through its policy and has never
+ * been directly attached" -- only a direct attachment carries a counter row
+ * at all. Read `attributes.inherited` from tamga_response_json() to tell the
+ * two apart if the distinction matters; this SDK has no typed accessor for
+ * that field.
+ *
+ * Present on the licence-scoped listing only -- never on the policy-scoped
+ * one, which pools no usage.
+ */
+TAMGA_API bool tamga_response_entitlement_current_value_at(const TamgaResponse *response,
+                                                           uintptr_t index,
+                                                           int64_t *out_current_value);
+
+/**
+ * `POST /licenses/{license_id}/entitlements/{entitlement_id}/actions/increment`.
+ *
+ * `amount` is added to `current_value`, clamped to a minimum of 1
+ * server-side -- pass 0 to omit the field and take the server's own default
+ * of 1, the same convention tamga_client_check_out_license()'s `ttl_seconds`
+ * uses for "omit, let the server default apply". Returns the full
+ * `LicenseEntitlement` resource, so the fresh `current_value` (and
+ * `max_value`) is readable from `*out_response` with
+ * tamga_response_entitlement_current_value_at() and friends without a second
+ * round trip.
+ *
+ * ⚠️ Requires the entitlement to be DIRECTLY attached to this licence -- an
+ * entitlement reaching it only through its policy has no counter row to
+ * increment, and this answers `404` rather than counting against the
+ * inherited grant.
+ *
+ * `422 METER_LIMIT_EXCEEDED` (TAMGA_ERR_METER_LIMIT_EXCEEDED) when
+ * `current_value + amount` would exceed `max_value`. `*out_response` is
+ * still populated on that failure, the same as every other API error this
+ * SDK maps, so `errors[0].meta.entitlement_id` is readable from
+ * tamga_response_json() -- see TAMGA_ERR_METER_LIMIT_EXCEEDED's own doc
+ * comment.
+ */
+TAMGA_API TamgaErrorCode tamga_client_increment_entitlement_usage(TamgaClient *client,
+                                                                  const char *license_id,
+                                                                  const char *entitlement_id,
+                                                                  uint32_t amount,
+                                                                  TamgaResponse **out_response);
+
+/**
+ * `POST /licenses/{license_id}/entitlements/{entitlement_id}/actions/decrement`.
+ *
+ * The mirror of tamga_client_increment_entitlement_usage(): `amount` is
+ * subtracted from `current_value`, clamped to a minimum of 1 server-side (0
+ * omits the field for the same reason), and `current_value` floors at `0` --
+ * it never goes negative, and decrementing past `0` is not an error.
+ *
+ * Same directly-attached precondition as increment: `404` when the
+ * entitlement is only inherited. `METER_LIMIT_EXCEEDED` is not reachable
+ * here -- only increment can push `current_value` past `max_value`.
+ */
+TAMGA_API TamgaErrorCode tamga_client_decrement_entitlement_usage(TamgaClient *client,
+                                                                  const char *license_id,
+                                                                  const char *entitlement_id,
+                                                                  uint32_t amount,
+                                                                  TamgaResponse **out_response);
+
+/**
+ * `POST /licenses/{license_id}/entitlements/{entitlement_id}/actions/reset`
+ * -- sets `current_value` back to `0`. No body, unlike its two siblings.
+ *
+ * Same directly-attached precondition: `404` when the entitlement is only
+ * inherited via the licence's policy.
+ */
+TAMGA_API TamgaErrorCode tamga_client_reset_entitlement_usage(TamgaClient *client,
+                                                              const char *license_id,
+                                                              const char *entitlement_id,
+                                                              TamgaResponse **out_response);
 
 /* --- signing keys -------------------------------------------------------- */
 
