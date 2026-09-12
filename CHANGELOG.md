@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.5](https://github.com/tamga-sh/tamga-c/compare/v1.3.4...v1.3.5) (2026-09-12)
+
+
+### Bug Fixes
+
+* replace retired uses/max_uses counter with entitlement metering ([#42](https://github.com/tamga-sh/tamga-c/issues/42)) ([7de782e](https://github.com/tamga-sh/tamga-c/commit/7de782ee319b73f95b1dae3d801053b662139843))
+
 ## [1.3.4](https://github.com/tamga-sh/tamga-c/compare/v1.3.3...v1.3.4) (2026-09-05)
 
 
