@@ -14,3 +14,9 @@ base64 = "0.23"
 serde_json = "1"
 hex = "0.4"
 rand = "0.8"
+
+# macOS: incremental caches and unpacked split-debuginfo grew target/ to hundreds of GB
+# (one dep-graph per test binary, ~400k loose .o files, each slowing every process launch).
+[profile.dev]
+incremental = false
+split-debuginfo = "off"
